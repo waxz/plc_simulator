@@ -52,3 +52,7 @@ Because the Screen Y-axis is inverted relative to the World Y-axis, rotating an 
 # Run the simulator with a specific configuration file
 python ./main.py ./test_config.json
 ```
+```bash
+# Run the PLC mock with a specific configuration file
+python ./plc_mock.py ./test_config.json
+```
