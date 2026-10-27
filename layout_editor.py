@@ -260,6 +260,9 @@ class SnapGuideScene(QGraphicsScene):
         # push a MoveItemCommand when a drag completes without needing a
         # direct reference to MainWindow itself.
         self.undo_stack: Optional["QUndoStack"] = None
+        # Called with the list of items a drag just moved, inside that drag's
+        # undo macro - layout_editor_cad.py uses it to keep belt connections.
+        self.on_items_moved: Optional[Callable[[list], None]] = None
         # Persistent measure-tool markers/lines/labels - separate from
         # _guide_items (the transient per-drag alignment overlay, cleared on
         # every mouse release) since these should stick around until the
@@ -967,15 +970,19 @@ class PlacedItem(QGraphicsPolygonItem):
             # One combined undo step for the whole group, not one per item -
             # mirrors how a multi-select Delete/Paste already undoes as a
             # single action.
-            multi = len(moved) > 1
+            hook = getattr(self.scene(), "on_items_moved", None)
+            multi = len(moved) > 1 or hook is not None
             if multi:
-                undo_stack.beginMacro(f"Move {len(moved)} Components")
+                undo_stack.beginMacro(f"Move {len(moved)} Component{'s' if len(moved) > 1 else ''}")
             for item, start_pos in moved:
                 # MoveItemCommand.redo() applies setPos()+model sync itself -
                 # each item is already at its final pos() (that's the "new"
                 # position being recorded), so pushing just replays the same
                 # state, not a second move.
                 undo_stack.push(MoveItemCommand(item, start_pos, item.pos()))
+            if hook is not None:
+                # Same undo step: e.g. connected belts following the drag.
+                hook([item for item, _ in moved])
             if multi:
                 undo_stack.endMacro()
         else:
@@ -1066,6 +1073,15 @@ class BeltItem(PlacedItem):
         hw, hh = length * SCALE / 2.0, belt_width * SCALE / 2.0
         self.prepareGeometryChange()
         self.setPolygon(QPolygonF([QPointF(-hw, -hh), QPointF(hw, -hh), QPointF(hw, hh), QPointF(-hw, hh)]))
+
+    def sync_from_model(self):
+        """Re-read position, rotation and shape from the model (after the
+        CAD tools change a belt's geometry - see layout_editor_cad.py)."""
+        self.prepareGeometryChange()
+        self.setPolygon(QPolygonF(self._local_points_for_model(self.model)))
+        self.setPos(to_scene_pos(self.model.x, self.model.y))
+        self.setRotation(-self.model.rotation)
+        self.update()
 
     def set_arc_params(self, radius: float, start_angle: float, end_angle: float, belt_width: float):
         self.model.radius = radius
@@ -2982,7 +2998,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.resize(1300, 850)
 
-        self.config = config
+        # A new layout still gets a real config, so connections/background
+        # (layout_editor_cad.py) have somewhere to live.
+        self.config = config if config is not None else SimulatorConfig()
         self.config_path = config_path
 
         self.undo_stack = QUndoStack(self)
@@ -3024,6 +3042,7 @@ class MainWindow(QMainWindow):
                 item = BeltItem(model)
                 self.scene.addItem(item)
                 self.items_list.append(item)
+                self.config.belts.append(model)
 
         library_panel = ComponentLibraryPanel()
         library_dock = QDockWidget("Component Library", self)
@@ -3044,6 +3063,7 @@ class MainWindow(QMainWindow):
         self.view.on_items_changed = manager_panel.refresh
 
         properties_panel = PropertiesPanel(self.scene, self.items_list, on_model_changed=manager_panel.refresh)
+        self.properties_panel = properties_panel
         properties_panel.undo_stack = self.undo_stack
         props_dock = QDockWidget("Properties", self)
         props_dock.setWidget(properties_panel)
@@ -3119,6 +3139,16 @@ class MainWindow(QMainWindow):
         clear_measure_action.triggered.connect(self.scene.clear_measurements)
         view_toolbar.addAction(clear_measure_action)
 
+        # CAD tools: connections/fillet (planegcs), layout checks (Shapely),
+        # DXF background/export (ezdxf). Imported here, not at module top,
+        # because layout_editor_cad builds on this module's classes.
+        from layout_editor_cad import CadController
+        self.cad = CadController(self, belt_item_cls=BeltItem, to_scene_pos=to_scene_pos,
+                                 scale=SCALE, file_menu=file_menu)
+        check_dock = QDockWidget("Layout Check", self)
+        check_dock.setWidget(self.cad.check_panel)
+        self.addDockWidget(Qt.BottomDockWidgetArea, check_dock)
+
         self.statusBar().showMessage(
             "Drag a template from the library onto the canvas. Drag items to see snap guides. "
             "Ctrl+C/Ctrl+V to copy-paste, Delete to remove. Space+drag to pan, wheel to zoom."
@@ -3152,6 +3182,8 @@ class MainWindow(QMainWindow):
             self.scene.selectionChanged.disconnect()
         except (RuntimeError, TypeError):
             pass  # already disconnected, or nothing was ever connected
+        if getattr(self, "cad", None) is not None:
+            self.cad.closing = True
         super().closeEvent(event)
 
     def _frame_all_items(self):
@@ -3244,4 +3276,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # Run through the importable module, not this __main__ copy:
+    # layout_editor_cad imports BeltItem & co. from `layout_editor`, and
+    # isinstance checks must see one set of classes.
+    import layout_editor
+    layout_editor.main()

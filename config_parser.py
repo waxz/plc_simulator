@@ -169,6 +169,24 @@ class MqttSettings(BaseModel):
     beltFeedback: bool = False
     beltFeedbackIntervalMs: int = 10
 
+class BeltConnection(BaseModel):
+    """Design-time joint: `fromBelt`'s outlet meets `toBelt`'s inlet, with
+    matching heading (see cad/constraints.py). Kept when either belt moves in
+    the layout editor. Physics ignores it - parcels transfer by geometry."""
+    fromBelt: str
+    toBelt: str
+
+
+class BackgroundDrawing(BaseModel):
+    """A DXF floor plan shown behind the layout in the editor (cad/dxf_io.py).
+    `path` is relative to the layout file when possible."""
+    path: str
+    scale: float = 0.001      # metres per drawing unit (0.001 = drawing in mm)
+    offsetX: float = 0.0      # metres, applied after scaling
+    offsetY: float = 0.0
+    visible: bool = True
+
+
 class SimulatorConfig(BaseModel):
     version: str = "1.0.0"
     savedAt: int = 0
@@ -179,6 +197,8 @@ class SimulatorConfig(BaseModel):
     buttons: List[ControlButton] = Field(default_factory=list)
     leds: List[LedIndicator] = Field(default_factory=list)
     mqttSettings: MqttSettings = Field(default_factory=MqttSettings)
+    connections: List[BeltConnection] = Field(default_factory=list)
+    background: Optional[BackgroundDrawing] = None
     simulatorBackend: Literal["matter", "rapier"] = "matter"
     simulationSteps: int = 4
     kineticFriction: bool = False

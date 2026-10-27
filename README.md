@@ -154,6 +154,26 @@ The Qt layout editor is where belt shapes and positions are designed:
 - Undo/redo, copy/paste, rubber-band multi-select, Component Manager and
   Properties docks.
 
+![Layout editor](docs/cad_editor.png)
+
+**CAD tools** (`layout_editor_cad.py` + the Qt-free `cad/` package):
+
+| Action | Shortcut | What it does | Library |
+|---|---|---|---|
+| Tools > Connect Belts | Ctrl+J | Two belts selected: moves the downstream one so its inlet sits on the upstream outlet, heading continuous (tangent for curves) | planegcs |
+| Tools > Fillet Belts... | Ctrl+Shift+F | Two straight belts: adds a curved belt of the given radius, tangent to both, trimming/extending the straights to meet it | planegcs |
+| Tools > Disconnect Belts | Ctrl+Shift+J | Removes connections between the selected belts | |
+| Tools > Solve Connections | F6 | Re-attaches every connection, holding the selected belts fixed | planegcs |
+| Tools > Check Layout | F7 | Belt overlaps (transfer zones at belt ends are allowed), outlets leading nowhere, broken connections, sensors/sources not over a belt; double-click an issue to select it | Shapely |
+| File > Import DXF Background... | | Floor plan as a locked background (blocks expanded, units from `$INSUNITS`, unitless = mm) | ezdxf |
+| File > Export DXF... | | Layout in metres, one layer per kind (BELTS, BELT_CENTERLINES, FLOW, SENSORS, ...) | ezdxf |
+| View > Show Ports | | Inlet (green ring), outlet (orange arrow), connection (cyan ring; red = broken) | |
+
+Connections are saved in the layout (`connections`) and kept while editing:
+dragging a belt moves every belt connected to it, in the same undo step. The
+background reference is saved as `background` (`path` relative to the layout,
+`scale` in metres per drawing unit, `offsetX`/`offsetY` in metres).
+
 File > Save writes back to the opened file and keeps everything the editor
 doesn't edit (drive settings, `tractionModel`, exchange settings). Then run it:
 `python main.py <layout.json>`. The editor doesn't run the simulation itself:
