@@ -8,6 +8,7 @@ from math_utils import get_rect_vertices, point_in_polygon, point_in_arc, get_be
 from id_utils import next_indexed_id
 from physics import parcel_speed_info
 from surface import belt_contains
+import devices
 from cad.checks import belt_footprint
 from cad.ports import centerline_points
 from editor_ui import EditorUI
@@ -151,6 +152,15 @@ class Renderer:
                     self.selected_item = ui_cmd[1]
                     continue
                 
+            # A button's keyboard key (ControlButton.key) presses it while held.
+            if event.type in (pygame.KEYDOWN, pygame.KEYUP) and self._button_for_key(event) is not None:
+                if self.playing:
+                    button = self._button_for_key(event)
+                    (devices.press if event.type == pygame.KEYDOWN else devices.release)(button)
+                    if self.selected_item == button:
+                        self.editor_ui.refresh_button_state()
+                continue
+
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_SPACE:
                     self.playing = not self.playing
@@ -192,7 +202,7 @@ class Renderer:
 
                     if isinstance(clicked_item, ControlButton):
                         if  self.playing:
-                            clicked_item.sensor_states = True
+                            devices.press(clicked_item)  # momentary/latching, NO/NC contact
                             self.pressed_button = clicked_item
                             self.editor_ui.show_props_for(clicked_item)
                             self.editor_ui.refresh_button_state()
@@ -213,7 +223,7 @@ class Renderer:
             elif event.type == pygame.MOUSEBUTTONUP:
                 if event.button == 1:
                     if self.pressed_button:
-                        self.pressed_button.sensor_states = False
+                        devices.release(self.pressed_button)
                         if self.selected_item == self.pressed_button:
                             self.editor_ui.show_props_for(self.pressed_button)
                             self.editor_ui.refresh_button_state()
@@ -338,6 +348,16 @@ class Renderer:
             self.editor_ui.open_manager_panel()
         return cmd
 
+    def _button_for_key(self, event):
+        """The button whose `key` is this key event's character, if any."""
+        name = (getattr(event, "unicode", "") or pygame.key.name(event.key) or "").lower()
+        if not name:
+            return None
+        for button in self.config.buttons:
+            if button.key and button.key.lower() == name:
+                return button
+        return None
+
     def _hit_test(self, wx: float, wy: float) -> Optional[object]:
         """Check if a world coordinate intersects a component."""
         # Check sensors
@@ -382,6 +402,15 @@ class Renderer:
                 if belt_contains(belt, wx, wy):
                     return belt
         return None
+
+    def _draw_fault_outline(self, belt: Belt):
+        """A tripped drive (drive.py: overload or injected fault): red outline."""
+        shape = belt_footprint(belt)
+        if shape.is_empty or shape.geom_type != "Polygon":
+            return
+        points = [self._world_to_screen(x, y) for x, y in shape.exterior.coords]
+        if len(points) >= 3:
+            pygame.draw.polygon(self.screen, (239, 68, 68), points, 3)
 
     def draw_belt(self, belt: Belt):
         color = self._hex_to_rgb(belt.color)
@@ -795,6 +824,8 @@ class Renderer:
         # Draw belts
         for belt in self.config.belts:
             self.draw_belt(belt)
+            if belt.fault:
+                self._draw_fault_outline(belt)
             if belt == self.selected_item:
                 self._draw_selection_overlay(belt)
 

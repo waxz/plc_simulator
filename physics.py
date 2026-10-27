@@ -9,6 +9,7 @@ import threading
 from typing import List, Tuple, Optional
 from config_parser import SimulatorConfig
 from math_utils import point_in_polygon, get_rect_vertices
+import devices
 from drive import step_drive
 from surface import belt_bounds, belt_contains, belt_surface_speed, curved_direction, surface_velocity
 from traction import FrictionTraction
@@ -171,6 +172,9 @@ class PhysicsEngine:
         
         # self.build_walls()
         self._setup_collision_handlers()
+        # Buttons start released: an NC contact (STOP, E-stop) reads 1.
+        for button in self.config.buttons:
+            devices.sync_button(button)
 
     def _setup_collision_handlers(self):
         """Install a parcel-parcel collision handler that eliminates bouncing.
@@ -772,102 +776,72 @@ class PhysicsEngine:
                 return True
         return False
 
-    @staticmethod
-    def _set_ir_state(sensor, state: str) -> None:
-        if state == "1" and sensor.sensor_states != "1":
-            sensor.risingEdges += 1
-        sensor.sensor_states = state
-
-    def evaluate_sensors(self):
-        """Compute sensor states from parcel geometry only."""
-        import math
-        
+    def evaluate_sensors(self, h: float = 0.0):
+        """Sensor states from parcel geometry: each beam's raw blocked state
+        (an IR sensor's footprint, or each laser banner beam as a segment
+        across the sensor), then the sensor's output stage
+        (devices.condition: on/off delay, invert, detection counter)."""
         for sensor in self.config.sensors:
-            if sensor.sensorType == "ir":
-                # Sensor diagonal extent
-                sensor_max_extent = math.hypot(sensor.width / 2.0, sensor.height / 2.0)
-                
-                # Pre-filter close parcels
-                close_parcels = []
-                for p in self.parcels:
-                    dx = p.body.position.x - sensor.x
-                    dy = p.body.position.y - sensor.y
-                    if math.hypot(dx, dy) <= (sensor_max_extent + p.max_extent):
-                        close_parcels.append(p)
-                
-                if not close_parcels:
-                    self._set_ir_state(sensor, "0")
-                    continue
-                
-                sensor_vertices = get_rect_vertices(
-                    sensor.x,
-                    sensor.y,
-                    sensor.width,
-                    sensor.height,
-                    sensor.rotation,
-                )
-                triggered = "0"
-                for parcel in close_parcels:
-                    if self._polygons_overlap(sensor_vertices, self._parcel_vertices(parcel)):
-                        triggered = "1"
-                        break
-                self._set_ir_state(sensor, triggered)
+            raw = self._raw_beams(sensor)
+            sensor.sensor_states = devices.condition(sensor, raw, h)
 
-            elif sensor.sensorType == "laser_banner":
-                laser_count_val = getattr(sensor, 'laserCount', 16)
-                laser_count = int(laser_count_val) if laser_count_val is not None else 16
-                beam_dist_val = getattr(sensor, 'beamDistance', 0.05)
-                beam_dist = float(beam_dist_val) if beam_dist_val is not None else 0.05
-                
-                angle = sensor.rotation
-                rad = math.radians(angle)
-                cos_a = math.cos(rad)
-                sin_a = math.sin(rad)
-                
-                # Pre-filter using distance checks
-                sensor_max_extent = math.hypot(sensor.width / 2.0, (laser_count - 1) * beam_dist / 2.0)
-                close_parcels = []
-                for p in self.parcels:
-                    dx = p.body.position.x - sensor.x
-                    dy = p.body.position.y - sensor.y
-                    if math.hypot(dx, dy) <= (sensor_max_extent + p.max_extent):
-                        close_parcels.append(p)
-                
-                if not close_parcels:
-                    sensor.sensor_states = "0" * laser_count
-                    continue
-                
-                bits = []
-                close_polygons = [self._parcel_vertices(parcel) for parcel in close_parcels]
-                for i in range(laser_count):
-                    by = (i - (laser_count - 1) / 2.0) * beam_dist
-                    
-                    # Local points of the horizontal beam segment (spanning sensor width)
-                    lx_start, ly_start = -sensor.width / 2.0, by
-                    lx_end, ly_end = sensor.width / 2.0, by
-                    
-                    # Transform to World coordinates
-                    x_start = sensor.x + lx_start * cos_a - ly_start * sin_a
-                    y_start = sensor.y + lx_start * sin_a + ly_start * cos_a
-                    x_end = sensor.x + lx_end * cos_a - ly_end * sin_a
-                    y_end = sensor.y + lx_end * sin_a + ly_end * cos_a
-                    
-                    beam_start = (x_start, y_start)
-                    beam_end = (x_end, y_end)
-                    blocked = False
-                    for polygon in close_polygons:
-                        if self._segment_intersects_polygon(beam_start, beam_end, polygon):
-                            blocked = True
-                            break
-                    bits.append("1" if blocked else "0")
-                sensor.sensor_states = "".join(bits)
+    def _close_parcels(self, sensor, extent: float):
+        out = []
+        for p in self.parcels:
+            dx = p.body.position.x - sensor.x
+            dy = p.body.position.y - sensor.y
+            if math.hypot(dx, dy) <= extent + p.max_extent:
+                out.append(p)
+        return out
+
+    def _raw_beams(self, sensor) -> List[bool]:
+        if sensor.sensorType == "ir":
+            close = self._close_parcels(sensor, math.hypot(sensor.width / 2.0, sensor.height / 2.0))
+            if not close:
+                return [False]
+            verts = get_rect_vertices(sensor.x, sensor.y, sensor.width, sensor.height, sensor.rotation)
+            return [any(self._polygons_overlap(verts, self._parcel_vertices(p)) for p in close)]
+
+        laser_count = int(sensor.laserCount) if sensor.laserCount is not None else 16
+        beam_dist = float(sensor.beamDistance) if sensor.beamDistance is not None else 0.05
+        close = self._close_parcels(sensor, math.hypot(sensor.width / 2.0, (laser_count - 1) * beam_dist / 2.0))
+        if not close:
+            return [False] * laser_count
+        rad = math.radians(sensor.rotation)
+        cos_a, sin_a = math.cos(rad), math.sin(rad)
+        polygons = [self._parcel_vertices(p) for p in close]
+        beams = []
+        for i in range(laser_count):
+            # Beam i: a segment across the sensor's width at offset `by`.
+            by = (i - (laser_count - 1) / 2.0) * beam_dist
+            lx = sensor.width / 2.0
+            start = (sensor.x - lx * cos_a - by * sin_a, sensor.y - lx * sin_a + by * cos_a)
+            end = (sensor.x + lx * cos_a - by * sin_a, sensor.y + lx * sin_a + by * cos_a)
+            beams.append(any(self._segment_intersects_polygon(start, end, poly) for poly in polygons))
+        return beams
+
+    def _update_belt_loads(self):
+        """Mass of parcels on each belt with overload protection (drive.maxLoad)."""
+        watched = [b for b in self.config.belts if b.drive is not None and b.drive.maxLoad is not None]
+        if not watched:
+            return
+        for belt in watched:
+            belt.load = 0.0
+        for parcel in self.parcels:
+            px, py = parcel.body.position
+            for belt in watched:
+                if belt_contains(belt, px, py):
+                    belt.load += parcel.body.mass
 
     def step(self, h: float):
         """One fixed physics step: drives, sources, traction, solver, sinks,
         sensors. Sensors run every step so a parcel crossing a narrow sensor
         between two GUI frames is still seen (and counted in risingEdges)."""
+        self._update_belt_loads()
         for belt in self.config.belts:
             step_drive(belt, h)
+        for led in self.config.leds:
+            devices.update_led(led, self.sim_time)
         self.handle_sources(h)
         if self.config.tractionModel == "friction":
             # Velocities persist between steps; friction alone slows parcels.
@@ -878,7 +852,7 @@ class PhysicsEngine:
         self.apply_conveyor_kinematics()
         self.space.step(h)
         self.handle_sinks()
-        self.evaluate_sensors()
+        self.evaluate_sensors(h)
         self.sim_time += h
         self.step_count += 1
         self.config.simTimeNs = int(round(self.sim_time * 1e9))

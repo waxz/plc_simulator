@@ -231,7 +231,7 @@ class GenerateSourceTest(unittest.TestCase):
 
 class RevalidationGateTest(unittest.TestCase):
     def setUp(self):
-        self.config = load_config("test_config.json")
+        self.config = load_config("test_fixture_config.json")
 
     def test_rejects_source_with_a_syntax_error(self):
         with self.assertRaises(codegen.CodegenError):
@@ -266,7 +266,7 @@ class WriteHardcodedChannelsTest(unittest.TestCase):
         self.addCleanup(self.tmp_dir.cleanup)
         self.target = os.path.join(self.tmp_dir.name, "mqtt_data_exchange.py")
         shutil.copyfile(REAL_TARGET, self.target)
-        self.config = load_config("test_config.json")
+        self.config = load_config("test_fixture_config.json")
 
     def test_writes_a_working_backup_and_a_valid_new_file(self):
         with open(REAL_TARGET, "r", encoding="utf-8") as f:

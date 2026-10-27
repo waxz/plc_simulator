@@ -175,8 +175,10 @@ class PlcStructTest(unittest.TestCase):
     def test_belt_feedback_fields_get_their_own_names(self):
         config = every_type_config()
         out = custom_component_mapping(config, ["belt_1"], direction="out")
-        self.assertEqual(io_layout.st_fields(out), [("belt_1_actualSpeed", "REAL"),
-                                                    ("belt_1_encoderCount", "DWORD")])
+        self.assertEqual(io_layout.st_fields(out), [
+            ("belt_1_running", "BOOL"), ("belt_1_atSpeed", "BOOL"), ("belt_1_reversing", "BOOL"),
+            ("belt_1_fault", "BOOL"), ("belt_1_actualSpeed", "REAL"), ("belt_1_encoderCount", "DWORD")])
+        self.assertEqual(io_layout.st_serialized_size(io_layout.st_fields(out)), io_layout.layout_size(out))
 
     def test_offset_table(self):
         inp = custom_component_mapping(every_type_config(), INPUT_IDS, direction="out")

@@ -42,7 +42,7 @@ class RegistryApiTest(unittest.TestCase):
         self.tmp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp_dir.cleanup)
         self.registry_path = os.path.join(self.tmp_dir.name, "channels.json")
-        app = create_app(config_path="test_config.json", registry_path=self.registry_path)
+        app = create_app(config_path="test_fixture_config.json", registry_path=self.registry_path)
         app.testing = True
         self.client = app.test_client()
 
@@ -63,10 +63,10 @@ class RegistryApiTest(unittest.TestCase):
         self.assertEqual(body["path"], self.registry_path)
 
     def test_registry_endpoint_inlines_csv_rows_for_an_existing_registry(self):
-        config = load_config("test_config.json")
+        config = load_config("test_fixture_config.json")
         write_default_registry(self.tmp_dir.name, config)
         # write_default_registry names its file channels.json in the same dir already
-        app = create_app(config_path="test_config.json",
+        app = create_app(config_path="test_fixture_config.json",
                           registry_path=os.path.join(self.tmp_dir.name, "channels.json"))
         client = app.test_client()
         res = client.get("/api/registry")
@@ -291,7 +291,7 @@ class RegistryApiTest(unittest.TestCase):
         """No --channel-registry given: the editor shows what's actually
         running (PUBLISH_TOPICS/SUBSCRIBE_TOPICS/METRICS_CHANNELS) instead
         of a blank page or an error."""
-        app = create_app(config_path="test_config.json")
+        app = create_app(config_path="test_fixture_config.json")
         client = app.test_client()
         res = client.get("/api/registry")
         body = res.get_json()
@@ -387,7 +387,7 @@ class HardcodedRegistrySaveApiTest(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-        app = create_app(config_path="test_config.json")  # no registry_path -> hardcoded mode
+        app = create_app(config_path="test_fixture_config.json")  # no registry_path -> hardcoded mode
         self.client = app.test_client()
 
     def test_saving_an_edit_rewrites_the_target_file_and_backs_up_the_original(self):

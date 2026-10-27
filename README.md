@@ -336,23 +336,53 @@ channel really goes out every 10 ms. `--headless` always runs this way.
 See [drive_traction_plan.md](drive_traction_plan.md) for the design.
 
 - **Fixed step.** Physics, drives and sensors advance in fixed `physicsDt` steps
-  (default 4 ms) regardless of frame rate. IR sensors count `risingEdges`, so the
+  (default 4 ms) regardless of frame rate. Sensors count `risingEdges`, so the
   PLC can see a pulse shorter than the exchange interval.
-- **Belt drive** (`drive.py`). `Belt.speed` is the PLC's setpoint. An optional
-  `"drive": {"accel", "decel", "tau", "speedMax", "countsPerM"}` turns it into
-  `actualSpeed` (ramp + first-order lag) and a UINT32 `encoderCount` that wraps.
-  A belt without `drive` changes speed instantly, as before.
+- **Belt drive** (`drive.py`). The PLC's command is the setpoint. An optional
+  `"drive": {"accel", "decel", "tau", "speedMax", "countsPerM", "maxLoad",
+  "overloadTime", "atSpeedTolerance", "runningThreshold"}` turns it into
+  `actualSpeed` (ramp + first-order lag), a UINT32 `encoderCount` that wraps
+  and status bits. A belt without `drive` changes speed instantly, as before.
 - **Traction** (`traction.py`). With `"tractionModel": "friction"`, parcels are
   dragged by friction capped at `Belt.friction` × m × g (`floorFriction` off belts),
   so starts, stops, slip and pushing come from physics. The default `"kinematic"`
   model is the original velocity-override behavior.
 - **Belt feedback to the PLC.** Set `mqttSettings.beltFeedback: true` to publish
-  `actualSpeed` (FLOAT) + `encoderCount` (UINT32) for every belt, in config order,
-  as a `FrameType.BELT_FEEDBACK` (6) frame every `beltFeedbackIntervalMs`.
+  every belt's status bits (`running`, `atSpeed`, `reversing`, `fault`), then per
+  belt `actualSpeed` (REAL) + `encoderCount` (DWORD), in config order, as a
+  `FrameType.BELT_FEEDBACK` (6) frame every `beltFeedbackIntervalMs`.
   It is off by default: the PLC must check the frame type byte before
   deserializing, or this frame overwrites its IO_MAPPING input struct.
   In channel registry files, a belt in an `"out"` (simulator → client) channel
   maps to these feedback fields, and `clock/simNanoseconds` gives simulated time.
+
+### Field devices
+
+How the simulated devices behave (`devices.py`, `drive.py`, `physics.py`):
+
+| Device | Settings | Behaviour |
+|---|---|---|
+| IR sensor (`sensorType: "ir"`) | `onDelay`, `offDelay` (s), `invert` | 1 while a parcel is in the sensor's footprint (dark-on). `onDelay` ignores shorter blockages (flicker, gaps), `offDelay` stretches short pulses, `invert` gives a light-on / NC output (1 while clear). `risingEdges` counts detections. |
+| Laser banner (`"laser_banner"`) | `laserCount`, `beamDistance`, the same timing / `invert` per beam | one bit per beam (beam *i* = bit *i*), each beam a segment across the sensor; `blockedBeams` (runtime) is how many are blocked - a parcel's size across the belt. |
+| Push button | `buttonType` "momentary" / "latching", `normallyClosed`, `key` | Click (or hold its `key` in the simulator window) to press. Momentary: pressed while held; latching (selector, E-stop): toggles per press. An NC contact (STOP / E-stop) reads 1 until pressed. |
+| LED | `packFormat` "bit" / "byte" | "bit": the PLC switches `isOn`. "byte": the PLC sends a mode - 0 off, 1 on, 2 blink 1 Hz, 3 blink 4 Hz. |
+| Belt motor, command | `commandFormat` "speed" / "vfd" | "speed": `speed` (signed, negative = reverse) + `directionAngle` REALs. "vfd": `run` + `reverse` BOOLs and `speed` (REAL, magnitude), like a frequency converter. |
+| Belt motor, feedback | `drive` (above) | `running`, `atSpeed`, `reversing`, `fault`, `actualSpeed`, `encoderCount`. **Overload**: parcels on the belt heavier than `maxLoad` kg for `overloadTime` s trip the drive - it coasts to a stop and resets when the run command is removed. A faulted belt has a red outline in the simulator window. |
+
+`plc_mock.py`'s program (`plc_logic.py`) understands all of these: NC buttons,
+light-on sensors, vfd belts, and a drive fault in the feedback stops the line
+until it has reset and Start is pressed.
+
+`test_config.json` is Station_1 of the SIMATIC AX project: three lanes (an IR
+sensor on lane 1, 32-beam laser banners on lanes 2 and 3) merging into lane 1
+and the outfeed to `sink_4`; START / STOP / RESET buttons and AUTO / MANUAL /
+ERROR LEDs per lane, with keys `1 2 3` (START), `q w e` (STOP), `a s d`
+(RESET); the PLC-commanded belts have drive models with overload protection
+and stand still until the PLC runs them. Its I/O frames are exactly the AX
+project's `Station_1_Input` / `Station_1_Output`, so its belts use the
+"speed" command format and `beltFeedback` stays off (the AX client
+deserializes every frame as I/O). `test_fixture_config.json` is the old,
+larger layout that unit tests use as a collection of every component variant.
 
 To also start the channel registry editor + live metrics dashboard alongside the
 simulator, add `--web-ui` (see [Channel Registry Web UI](#channel-registry-web-ui)):

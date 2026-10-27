@@ -12,6 +12,15 @@ class DriveConfig(BaseModel):
     tau: float = 0.05         # s, first-order lag after the ramp (0 = none)
     speedMax: float = 5.0     # m/s, |actual speed| clamp
     countsPerM: float = 10000.0  # encoder resolution
+    # Overload: parcels on the belt heavier than maxLoad (kg) for longer than
+    # overloadTime (s) trip the drive (fault, motor coasts down) until the
+    # run command is removed. None = no overload protection.
+    maxLoad: Optional[float] = None
+    overloadTime: float = 1.0
+    # Feedback status: atSpeed when |actual - setpoint| <= atSpeedTolerance
+    # (m/s) while running; running when |actual| > runningThreshold (m/s).
+    atSpeedTolerance: float = 0.05
+    runningThreshold: float = 0.01
 
 
 class PathNode(BaseModel):
@@ -50,14 +59,30 @@ class Belt(BaseModel):
     directionAngleBinding: Optional[str] = None
     directionBinding: Optional[str] = None
     transition_momentum_duration: float = 0.6
+    # How the PLC commands the motor (devices.commanded_speed):
+    #   "speed" - `speed` is the signed setpoint (negative = reverse);
+    #             on the wire: speed + directionAngle REALs
+    #   "vfd"   - like a frequency converter: `run` and `reverse` command
+    #             bits plus `speed` as the magnitude; on the wire: run BOOL,
+    #             reverse BOOL (with the other bits), speed REAL
+    commandFormat: Literal["speed", "vfd"] = "speed"
+    run: bool = False
+    reverse: bool = False
     # `speed` is the commanded setpoint (written by the PLC). The drive model
     # turns it into `actualSpeed`, which is what physics uses.
     drive: Optional[DriveConfig] = None
     friction: float = 0.5     # belt/parcel friction coefficient (friction traction)
-    # Runtime outputs (drive.py) - mappable as belt_N/actualSpeed (FLOAT) and
-    # belt_N/encoderCount (UINT32), never saved into layout files.
+    # Runtime outputs (drive.py) - the motor feedback: actualSpeed (FLOAT),
+    # encoderCount (UINT32) and the status bits running, atSpeed, reversing,
+    # fault. Never saved into layout files.
     actualSpeed: float = Field(default=0.0, exclude=True)
     encoderCount: int = Field(default=0, exclude=True)
+    running: bool = Field(default=False, exclude=True)
+    atSpeed: bool = Field(default=False, exclude=True)
+    reversing: bool = Field(default=False, exclude=True)
+    fault: bool = Field(default=False, exclude=True)
+    load: float = Field(default=0.0, exclude=True)       # kg of parcels on the belt
+    _overload_s: float = PrivateAttr(default=0.0)
     _drive_ref: float = PrivateAttr(default=0.0)
     _encoder_frac: float = PrivateAttr(default=0.0)
     _geom: Optional[tuple] = PrivateAttr(default=None)  # surface.py geometry cache
@@ -96,9 +121,23 @@ class Sensor(BaseModel):
     detectedWord: Optional[int] = 0
     sensor_states: Optional[Union[bool, int, str]] = None
     packFormat: PackFormat = "bit"
-    # Runtime: rising edges seen since start (wraps when packed), so the PLC can
-    # detect a pulse shorter than the exchange interval. Never saved.
+    # Signal conditioning, like a real sensor's timer/output settings:
+    #   onDelay  - the output switches on only after the beam has been
+    #              blocked this long (s): ignores flicker, gaps in a parcel
+    #   offDelay - the output stays on this long after the beam clears (s):
+    #              stretches short pulses so a slow PLC scan still sees them
+    #   invert   - light-on / NC output: 1 while the beam is clear, 0 when
+    #              blocked (the default is dark-on: 1 when blocked)
+    # For a laser banner they apply to each beam.
+    onDelay: float = 0.0
+    offDelay: float = 0.0
+    invert: bool = False
+    # Runtime: detections (beam(s) becoming blocked, after onDelay) since
+    # start - wraps when packed - so the PLC can count a pulse shorter than
+    # the exchange interval; blockedBeams = beams blocked now. Never saved.
     risingEdges: int = Field(default=0, exclude=True)
+    blockedBeams: int = Field(default=0, exclude=True)
+    _filter: Optional[list] = PrivateAttr(default=None)  # per beam: [output, timer]
 
 class Source(BaseModel):
     id: str
@@ -137,6 +176,15 @@ class ControlButton(BaseModel):
     sensor_states: Optional[Union[bool, int, str]] = None
     stateBinding: Optional[str] = None
     packFormat: PackFormat = "bit"
+    # "momentary": pressed while held (push button); "latching": each press
+    # toggles (selector switch, emergency stop) - see devices.py.
+    buttonType: Literal["momentary", "latching"] = "momentary"
+    # NC contact (typical for STOP / emergency stop): the signal is 1 while
+    # NOT pressed, 0 when pressed, so a broken wire reads as "stop".
+    normallyClosed: bool = False
+    # Keyboard key that presses it in the simulator window (e.g. "1", "q").
+    key: Optional[str] = None
+    pressed: bool = Field(default=False, exclude=True)  # runtime: the operator's action
 
 class LedIndicator(BaseModel):
     id: str
@@ -147,7 +195,11 @@ class LedIndicator(BaseModel):
     color: str = "#22c55e"
     isOn: bool = False
     stateBinding: Optional[str] = None
+    # "bit": the PLC switches it on/off (isOn). "byte": the PLC sends a mode
+    # (`mode`): 0 off, 1 on, 2 blink slow (1 Hz), 3 blink fast (4 Hz); the lamp
+    # (isOn) follows it in the simulator (devices.update_led).
     packFormat: PackFormat = "bit"
+    mode: int = Field(default=0, exclude=True)
 
 class TopicComponent(BaseModel):
     id: str

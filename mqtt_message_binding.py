@@ -222,9 +222,10 @@ _PACK_FORMAT_BYTE_TYPES = {
 }
 
 
-def paddng_component(config: SimulatorConfig, sensor_id: Optional[Union[str, List[str]]] = None) -> List[Tuple[ByteType, str]]:
+def paddng_component(config: SimulatorConfig, sensor_id: Optional[Union[str, List[str]]] = None,
+                     direction: str = "in") -> List[Tuple[ByteType, str]]:
     """
-    Byte layout for a list of sensor/button/LED ids, from what each
+    Byte layout for a list of sensor/button/LED/belt ids, from what each
     component's own config declares (its `packFormat`, defaulting to "bit")
     - the same rule the PLC side's serializer uses (generate_st_serde.py in
     the SIMATIC AX project: every BOOL first, then the other fields in
@@ -238,7 +239,15 @@ def paddng_component(config: SimulatorConfig, sensor_id: Optional[Union[str, Lis
              bytes, so two banners never share a byte (on the PLC a BYTE /
              WORD / DWORD / LWORD, or an ARRAY OF BYTE)
            - packFormat "byte" / "uint16" / "uint32" / "float": one register
-             holding the whole state (BYTE / WORD / DWORD / REAL)
+             holding the whole state (BYTE / WORD / DWORD / REAL); an LED
+             with packFormat "byte" sends its blink `mode` (devices.py)
+           - a belt (motor), by `direction`:
+               "in"  (PLC -> simulator, the command): commandFormat "vfd":
+                     run + reverse bits (in step 1) and speed REAL;
+                     "speed": speed + directionAngle REALs
+               "out" (simulator -> PLC, the feedback): running, atSpeed,
+                     reversing, fault bits (in step 1), then actualSpeed
+                     REAL + encoderCount DWORD
 
     Padding entries are named padding_<n>/bit, numbered through the mapping.
     """
@@ -249,16 +258,25 @@ def paddng_component(config: SimulatorConfig, sensor_id: Optional[Union[str, Lis
     sensors_in_config = {s.id: s for s in config.sensors}
     buttons_in_config = {b.id: b for b in config.buttons}
     leds_in_config = {b.id: b for b in config.leds}
+    belts_in_config = {b.id: b for b in getattr(config, "belts", [])}
 
     bits: List[Tuple[ByteType, str]] = []
     wide: List[List[Tuple[ByteType, str]]] = []  # one chunk per multi-bit / register component
     for sid in sensor_ids:
+        belt = belts_in_config.get(sid)
+        if belt is not None:
+            belt_bits, belt_values = belt_fields(belt, direction)
+            bits.extend((bt, f"{sid}/{field}") for bt, field in belt_bits)
+            wide.append([(bt, f"{sid}/{field}") for bt, field in belt_values])
+            continue
         component = sensors_in_config.get(sid) or buttons_in_config.get(sid) or leds_in_config.get(sid)
         if component is None:
             continue
         pack_format = getattr(component, "packFormat", "bit") or "bit"
         is_led = sid in leds_in_config
         attribute = "isOn" if is_led else "sensor_states"
+        if is_led and pack_format == "byte":
+            attribute = "mode"  # 0 off, 1 on, 2/3 blink - devices.update_led
         if pack_format != "bit":
             wide.append([(_PACK_FORMAT_BYTE_TYPES[pack_format], f"{sid}/{attribute}")])
         elif sid in sensors_in_config and sensors_in_config[sid].sensorType == "laser_banner":
@@ -381,14 +399,30 @@ def known_component_ids(config: SimulatorConfig) -> "set[str]":
 # client -> simulator, "out" = simulator -> client). Inbound carries the PLC's
 # commands; outbound carries the drive model's feedback (drive.py).
 BELT_COMMAND_FIELDS: List[Tuple[ByteType, str]] = [(ByteType.FLOAT, "speed"), (ByteType.FLOAT, "directionAngle")]
+VFD_COMMAND_BITS: List[Tuple[ByteType, str]] = [(ByteType.BIT, "run"), (ByteType.BIT, "reverse")]
+VFD_COMMAND_FIELDS: List[Tuple[ByteType, str]] = [(ByteType.FLOAT, "speed")]
+BELT_STATUS_BITS: List[Tuple[ByteType, str]] = [
+    (ByteType.BIT, "running"), (ByteType.BIT, "atSpeed"), (ByteType.BIT, "reversing"), (ByteType.BIT, "fault")]
 BELT_FEEDBACK_FIELDS: List[Tuple[ByteType, str]] = [(ByteType.FLOAT, "actualSpeed"), (ByteType.UINT32, "encoderCount")]
 
 
+def belt_fields(belt, direction: str) -> Tuple[List[Tuple[ByteType, str]], List[Tuple[ByteType, str]]]:
+    """(bits, values) a belt contributes to a frame: its command ("in") or
+    its feedback ("out") - see paddng_component()."""
+    if direction == "out":
+        return BELT_STATUS_BITS, BELT_FEEDBACK_FIELDS
+    if getattr(belt, "commandFormat", "speed") == "vfd":
+        return VFD_COMMAND_BITS, VFD_COMMAND_FIELDS
+    return [], BELT_COMMAND_FIELDS
+
+
 def belt_feedback_mapping(config: SimulatorConfig, belt_ids: Optional[List[str]] = None) -> List[Tuple[ByteType, str]]:
-    """actualSpeed (FLOAT) + encoderCount (UINT32) per belt, in config order
-    (or `belt_ids` order) - the BELT_FEEDBACK frame's payload layout."""
+    """The BELT_FEEDBACK frame's payload: every belt's status bits (running,
+    atSpeed, reversing, fault) first, padded to a byte, then per belt
+    actualSpeed (REAL) + encoderCount (DWORD) - in config order (or
+    `belt_ids` order)."""
     ids = belt_ids if belt_ids is not None else [b.id for b in config.belts]
-    return [(bt, f"{bid}/{field}") for bid in ids for bt, field in BELT_FEEDBACK_FIELDS]
+    return paddng_component(config, sensor_id=list(ids), direction="out")
 
 
 def custom_component_mapping(config: SimulatorConfig, component_ids: List[str], direction: str = "in") -> List[Tuple[ByteType, str]]:
@@ -399,10 +433,8 @@ def custom_component_mapping(config: SimulatorConfig, component_ids: List[str], 
     client) maps the drive feedback actualSpeed/encoderCount."""
     if direction not in ("in", "out"):
         raise ValueError(f"direction must be 'in' or 'out', got '{direction}'")
-    belt_fields = BELT_FEEDBACK_FIELDS if direction == "out" else BELT_COMMAND_FIELDS
     mapping: List[Tuple[ByteType, str]] = []
 
-    belts_in_config = {b.id: b for b in config.belts}
     missing_ids = [cid for cid in component_ids if cid not in known_component_ids(config)]
     if missing_ids:
         print(
@@ -411,17 +443,9 @@ def custom_component_mapping(config: SimulatorConfig, component_ids: List[str], 
             )
         )
 
-    # Preserve the topic-declared order for bit items. paddng_component keeps
-    # single-bit sensors/buttons/LEDs in this order, then byte-aligns before
-    # appending multi-byte laser banner sensors.
-    mapping.extend(paddng_component(config, sensor_id=component_ids))
-
-
-    # 2. Float items: Belts
-    custom_belts = [cid for cid in component_ids if cid in belts_in_config]
-
-    for bid in custom_belts:
-        mapping.extend((bt, f"{bid}/{field}") for bt, field in belt_fields)
+    # Every component, bits first then the rest in declaration order
+    # (paddng_component), belts included; the clock last.
+    mapping.extend(paddng_component(config, sensor_id=component_ids, direction=direction))
 
     if "clock" in component_ids:
         mapping.append((ByteType.UINT64, "clock/nanoseconds"))

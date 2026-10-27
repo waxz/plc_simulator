@@ -319,12 +319,17 @@ class BeltFeedbackOptInTest(unittest.TestCase):
         self.assertEqual(io_only, sizes[False])
         feedback = [size for ft, size in sizes[True] if ft == FrameType.BELT_FEEDBACK]
         config = make_config(19408)
-        self.assertEqual(feedback, [len(config.belts) * (4 + 4)])
+        # 4 status bits per belt (rounded up to bytes), then REAL + DWORD each.
+        self.assertEqual(feedback, [(len(config.belts) * 4 + 7) // 8 + len(config.belts) * (4 + 4)])
 
     def test_feedback_mapping_types(self):
         config = load_config("test_config.json")
         mapping = belt_feedback_mapping(config, [BELT])
-        self.assertEqual(mapping, [(ByteType.FLOAT, f"{BELT}/actualSpeed"),
+        self.assertEqual(mapping, [(ByteType.BIT, f"{BELT}/running"), (ByteType.BIT, f"{BELT}/atSpeed"),
+                                   (ByteType.BIT, f"{BELT}/reversing"), (ByteType.BIT, f"{BELT}/fault"),
+                                   (ByteType.BIT, "padding_0/bit"), (ByteType.BIT, "padding_1/bit"),
+                                   (ByteType.BIT, "padding_2/bit"), (ByteType.BIT, "padding_3/bit"),
+                                   (ByteType.FLOAT, f"{BELT}/actualSpeed"),
                                    (ByteType.UINT32, f"{BELT}/encoderCount")])
 
     def test_sim_clock_is_serialized_from_simulated_time(self):

@@ -180,10 +180,16 @@ def st_fields(mapping: Mapping) -> List[Tuple[str, str]]:
                     and groups[-1][1][-1].byte == f.byte and len(groups[-1][1]) > 1:
                 groups[-1][1].append(f)  # pads a multi-bit run to whole bytes
             continue
-        component = parse_path(f.path)[0]
-        same_run = (groups and groups[-1][0] == component
-                    and (groups[-1][1][-1].bit is None) == (f.bit is None)
-                    and groups[-1][1][-1].byte_type == f.byte_type)
+        component, field, index = parse_path(f.path)
+        prev = groups[-1][1][-1] if groups else None
+        if f.bit is not None:
+            # Bits merge only as one field's indexed run (a banner's beams);
+            # named bits (run, fault, ...) are BOOLs of their own.
+            same_run = (prev is not None and groups[-1][0] == component and prev.bit is not None
+                        and index is not None and parse_path(prev.path)[1:] == (field, index - 1))
+        else:
+            same_run = (prev is not None and groups[-1][0] == component and prev.bit is None
+                        and prev.byte_type == f.byte_type)
         if same_run:
             groups[-1][1].append(f)
         else:

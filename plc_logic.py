@@ -8,7 +8,8 @@ object that ComponentMessage serializes - so it runs unchanged over TCP or
 MQTT (plc_mock.py) or directly in a test.
 
 Behaviour, once per scan (step()):
-  Buttons (user input), picked by label/id:
+  Buttons (user input), picked by label/id; an NC contact
+  (ControlButton.normallyClosed, e.g. STOP) reads 0 when pressed:
     "start"            -> run
     "stop"             -> stop
     "reset"            -> clear a jam
@@ -18,28 +19,47 @@ Behaviour, once per scan (step()):
     per sensor. The sensor nearest a sink counts deliveries. A sensor that
     stays blocked longer than `jam_time` is a jam: every belt stops until
     Start/Reset is pressed with the sensor clear.
-  Belts: running and no jam -> each belt's design speed (its speed in the
-    layout file, 1 m/s where that is 0), else 0.
-  LEDs, picked by label/id: "run"/"ok" (else the first LED) shows running,
-    "jam"/"fault"/"alarm"/"error" (else the second LED) shows a jam.
+  Sensors with `invert` (light-on output) read 0 when blocked.
+  Belts: running, no jam, no drive fault -> each belt's design speed (its
+    speed in the layout file, 1 m/s where that is 0; negative = reverse),
+    else stopped. commandFormat "speed": `speed` (signed); "vfd": `run`,
+    `reverse` and `speed` (magnitude).
+  Drive faults (Belt.fault in the motor feedback, BELT_FEEDBACK frame):
+    stop the line; it can be started again once every fault has cleared
+    (a drive resets when its run command is removed).
+  LEDs, picked by label/id: "run"/"ok"/"auto" (else the first LED) shows
+    running, "jam"/"fault"/"alarm"/"error" (else the second LED) a jam or a
+    drive fault.
 
 step() returns the events of that scan as text, for logs.
 """
 import math
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
+import devices
 from config_parser import SimulatorConfig
 
 DEFAULT_SPEED = 1.0  # m/s for belts whose layout speed is 0
 
 
 def is_on(value) -> bool:
-    """A button/sensor/LED state as received: bool, int, or "0"/"1" text."""
+    """A state as received: bool, int, or "0"/"1" text (any 1 in a bit
+    string - e.g. one blocked beam of a laser banner - is on)."""
     if isinstance(value, str):
-        return value.strip() not in ("", "0", "false", "False")
+        text = value.strip()
+        return "1" in text or text.lower() in ("true", "yes", "on")
     return bool(value)
+
+
+def occupied(sensor) -> bool:
+    """Is anything in front of the sensor? A light-on (invert) output reads 0
+    for a blocked beam."""
+    value = sensor.sensor_states
+    if isinstance(value, str) and set(value.strip()) <= {"0", "1"} and value.strip():
+        return ("0" if sensor.invert else "1") in value
+    return is_on(value) != bool(sensor.invert)
 
 
 def _pick(components, words, fallback_index: Optional[int]):
@@ -50,6 +70,17 @@ def _pick(components, words, fallback_index: Optional[int]):
     if fallback_index is not None and len(components) > fallback_index:
         return components[fallback_index]
     return None
+
+
+def _design_speed(belt) -> float:
+    """Signed running speed from the layout file (1 m/s where it is 0); a vfd
+    belt's `reverse` flag makes it negative."""
+    speed = float(belt.speed or 0.0)
+    if abs(speed) < 1e-9:
+        speed = DEFAULT_SPEED
+    if belt.commandFormat == "vfd" and belt.reverse:
+        speed = -abs(speed)
+    return speed
 
 
 @dataclass
@@ -68,6 +99,7 @@ class DeliveryController:
     jammed: Optional[str] = None           # id of the blocked sensor
     delivered: int = 0
     sensors: Dict[str, SensorTrack] = field(default_factory=dict)
+    faulted: Set[str] = field(default_factory=set)  # belts whose drive reports a fault
 
     def __post_init__(self):
         cfg = self.config
@@ -85,9 +117,9 @@ class DeliveryController:
         else:
             self.toggle_button = None
         leds = list(cfg.leds)
-        self.run_led = _pick(leds, ("run", "ok", "green"), 0)
+        self.run_led = _pick(leds, ("run", "ok", "auto", "green"), 0)
         self.jam_led = _pick([l for l in leds if l is not self.run_led], ("jam", "fault", "alarm", "error"), 0)
-        self.speeds = {b.id: (b.speed if abs(b.speed) > 1e-9 else DEFAULT_SPEED) for b in cfg.belts}
+        self.speeds = {b.id: _design_speed(b) for b in cfg.belts}
         self.delivery_sensor = self._sensor_nearest_a_sink()
         self._pressed = {b.id: False for b in buttons}
         self.sensors = {s.id: SensorTrack() for s in cfg.sensors}
@@ -118,12 +150,13 @@ class DeliveryController:
         events: List[str] = []
         self._buttons(events)
         self._sensors(now, events)
+        self._drive_faults(events)
         self._write_outputs()
         return events
 
     def _buttons(self, events: List[str]):
         for button in self.config.buttons:
-            pressed = is_on(button.sensor_states)
+            pressed = devices.is_pressed_signal(button, button.sensor_states)
             edge = pressed and not self._pressed.get(button.id, False)
             self._pressed[button.id] = pressed
             if not edge:
@@ -144,6 +177,9 @@ class DeliveryController:
         if running and self.jammed is not None:
             events.append(f"{by}: can't start, sensor {self.jammed} is still jammed")
             return
+        if running and self.faulted:
+            events.append(f"{by}: can't start, drive fault on {', '.join(sorted(self.faulted))}")
+            return
         if running != self.running:
             self.running = running
             events.append(f"{'START' if running else 'STOP'} ({by})")
@@ -160,8 +196,8 @@ class DeliveryController:
     def _sensors(self, now: float, events: List[str]):
         for sensor in self.config.sensors:
             track = self.sensors.setdefault(sensor.id, SensorTrack())
-            occupied = is_on(sensor.sensor_states)
-            if occupied and not track.occupied:
+            blocked = occupied(sensor)
+            if blocked and not track.occupied:
                 track.count += 1
                 track.since = now
                 if sensor.id == self.delivery_sensor:
@@ -169,21 +205,42 @@ class DeliveryController:
                     events.append(f"parcel at {sensor.id} (#{track.count}) - delivered {self.delivered}")
                 else:
                     events.append(f"parcel at {sensor.id} (#{track.count})")
-            track.occupied = occupied
-            if occupied and self.jammed is None and self.running and now - track.since > self.jam_time:
+            track.occupied = blocked
+            if blocked and self.jammed is None and self.running and now - track.since > self.jam_time:
                 self.jammed = sensor.id
                 events.append(f"JAM at {sensor.id}: blocked for {now - track.since:.1f} s - belts stopped")
 
-    def _write_outputs(self):
-        run = self.running and self.jammed is None
+    def _drive_faults(self, events: List[str]):
         for belt in self.config.belts:
-            belt.speed = self.speeds.get(belt.id, DEFAULT_SPEED) if run else 0.0
+            if belt.fault and belt.id not in self.faulted:
+                self.faulted.add(belt.id)
+                events.append(f"FAULT on {belt.id}: drive tripped - line stopped")
+                self.running = False
+            elif not belt.fault and belt.id in self.faulted:
+                self.faulted.discard(belt.id)
+                events.append(f"drive {belt.id} fault cleared - press Start")
+
+    def _write_outputs(self):
+        run = self.running and self.jammed is None and not self.faulted
+        for belt in self.config.belts:
+            nominal = self.speeds.get(belt.id, DEFAULT_SPEED)
+            if belt.commandFormat == "vfd":
+                belt.run = run
+                belt.reverse = nominal < 0
+                belt.speed = abs(nominal)
+            else:
+                belt.speed = nominal if run else 0.0
         if self.run_led is not None:
             self.run_led.isOn = run
         if self.jam_led is not None:
-            self.jam_led.isOn = self.jammed is not None
+            self.jam_led.isOn = self.jammed is not None or bool(self.faulted)
 
     def summary(self) -> str:
         counts = ", ".join(f"{sid} {t.count}" for sid, t in self.sensors.items()) or "no sensors"
-        state = "JAM at " + self.jammed if self.jammed else ("RUN" if self.running else "STOP")
+        if self.faulted:
+            state = "FAULT " + ", ".join(sorted(self.faulted))
+        elif self.jammed:
+            state = "JAM at " + self.jammed
+        else:
+            state = "RUN" if self.running else "STOP"
         return f"{state} | parcels: {counts} | delivered {self.delivered}"

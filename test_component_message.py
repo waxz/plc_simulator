@@ -17,7 +17,7 @@ from struct_utils import (
 
 class TestComponentMessageWithRealConfig(unittest.TestCase):
     def test_real_config_bitmap_and_belt_values_round_trip(self):
-        config = load_config("test_config.json")
+        config = load_config("test_fixture_config.json")
         mapping = compact_component_mapping(config)
         verify_component_list(mapping, config)
 
@@ -29,7 +29,7 @@ class TestComponentMessageWithRealConfig(unittest.TestCase):
 
         message = ComponentMessage(mapping)
         # Structural checks, not exact bit positions or byte counts - those
-        # shift every time a sensor is added to test_config.json (it's
+        # shift every time a sensor is added to test_fixture_config.json (it's
         # grown from 3 sensors to 9 over the life of this test, which is
         # exactly what made the old hardcoded index/format-string
         # assertions here go stale and start failing). IR sensors always
@@ -143,9 +143,9 @@ class TestComponentMessageWithRealConfig(unittest.TestCase):
     def test_custom_bindings_cycle(self):
         # Mimic an MQTT message workflow:
         # Load sender config (representing realtime simulator state)
-        config_sender = load_config("test_config.json")
+        config_sender = load_config("test_fixture_config.json")
         # Load receiver config (representing receiver/PLC state, which will be updated)
-        config_receiver = load_config("test_config.json")
+        config_receiver = load_config("test_fixture_config.json")
 
         custom_ids = ["sensor_2", "button_0", "led_1", "sensor_1", "belt_1", "belt_2"]
         mapping = custom_component_mapping(config_sender, custom_ids)
@@ -204,7 +204,7 @@ class TestComponentMessageWithRealConfig(unittest.TestCase):
         self.assertEqual(led_1_r.isOn, led_1_s.isOn)
 
     def test_plc_output_payload_uses_little_endian_belt_reals(self):
-        config = load_config("test_config.json")
+        config = load_config("test_fixture_config.json")
         topic_def = SUBSCRIBE_TOPICS["output"]
         mapping = custom_component_mapping(config, topic_def["custom_ids"])
         message = ComponentMessage(mapping, endianness=_struct_endianness(topic_def))
@@ -224,7 +224,7 @@ class TestComponentMessageWithRealConfig(unittest.TestCase):
             self.assertAlmostEqual(next(b for b in config.belts if b.id == belt_id).speed, 1.0)
 
     def test_simulator_input_payload_includes_uint64_nanosecond_clock(self):
-        config = load_config("test_config.json")
+        config = load_config("test_fixture_config.json")
         topic_def = PUBLISH_TOPICS["input"]
         mapping = custom_component_mapping(config, topic_def["custom_ids"])
         verify_component_list(mapping, config)

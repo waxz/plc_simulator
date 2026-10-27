@@ -110,7 +110,7 @@ class InputMessageRoundTripTest(unittest.TestCase):
 
 class PublishMappingCoverageTest(unittest.TestCase):
     """Regression test for the root cause behind 'button state not changing
-    over TCP': test_config.json's 'button_0' (label 'START') was present in
+    over TCP': test_fixture_config.json's 'button_0' (label 'START') was present in
     config.buttons but absent from PUBLISH_TOPICS['input']['custom_ids'] in
     mqtt_data_exchange.py, so pressing it silently never affected the
     serialized payload - in both the pygame and Qt backends equally, since
@@ -136,7 +136,7 @@ class PublishMappingCoverageTest(unittest.TestCase):
     }
 
     def test_every_configured_button_is_covered_by_the_input_mapping(self):
-        config = load_config("test_config.json")
+        config = load_config("test_fixture_config.json")
         mapped_ids = set(PUBLISH_TOPICS["input"]["custom_ids"])
         missing = [
             b.id for b in config.buttons
@@ -144,7 +144,7 @@ class PublishMappingCoverageTest(unittest.TestCase):
         ]
         self.assertEqual(
             missing, [],
-            f"button(s) {missing} exist in test_config.json but are not in "
+            f"button(s) {missing} exist in test_fixture_config.json but are not in "
             f"PUBLISH_TOPICS['input']['custom_ids'] - presses on them will "
             f"never be published over MQTT/TCP",
         )
@@ -157,7 +157,7 @@ class PublishMappingCoverageTest(unittest.TestCase):
     _KNOWN_UNMAPPED_SENSORS = {"sensor_1", "sensor_2", "sensor_3", "sensor_1_1_2", "sensor_1_2_2", "sensor_1_3_2"}
 
     def test_every_configured_ir_sensor_is_covered_by_the_input_mapping(self):
-        config = load_config("test_config.json")
+        config = load_config("test_fixture_config.json")
         mapped_ids = set(PUBLISH_TOPICS["input"]["custom_ids"])
         missing = [
             s.id for s in config.sensors
@@ -165,7 +165,7 @@ class PublishMappingCoverageTest(unittest.TestCase):
         ]
         self.assertEqual(
             missing, [],
-            f"sensor(s) {missing} exist in test_config.json but are not in "
+            f"sensor(s) {missing} exist in test_fixture_config.json but are not in "
             f"PUBLISH_TOPICS['input']['custom_ids'] - their state will "
             f"never be published over MQTT/TCP",
         )
@@ -176,8 +176,8 @@ class PublishMappingCoverageTest(unittest.TestCase):
         over MQTT/TCP. If this exclusion is ever lifted, update
         _KNOWN_INTENTIONAL_EXCLUSIONS above and restore a round-trip
         assertion here instead."""
-        server_config = load_config("test_config.json")
-        client_config = load_config("test_config.json")
+        server_config = load_config("test_fixture_config.json")
+        client_config = load_config("test_fixture_config.json")
         input_ids = PUBLISH_TOPICS["input"]["custom_ids"]
         self.assertNotIn("button_0", input_ids)
 

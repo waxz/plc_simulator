@@ -14,16 +14,19 @@ import shapely
 from shapely.geometry import Point as ShapelyPoint
 
 from cad.path import belt_world_path, flatten, footprint, segments
+import devices
 from config_parser import Belt
 from math_utils import get_belt_polygon, point_in_arc, point_in_polygon
 
 
 def belt_surface_speed(belt: Belt) -> float:
     """Signed surface speed physics should use: the drive's actual speed when
-    the belt has a drive model, else the commanded speed (ideal drive)."""
+    the belt has a drive model, else the commanded speed (ideal drive) -
+    devices.commanded_speed: the signed speed, or the vfd run/reverse/speed
+    command; 0 while faulted."""
     if belt.drive is not None:
         return belt.actualSpeed
-    return belt.speed
+    return devices.commanded_speed(belt)
 
 
 def _geometry_signature(belt: Belt) -> tuple:

@@ -24,7 +24,7 @@ class BootstrapChannelCsvTest(unittest.TestCase):
             stdout = io.StringIO()
             with redirect_stdout(stdout):
                 code = bootstrap_channel_csv.run([
-                    "--config", "test_config.json",
+                    "--config", "test_fixture_config.json",
                     "--ids", "led_0,belt_2",
                     "--out", out_path,
                 ])
@@ -43,13 +43,13 @@ class BootstrapChannelCsvTest(unittest.TestCase):
             with open(ids_path, "w", encoding="utf-8") as f:
                 f.write("# leds for node 2\nled_0\n\nbelt_2\n")
             code = bootstrap_channel_csv.run([
-                "--config", "test_config.json",
+                "--config", "test_fixture_config.json",
                 "--ids-file", ids_path,
                 "--out", out_path,
             ])
             self.assertEqual(code, 0)
             mapping = load_mapping_csv(out_path)
-            expected = custom_component_mapping(load_config("test_config.json"), ["led_0", "belt_2"])
+            expected = custom_component_mapping(load_config("test_fixture_config.json"), ["led_0", "belt_2"])
             self.assertEqual(mapping, expected)
 
     def test_unknown_component_id_fails_loudly(self):
@@ -58,7 +58,7 @@ class BootstrapChannelCsvTest(unittest.TestCase):
             stderr = io.StringIO()
             with redirect_stderr(stderr):
                 code = bootstrap_channel_csv.run([
-                    "--config", "test_config.json",
+                    "--config", "test_fixture_config.json",
                     "--ids", "led_0,not_a_real_component",
                     "--out", out_path,
                 ])
@@ -71,7 +71,7 @@ class BootstrapChannelCsvTest(unittest.TestCase):
             out_path = os.path.join(tmp_dir, "out.csv")
             result = subprocess.run(
                 [sys.executable, "bootstrap_channel_csv.py",
-                 "--config", "test_config.json", "--ids", "led_0", "--out", out_path],
+                 "--config", "test_fixture_config.json", "--ids", "led_0", "--out", out_path],
                 capture_output=True, text=True, timeout=30,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -86,7 +86,7 @@ class BootstrapChannelRegistryTest(unittest.TestCase):
             out_path = os.path.join(tmp_dir, "output_node2.csv")
             registry_path = os.path.join(tmp_dir, "channels.json")
             code = bootstrap_channel_csv.run([
-                "--config", "test_config.json", "--ids", "led_0", "--out", out_path,
+                "--config", "test_fixture_config.json", "--ids", "led_0", "--out", out_path,
                 "--registry", registry_path, "--name", "output_node2",
                 "--direction", "in", "--topic", "output2", "--frame-type", "IO_MAPPING",
             ])
@@ -102,7 +102,7 @@ class BootstrapChannelRegistryTest(unittest.TestCase):
             out_path = os.path.join(tmp_dir, "metrics_env.csv")
             registry_path = os.path.join(tmp_dir, "channels.json")
             code = bootstrap_channel_csv.run([
-                "--config", "test_config.json", "--ids", "led_0", "--out", out_path,
+                "--config", "test_fixture_config.json", "--ids", "led_0", "--out", out_path,
                 "--registry", registry_path, "--name", "env", "--kind", "metric",
                 "--direction", "in", "--topic", "env", "--frame-type", "METRIC_LAYOUT_2",
                 "--interval-ms", "25",
@@ -119,7 +119,7 @@ class BootstrapChannelRegistryTest(unittest.TestCase):
             for name, topic in (("a", "topic_a"), ("b", "topic_b")):
                 out_path = os.path.join(tmp_dir, f"{name}.csv")
                 code = bootstrap_channel_csv.run([
-                    "--config", "test_config.json", "--ids", "led_0", "--out", out_path,
+                    "--config", "test_fixture_config.json", "--ids", "led_0", "--out", out_path,
                     "--registry", registry_path, "--name", name,
                     "--direction", "in", "--topic", topic, "--frame-type", "IO_MAPPING",
                 ])
@@ -135,7 +135,7 @@ class BootstrapChannelRegistryTest(unittest.TestCase):
             out_path = os.path.join(tmp_dir, "output.csv")
             for ids in ("led_0", "led_0,belt_2"):
                 code = bootstrap_channel_csv.run([
-                    "--config", "test_config.json", "--ids", ids, "--out", out_path,
+                    "--config", "test_fixture_config.json", "--ids", ids, "--out", out_path,
                     "--registry", registry_path, "--name", "output",
                     "--direction", "in", "--topic", "output", "--frame-type", "IO_MAPPING",
                 ])
@@ -152,7 +152,7 @@ class BootstrapChannelRegistryTest(unittest.TestCase):
             stderr = io.StringIO()
             with redirect_stderr(stderr):
                 code = bootstrap_channel_csv.run([
-                    "--config", "test_config.json", "--ids", "led_0", "--out", out_path,
+                    "--config", "test_fixture_config.json", "--ids", "led_0", "--out", out_path,
                     "--registry", registry_path,
                 ])
             self.assertEqual(code, 1)
@@ -169,7 +169,7 @@ class BootstrapChannelRegistryTest(unittest.TestCase):
             out_path = os.path.join(csv_dir, "output.csv")
             registry_path = os.path.join(tmp_dir, "channels.json")
             code = bootstrap_channel_csv.run([
-                "--config", "test_config.json", "--ids", "led_0", "--out", out_path,
+                "--config", "test_fixture_config.json", "--ids", "led_0", "--out", out_path,
                 "--registry", registry_path, "--name", "output",
                 "--direction", "in", "--topic", "output", "--frame-type", "IO_MAPPING",
             ])

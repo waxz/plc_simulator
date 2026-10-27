@@ -192,7 +192,7 @@ def main():
 
     message = ComponentMessage(mapping)
 
-    # Connect to the broker (from test_config.json mqttSettings)
+    # Connect to the broker (from test_fixture_config.json mqttSettings)
     broker_url  = config_sender.mqttSettings.brokerUrl
     broker_port = config_sender.mqttSettings.port
     print(f"\nConnecting to {broker_url}:{broker_port} ...")
