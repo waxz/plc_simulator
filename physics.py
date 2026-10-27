@@ -139,6 +139,8 @@ class PhysicsEngine:
         self.parcels: List[Parcel] = []
         self.static_walls: List[pymunk.Shape] = []
         self.parcel_id_counter = 0
+        # Parcels that reached each sink (sink id -> count), for stats/tests.
+        self.delivered = {}
         self.sensor_states = {}  # {sensor.id: bool | str}
 
         # Cumulative simulated seconds - the sum of every dt ever passed to
@@ -437,6 +439,7 @@ class PhysicsEngine:
                 verts = get_rect_vertices(sink.x, sink.y, sink.width, sink.height, 0)
                 if point_in_polygon(px, py, verts):
                     in_a_sink = True
+                    self.delivered[sink.id] = self.delivered.get(sink.id, 0) + 1
                     break
             if in_a_sink:
                 to_remove.append(parcel)

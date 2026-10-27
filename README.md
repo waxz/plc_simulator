@@ -82,9 +82,11 @@ The Python simulation runs as a standalone process that:
   [Channel Registry Web UI](#channel-registry-web-ui).
 
 **Test client**
-- `plc_mock.py` - A mock PLC client that exercises the exchange over MQTT or TCP,
-  reporting its own real measured performance as metrics (not synthetic demo
-  data) - useful for exercising the Live Data tab below without real PLC hardware.
+- `plc_mock.py` - A mock PLC client for any layout over MQTT or TCP: runs the
+  PLC program in `plc_logic.py` (Start/Stop buttons, parcel tracking, jam
+  detection, belt speeds, LEDs) and reports its own measured performance as
+  metrics - useful for exercising the Live Data tab below without real PLC
+  hardware.
 
 **Tests**
 - `test_*.py` - One file per module above (`unittest`-based). Run the whole suite
@@ -146,9 +148,22 @@ uv run python layout_editor.py test_config.json
 
 The Qt layout editor is where belt shapes and positions are designed:
 
-- **Shape Designer** (Component Library > "+ New Custom Shape..."): freehand,
-  triangle, quadrilateral or arc, each with exact numeric parameters. A shape
-  becomes a reusable library template you drag onto the canvas.
+- **Component Library** dock: drag a component onto the canvas to place it.
+  Built in: Linear Belt, Curved Belt, IR Sensor, Laser Banner, Parcel Source,
+  Sink, Push Button, LED Indicator. Your own components sit below them:
+  - **Add Selected** saves the component selected on the canvas (any kind: a
+    belt of any type or shape - e.g. one made from a DXF -, a sensor, a
+    button, ...) as a reusable template, with its size, rotation, speed,
+    colour and bindings; **Update** overwrites the chosen template with the
+    canvas selection; **Rename** / **Remove**. Built-ins can't be changed.
+  - Your library is saved to `~/.conveyor_sim/component_library.json` after
+    every change (or the file named by `CONVEYOR_COMPONENT_LIBRARY`) and is
+    there again next time.
+  - **Export...** writes your components to a library file, **Import...**
+    adds the components of one (name clashes get a " (2)" suffix). The file
+    format is in `component_library.py`.
+  - **+ New Custom Shape...** opens the Shape Designer (freehand, triangle,
+    quadrilateral or arc, with exact numeric parameters).
 - **Alignment guides** snap to other components' vertices, edge midpoints and
   centers (also when rotated), plus a measure tool (D).
 - Undo/redo, copy/paste, rubber-band multi-select, Component Manager and
@@ -350,12 +365,47 @@ python main.py test_config.json --channel-registry channels.json --web-ui
 
 ### Mock PLC client
 
-Exercises the running simulator's exchange (I/O + metrics) without real PLC
-hardware - useful for generating live data to look at in the web dashboard:
+A mock PLC for any layout, over the same TCP (or MQTT) exchange a real PLC
+uses. It receives every button and sensor, runs a small PLC program
+(`plc_logic.py`) and sends belt speeds and LEDs back, and reports its own
+performance as metrics for the web dashboard:
 
 ```bash
 python plc_mock.py test_config.json
 ```
+
+The PLC program, every `--scan` (default 50 ms):
+- **Buttons** by label: START runs the belts, STOP stops them, RESET clears a
+  jam (unlabelled: one button toggles; with two, the first starts and the
+  second stops).
+- **Sensors**: every parcel passing a sensor is counted; the sensor nearest a
+  sink counts deliveries. A sensor blocked longer than `--jam-time`
+  (default 5 s) is a jam: belts stop until the parcel is gone and Start or
+  Reset is pressed.
+- **Belts** run at their speed from the layout file (1 m/s where it is 0)
+  while running. **LEDs** by label: RUN (else the first LED) shows running,
+  JAM/FAULT/ALARM (else the second) a jam. `--autostart` runs without Start.
+
+### Workflow: a parcel delivery line, designed to controlled
+
+1. `python layout_editor.py delivery.json` - File > Import DXF Background...
+   the hall plan (units, one sheet, origin); place linear and curved belts,
+   IR sensors, a Parcel Source, a Sink, Push Buttons labelled START / STOP
+   and LEDs labelled RUN / JAM from the Component Library; set the belts'
+   design speed in Properties; save.
+2. `python main.py delivery.json --exchange-config tcp_exchange_config.json`
+   - the simulator, serving the I/O over TCP.
+3. `python plc_mock.py delivery.json --exchange-config tcp_exchange_config.json`
+   - the PLC: it prints its inputs, outputs and which button/LED does what.
+4. Click START in the simulator window: the belts run, and the PLC log shows
+   each parcel at each sensor and the deliveries. STOP stops the line.
+
+No channel setup is needed: a layout that doesn't have `test_config.json`'s
+component ids gets its I/O image from its own components
+(`mqtt_data_exchange.io_topics`): input = every button, every sensor, the
+clock; output = every LED, every belt - the simulator and `plc_mock.py`
+build the same one. `test_delivery_workflow.py` runs this whole workflow,
+with the real `plc_mock.py` process, as a test.
 
 ### Standalone validation/codegen tools
 

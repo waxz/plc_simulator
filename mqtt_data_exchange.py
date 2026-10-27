@@ -31,6 +31,7 @@ from mqtt_message_binding import (
     MetricsMessage,
     belt_feedback_mapping,
     custom_component_mapping,
+    known_component_ids,
     verify_component_list,print_mapping
 )
 from metric_layout import f32, u8, u16, u32, u64, bit, Vec2, Vec3
@@ -65,6 +66,27 @@ SUBSCRIBE_TOPICS: Dict[str, Dict[str, Any]] = {
         ],
     },
 }
+
+
+def io_topics(config: SimulatorConfig) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
+    """The IO-mapping channels for a layout: (publish_topics, subscribe_topics).
+
+    PUBLISH_TOPICS/SUBSCRIBE_TOPICS above name test_config.json's components.
+    A layout that has all of them keeps exactly that wire layout; any other
+    layout (e.g. one designed in the layout editor, with ids like sensor_1,
+    button_1, belt_1) gets channels derived from its own components:
+      input  (simulator -> PLC): every button, then every sensor, then clock
+      output (PLC -> simulator): every LED, then every belt
+    in the layout's order. The simulator (MQTTSyncEngine) and the PLC side
+    (plc_mock.py) both call this, so they always agree on the byte layout."""
+    legacy = PUBLISH_TOPICS["input"]["custom_ids"] + SUBSCRIBE_TOPICS["output"]["custom_ids"]
+    if set(legacy) <= known_component_ids(config):
+        return PUBLISH_TOPICS, SUBSCRIBE_TOPICS
+    inputs = [b.id for b in config.buttons] + [s.id for s in config.sensors] + ["clock"]
+    outputs = [l.id for l in config.leds] + [b.id for b in config.belts]
+    return ({"input": {**PUBLISH_TOPICS["input"], "custom_ids": inputs}},
+            {"output": {**SUBSCRIBE_TOPICS["output"], "custom_ids": outputs}})
+
 
 # ---------------------------------------------------------------------------
 # Data-visualization panel metrics: inbound-only, pre-declared metric
@@ -264,7 +286,8 @@ class MQTTSyncEngine:
         if channel_registry_path is not None:
             publish_topics, subscribe_topics, metrics_channels = load_channel_registry(channel_registry_path)
         else:
-            publish_topics, subscribe_topics, metrics_channels = PUBLISH_TOPICS, SUBSCRIBE_TOPICS, METRICS_CHANNELS
+            publish_topics, subscribe_topics = io_topics(config)
+            metrics_channels = METRICS_CHANNELS
 
         if self._transport == "mqtt":
             broker_url = config.mqttSettings.brokerUrl

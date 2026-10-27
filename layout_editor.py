@@ -71,7 +71,7 @@ import os
 import sys
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Callable, List, Optional
 
 from PySide6.QtCore import Qt, QPointF, QMimeData, QRectF, QTimer
 from PySide6.QtGui import (
@@ -83,7 +83,7 @@ from PySide6.QtWidgets import (
     QGraphicsPolygonItem, QListWidget, QListWidgetItem, QDockWidget, QWidget,
     QFormLayout, QDoubleSpinBox, QSpinBox, QComboBox, QPushButton, QColorDialog,
     QLineEdit, QLabel, QVBoxLayout, QHBoxLayout, QDialog, QStackedWidget, QToolBar,
-    QFileDialog, QCheckBox, QMessageBox, QStyle,
+    QFileDialog, QCheckBox, QMessageBox, QStyle, QInputDialog,
 )
 
 from config_parser import Belt, Sensor, Source, Sink, ControlButton, LedIndicator, SimulatorConfig, load_config
@@ -92,6 +92,9 @@ from cad.path import (
     segments as path_segments,
 )
 from id_utils import next_indexed_id, unique_incremented_id
+from component_library import (
+    LibraryEntry, default_library_path, entry_from_model, load_library, save_library, unique_name,
+)
 
 def _path_signature(model) -> tuple:
     return (tuple((n.x, n.y, n.bulge) for n in (model.path or [])), model.closed, model.beltWidth)
@@ -256,9 +259,10 @@ class ComponentTemplate:
     a fresh model (with a caller-supplied unique id) when dragged onto the
     canvas."""
     name: str
-    kind: str  # "belt" or "sensor"
+    kind: str  # "belt", "sensor", "source", "sink", "button" or "led"
     factory: Callable[[str], object]
     removable: bool = False
+    entry: Optional[LibraryEntry] = None  # the user's own templates are data (component_library.py)
 
 
 class SnapGuideScene(QGraphicsScene):
@@ -2091,41 +2095,103 @@ def build_items_from_config(config, scene: QGraphicsScene, items_list: list):
         items_list.append(item)
 
 
+def _make_curved_belt(new_id: str) -> Belt:
+    return Belt(
+        id=new_id, type="curved", shape="arc", x=0.0, y=0.0, beltWidth=1.0, rotation=0.0,
+        radius=2.0, startAngle=0.0, endAngle=90.0, speed=1.0, directionAngle=90.0, color="#3b82f6",
+    )
+
+
+def _template_from_entry(entry: LibraryEntry) -> ComponentTemplate:
+    return ComponentTemplate(entry.name, entry.kind, lambda new_id, e=entry: e.instantiate(new_id),
+                             removable=True, entry=entry)
+
+
 class ComponentLibrary(QListWidget):
-    """Draggable, template-driven component palette."""
+    """Draggable, template-driven component palette: the built-in
+    components, then the user's own (saved, editable, removable)."""
+
+    BUILT_INS = (
+        ("Linear Belt", "belt", _make_linear_belt),
+        ("Curved Belt", "belt", _make_curved_belt),
+        ("IR Sensor", "sensor", _make_ir_sensor),
+        ("Laser Banner", "sensor", _make_banner_sensor),
+        ("Parcel Source", "source", _make_source),
+        ("Sink", "sink", _make_sink),
+        ("Push Button", "button", _make_button),
+        ("LED Indicator", "led", _make_led),
+    )
 
     def __init__(self):
         super().__init__()
         self.setDragEnabled(True)
         self.templates: dict[str, ComponentTemplate] = {}
-        for template in (
-            ComponentTemplate("Linear Belt", "belt", _make_linear_belt, removable=False),
-            ComponentTemplate("IR Sensor", "sensor", _make_ir_sensor, removable=False),
-            ComponentTemplate("Laser Banner", "sensor", _make_banner_sensor, removable=False),
-            ComponentTemplate("Parcel Source", "source", _make_source, removable=False),
-            ComponentTemplate("Sink", "sink", _make_sink, removable=False),
-            ComponentTemplate("Push Button", "button", _make_button, removable=False),
-            ComponentTemplate("LED Indicator", "led", _make_led, removable=False),
-        ):
-            self.add_template(template)
+        for name, kind, factory in self.BUILT_INS:
+            self.add_template(ComponentTemplate(name, kind, factory, removable=False))
 
     def add_template(self, template: ComponentTemplate):
-        self.templates[template.name] = template
-        row = QListWidgetItem(template.name)
+        """Add (or, for a user template of the same name, replace)."""
+        if template.name in self.templates:
+            existing = self.templates[template.name]
+            if not existing.removable:
+                raise ValueError(f"'{template.name}' is a built-in component.")
+            self.templates[template.name] = template
+            row = self._row(template.name)
+        else:
+            self.templates[template.name] = template
+            row = QListWidgetItem()
+            self.addItem(row)
+        row.setText(template.name if not template.removable else f"{template.name}  ({template.kind})")
         row.setData(Qt.UserRole, template.name)
-        self.addItem(row)
+        row.setToolTip(f"{template.kind}" + ("" if template.removable else " - built in") +
+                       ". Drag onto the canvas to place one.")
+        font = row.font()
+        font.setItalic(not template.removable)
+        row.setFont(font)
+        return row
 
-    def remove_selected_template(self) -> bool:
+    def _row(self, name: str) -> Optional[QListWidgetItem]:
+        for i in range(self.count()):
+            if self.item(i).data(Qt.UserRole) == name:
+                return self.item(i)
+        return None
+
+    def current_template(self) -> Optional[ComponentTemplate]:
         row = self.currentItem()
-        if not row:
-            return False
-        name = row.data(Qt.UserRole)
+        return self.templates.get(row.data(Qt.UserRole)) if row else None
+
+    def remove_template(self, name: str) -> bool:
         template = self.templates.get(name)
         if not template or not template.removable:
             return False
         del self.templates[name]
-        self.takeItem(self.row(row))
+        self.takeItem(self.row(self._row(name)))
         return True
+
+    def remove_selected_template(self) -> bool:
+        template = self.current_template()
+        return self.remove_template(template.name) if template else False
+
+    def rename_template(self, old: str, new: str) -> ComponentTemplate:
+        new = new.strip()
+        template = self.templates.get(old)
+        if template is None or not template.removable:
+            raise ValueError("Only your own components can be renamed.")
+        if not new:
+            raise ValueError("A library component needs a name.")
+        if new != old and new in self.templates:
+            raise ValueError(f"There is already a component called '{new}'.")
+        entry = LibraryEntry(new, template.entry.kind, template.entry.model)
+        row = self._row(old)
+        del self.templates[old]
+        renamed = _template_from_entry(entry)
+        self.templates[new] = renamed
+        row.setData(Qt.UserRole, new)
+        row.setText(f"{new}  ({entry.kind})")
+        return renamed
+
+    def user_entries(self) -> List[LibraryEntry]:
+        return [t.entry for t in self.templates.values() if t.removable and t.entry is not None]
 
     def get_template(self, name: str) -> Optional[ComponentTemplate]:
         return self.templates.get(name)
@@ -2146,29 +2212,216 @@ class ComponentLibrary(QListWidget):
 
 
 class ComponentLibraryPanel(QWidget):
-    """The draggable palette plus template management (+New Custom Shape,
-    Remove Template) - the "component library manager" ask."""
+    """The draggable palette plus library management - the "component
+    library manager":
 
-    def __init__(self):
+      Add Selected   the component selected on the canvas (any kind, e.g. a
+                     belt drawn from a DXF) becomes a reusable template
+      Update         overwrite the chosen template with the canvas selection
+      Rename / Remove   your own templates (built-ins are fixed)
+      Import / Export   library JSON files (component_library.py), to share
+                     or move templates between machines
+      + New Custom Shape...   the Shape Designer
+
+    Your templates are saved to `library_path` after every change and
+    loaded again next time."""
+
+    def __init__(self, library_path: Optional[str] = None, get_selection: Optional[Callable[[], list]] = None,
+                 status: Optional[Callable[[str], None]] = None):
         super().__init__()
+        self.library_path = library_path
+        self.get_selection = get_selection or (lambda: [])
+        self.status = status or (lambda _msg: None)
         layout = QVBoxLayout(self)
         self.list_widget = ComponentLibrary()
         layout.addWidget(self.list_widget)
 
-        btn_row = QHBoxLayout()
+        row1 = QHBoxLayout()
+        self.add_btn = QPushButton("Add Selected")
+        self.add_btn.setToolTip("Save the component selected on the canvas as a reusable library component")
+        self.update_btn = QPushButton("Update")
+        self.update_btn.setToolTip("Replace the chosen library component with the canvas selection")
+        self.rename_btn = QPushButton("Rename")
+        self.remove_btn = QPushButton("Remove")
+        for btn in (self.add_btn, self.update_btn, self.rename_btn, self.remove_btn):
+            row1.addWidget(btn)
+        layout.addLayout(row1)
+        row2 = QHBoxLayout()
         self.new_shape_btn = QPushButton("+ New Custom Shape...")
-        self.remove_btn = QPushButton("Remove Template")
-        btn_row.addWidget(self.new_shape_btn)
-        btn_row.addWidget(self.remove_btn)
-        layout.addLayout(btn_row)
+        self.import_btn = QPushButton("Import...")
+        self.import_btn.setToolTip("Add the components of a library file")
+        self.export_btn = QPushButton("Export...")
+        self.export_btn.setToolTip("Write your library components to a file")
+        for btn in (self.new_shape_btn, self.import_btn, self.export_btn):
+            row2.addWidget(btn)
+        layout.addLayout(row2)
 
         self.new_shape_btn.clicked.connect(self._open_shape_designer)
-        self.remove_btn.clicked.connect(self.list_widget.remove_selected_template)
+        self.add_btn.clicked.connect(lambda: self.add_selected())
+        self.update_btn.clicked.connect(lambda: self.update_from_selection())
+        self.rename_btn.clicked.connect(lambda: self.rename_current())
+        self.remove_btn.clicked.connect(lambda: self.remove_current())
+        self.import_btn.clicked.connect(lambda: self.import_library())
+        self.export_btn.clicked.connect(lambda: self.export_library())
+        self.list_widget.currentItemChanged.connect(lambda *_: self._sync_buttons())
+        self._load_own_library()
+        self._sync_buttons()
+
+    # -- persistence -------------------------------------------------------------
+
+    def _load_own_library(self):
+        if not self.library_path or not os.path.exists(self.library_path):
+            return
+        try:
+            entries, problems = load_library(self.library_path)
+        except (OSError, ValueError) as exc:
+            self.status(f"Component library not loaded: {exc}")
+            return
+        for entry in entries:
+            entry.name = unique_name(entry.name, (n for n, t in self.list_widget.templates.items()
+                                                  if not t.removable))
+            self.list_widget.add_template(_template_from_entry(entry))
+        if problems:
+            self.status(f"Component library: skipped {len(problems)} invalid component(s): {problems[0]}")
+
+    def save(self):
+        if not self.library_path:
+            return
+        try:
+            save_library(self.library_path, self.list_widget.user_entries())
+        except OSError as exc:
+            self.status(f"Could not save the component library to {self.library_path}: {exc}")
+
+    def _sync_buttons(self):
+        template = self.list_widget.current_template()
+        own = template is not None and template.removable
+        for btn in (self.update_btn, self.rename_btn, self.remove_btn):
+            btn.setEnabled(own)
+
+    # -- actions (also used by tests) -----------------------------------------------
+
+    def _selected_model(self):
+        selected = [i for i in self.get_selection() if hasattr(i, "model") and hasattr(i, "kind")]
+        if len(selected) != 1:
+            raise ValueError("Select exactly one component on the canvas first.")
+        return selected[0]
+
+    def add_selected(self, name: Optional[str] = None) -> Optional[ComponentTemplate]:
+        try:
+            item = self._selected_model()
+        except ValueError as exc:
+            self._warn("Add to Library", str(exc))
+            return None
+        if name is None:
+            default = getattr(item.model, "label", None) or item.model.id
+            name, ok = QInputDialog.getText(self, "Add to Library", "Name:", text=str(default))
+            if not ok:
+                return None
+        try:
+            entry = entry_from_model(name, item.model, item.kind)
+        except ValueError as exc:
+            self._warn("Add to Library", str(exc))
+            return None
+        entry.name = unique_name(entry.name, self.list_widget.templates)
+        template = _template_from_entry(entry)
+        self.list_widget.setCurrentItem(self.list_widget.add_template(template))
+        self.save()
+        self.status(f"Added '{entry.name}' ({entry.kind}) to the component library.")
+        return template
+
+    def update_from_selection(self) -> Optional[ComponentTemplate]:
+        template = self.list_widget.current_template()
+        if template is None or not template.removable:
+            self._warn("Update Library Component", "Choose one of your own library components to update.")
+            return None
+        try:
+            item = self._selected_model()
+            entry = entry_from_model(template.name, item.model, item.kind)
+        except ValueError as exc:
+            self._warn("Update Library Component", str(exc))
+            return None
+        updated = _template_from_entry(entry)
+        self.list_widget.add_template(updated)
+        self.save()
+        self.status(f"Updated '{entry.name}' from {item.model.id}.")
+        return updated
+
+    def rename_current(self, new_name: Optional[str] = None) -> bool:
+        template = self.list_widget.current_template()
+        if template is None or not template.removable:
+            return False
+        if new_name is None:
+            new_name, ok = QInputDialog.getText(self, "Rename Library Component", "Name:", text=template.name)
+            if not ok:
+                return False
+        try:
+            self.list_widget.rename_template(template.name, new_name)
+        except ValueError as exc:
+            self._warn("Rename Library Component", str(exc))
+            return False
+        self.save()
+        return True
+
+    def remove_current(self) -> bool:
+        template = self.list_widget.current_template()
+        if template is None or not self.list_widget.remove_template(template.name):
+            return False
+        self.save()
+        self.status(f"Removed '{template.name}' from the component library.")
+        self._sync_buttons()
+        return True
+
+    def import_library(self, path: Optional[str] = None) -> int:
+        if path is None:
+            path, _ = QFileDialog.getOpenFileName(self, "Import Component Library", "", "Component Library (*.json)")
+            if not path:
+                return 0
+        try:
+            entries, problems = load_library(path)
+        except (OSError, ValueError) as exc:
+            self._warn("Import Component Library", str(exc))
+            return 0
+        for entry in entries:
+            entry.name = unique_name(entry.name, self.list_widget.templates)
+            self.list_widget.add_template(_template_from_entry(entry))
+        self.save()
+        message = f"Imported {len(entries)} component(s) from {os.path.basename(path)}."
+        if problems:
+            message += f" Skipped {len(problems)}: " + "; ".join(problems[:3])
+        self.status(message)
+        return len(entries)
+
+    def export_library(self, path: Optional[str] = None) -> int:
+        entries = self.list_widget.user_entries()
+        if not entries:
+            self._warn("Export Component Library", "Your library is empty: add components first (Add Selected).")
+            return 0
+        if path is None:
+            path, _ = QFileDialog.getSaveFileName(self, "Export Component Library", "component_library.json",
+                                                  "Component Library (*.json)")
+            if not path:
+                return 0
+        try:
+            save_library(path, entries)
+        except OSError as exc:
+            self._warn("Export Component Library", f"Could not write {path}:\n{exc}")
+            return 0
+        self.status(f"Exported {len(entries)} component(s) to {path}.")
+        return len(entries)
+
+    def _warn(self, title: str, message: str):
+        self.status(message)
+        if self.isVisible():
+            QMessageBox.warning(self, title, message)
 
     def _open_shape_designer(self):
         dialog = ShapeDesignerDialog(self)
         if dialog.exec() == QDialog.Accepted and dialog.result_template:
-            self.list_widget.add_template(dialog.result_template)
+            result = dialog.result_template
+            entry = entry_from_model(result.name, result.factory("template"), result.kind)
+            entry.name = unique_name(entry.name, self.list_widget.templates)
+            self.list_widget.add_template(_template_from_entry(entry))
+            self.save()
 
 
 class AddItemCommand(QUndoCommand):
@@ -2331,19 +2584,27 @@ class CanvasView(QGraphicsView):
         mime = event.mimeData()
         if mime.hasFormat("application/x-component-template"):
             name = bytes(mime.data("application/x-component-template")).decode("utf-8")
-            template = self.get_template(name) if self.get_template else None
-            if template:
-                scene_pos = self.mapToScene(event.position().toPoint())
-                world_x, world_y = from_scene_pos(scene_pos)
-                existing_ids = (i.model.id for i in self.items_list if i.kind == template.kind)
-                new_id = next_indexed_id(existing_ids, template.kind)
-                model = template.factory(new_id)
-                model.x, model.y = world_x, world_y
-                item_cls = ITEM_CLASS_FOR_KIND[template.kind]
-                self._add_item(item_cls(model), text=f"Add {template.kind}")
+            scene_pos = self.mapToScene(event.position().toPoint())
+            self.place_template(name, *from_scene_pos(scene_pos))
             event.acceptProposedAction()
         else:
             super().dropEvent(event)
+
+    def place_template(self, name: str, x: float, y: float, **overrides):
+        """Place a new component from library template `name` at world (x, y)
+        with a fresh id - what dropping it from the library does. `overrides`
+        set model fields first (e.g. length=6, label="START"). Undoable.
+        Returns the new item, or None for an unknown template."""
+        template = self.get_template(name) if self.get_template else None
+        if template is None:
+            return None
+        existing_ids = (i.model.id for i in self.items_list if i.kind == template.kind)
+        model = template.factory(next_indexed_id(existing_ids, template.kind))
+        for key, value in overrides.items():
+            setattr(model, key, value)
+        model.x, model.y = x, y
+        item_cls = ITEM_CLASS_FOR_KIND[template.kind]
+        return self._add_item(item_cls(model), text=f"Add {template.kind}")
 
     def _do_add_item(self, item: PlacedItem) -> PlacedItem:
         """The actual add mutation - scene, items_list, config. Called
@@ -2738,7 +2999,10 @@ class PropertiesPanel(QWidget):
         scene.selectionChanged.connect(self._on_selection_changed)
 
     def _on_selection_changed(self):
-        selected = [i for i in self.scene.selectedItems() if isinstance(i, PlacedItem)]
+        try:
+            selected = [i for i in self.scene.selectedItems() if isinstance(i, PlacedItem)]
+        except RuntimeError:
+            return  # the scene is being destroyed (window deleted without closing it first)
         if len(selected) == 1:
             self.current = selected[0]
             self._rebuild_fields()
@@ -3124,7 +3388,7 @@ class MainWindow(QMainWindow):
     from two seed belts. It does not run the simulation - run the saved
     layout with `python main.py <layout.json>` (pygame)."""
 
-    def __init__(self, config=None, config_path=None):
+    def __init__(self, config=None, config_path=None, library_path=None):
         super().__init__()
         self.resize(1300, 850)
 
@@ -3174,7 +3438,14 @@ class MainWindow(QMainWindow):
                 self.items_list.append(item)
                 self.config.belts.append(model)
 
-        library_panel = ComponentLibraryPanel()
+        # The user's component library: their own templates, saved on every
+        # change (component_library.py; Import/Export for other files).
+        library_panel = ComponentLibraryPanel(
+            library_path=library_path or default_library_path(),
+            get_selection=lambda: [i for i in self.scene.selectedItems() if isinstance(i, PlacedItem)],
+            status=lambda message: self.statusBar().showMessage(message, 8000),
+        )
+        self.library_panel = library_panel
         library_dock = QDockWidget("Component Library", self)
         library_dock.setWidget(library_panel)
         self.addDockWidget(Qt.LeftDockWidgetArea, library_dock)

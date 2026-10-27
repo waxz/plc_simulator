@@ -15,6 +15,16 @@ METRIC_LAYOUT_3 for the two metrics layouts, see METRICS_CHANNELS) in the
 header - see FrameType/ParsedFrame in tcp_framed_transport.py. Over MQTT
 there is no such header, so each layout is disambiguated by its own topic
 (metrics vs metric3); node id / frame type only apply to the TCP path.
+
+Control: every --scan seconds the PLC program in plc_logic.py
+(DeliveryController) runs on the latest inputs - Start/Stop/Reset buttons,
+parcel triggers on every sensor, jam detection - and the resulting belt
+speeds and LED states are sent back. It works with any layout: the I/O
+channels come from mqtt_data_exchange.io_topics(), the same function the
+simulator uses, so a layout designed in the editor needs no channel setup.
+
+    python main.py my_layout.json --exchange-config tcp_exchange_config.json
+    python plc_mock.py my_layout.json --exchange-config tcp_exchange_config.json
 """
 import time
 import argparse
@@ -30,10 +40,10 @@ from mqtt_data_exchange import (
     MetricLayout1Results,
     MetricLayout3,
     MetricLayout3Test123,
-    PUBLISH_TOPICS,
-    SUBSCRIBE_TOPICS,
     apply_exchange_config,
+    io_topics,
 )
+from plc_logic import DeliveryController
 from struct_utils import print_byte_by_byte
 from tcp_framed_transport import FrameType, ParsedFrame, TcpFramedClient
 
@@ -185,7 +195,13 @@ def main():
     parser = argparse.ArgumentParser(description="Mock PLC Client for testing MQTT data exchange")
     parser.add_argument("config", help="Path to the JSON workspace configuration")
     parser.add_argument("--exchange-config", help="Optional JSON file overriding MQTT/TCP exchange settings")
-    parser.add_argument("--send-interval", type=float, default=2.0, help="Seconds between output command publishes")
+    parser.add_argument("--send-interval", type=float, default=2.0,
+                        help="Seconds between metrics reports and status lines")
+    parser.add_argument("--scan", type=float, default=0.05,
+                        help="PLC scan time: seconds between control steps / output commands (default 0.05)")
+    parser.add_argument("--jam-time", type=float, default=5.0,
+                        help="Seconds a sensor may stay blocked before it is a jam (belts stop)")
+    parser.add_argument("--autostart", action="store_true", help="Run the belts without pressing Start")
     parser.add_argument("--metrics-interval", type=float, default=5.0, help="Seconds between performance reports")
     parser.add_argument("--dump-bytes", action="store_true", help="Print each received payload byte")
     parser.add_argument(
@@ -209,18 +225,28 @@ def main():
     prefix = config.mqttSettings.topicPrefix or ""
     metrics = PerformanceMetrics(report_interval=args.metrics_interval)
 
-    # Reconstruct the mappings that the simulator uses
+    # Reconstruct the mappings that the simulator uses (io_topics: the same
+    # channels for this layout as MQTTSyncEngine builds).
+    publish_topics, subscribe_topics = io_topics(config)
     # Simulator publishes to /plcsim/input (from PLC's perspective, this is input)
     input_topic = f"{prefix}input".replace("//", "/")
-    input_ids = PUBLISH_TOPICS["input"]["custom_ids"]
+    input_ids = publish_topics["input"]["custom_ids"]
     input_mapping = custom_component_mapping(config, input_ids, direction="out")
-    input_msg = ComponentMessage(input_mapping, endianness=_struct_endianness(PUBLISH_TOPICS["input"], config))
+    input_msg = ComponentMessage(input_mapping, endianness=_struct_endianness(publish_topics["input"], config))
 
     # Simulator subscribes to /plcsim/output (from PLC's perspective, this is output)
     output_topic = f"{prefix}output".replace("//", "/")
-    output_ids = SUBSCRIBE_TOPICS["output"]["custom_ids"]
+    output_ids = subscribe_topics["output"]["custom_ids"]
     output_mapping = custom_component_mapping(config, output_ids, direction="in")
-    output_msg = ComponentMessage(output_mapping, endianness=_struct_endianness(SUBSCRIBE_TOPICS["output"], config))
+    output_msg = ComponentMessage(output_mapping, endianness=_struct_endianness(subscribe_topics["output"], config))
+
+    # The PLC program: reads buttons/sensors from `config` (filled by
+    # input_msg.deserialize), writes belt speeds/LEDs into it (sent by
+    # output_msg.serialize).
+    controller = DeliveryController(config, jam_time=args.jam_time, autostart=args.autostart)
+    print(f"[PLC] Inputs: {', '.join(i for i in input_ids if i != 'clock')}")
+    print(f"[PLC] Outputs: {', '.join(output_ids)}")
+    print(f"[PLC] Roles: " + ", ".join(f"{k}={v}" for k, v in controller.roles().items() if v))
 
     # Metrics channels - same connection as the output channel above.
     # from_layout() derives each wire format from its layout dataclass
@@ -282,32 +308,13 @@ def main():
             )
             return
 
-        latency_ms = _extract_latency_ms(payload, PUBLISH_TOPICS["input"], config)
+        latency_ms = _extract_latency_ms(payload, publish_topics["input"], config)
         if latency_ms is not None:
             last_latency_ms = latency_ms
         metrics.record_rx(len(payload), latency_ms)
         with lock:
+            # Buttons/sensors land in `config`; the control loop below acts on them.
             input_msg.deserialize(payload, config)
-
-            # Print state of some interesting components.
-            def _state(collection, comp_id):
-                comp = next((c for c in collection if c.id == comp_id), None)
-                return comp.sensor_states if comp else 'N/A'
-
-            sensor_ids = ['sensor_1_2_1', 'sensor_1_3_1']
-            button_ids = [
-                'button_1_1_1', 'button_1_1_2', 'button_1_1_3',
-                'button_1_2_1', 'button_1_2_2', 'button_1_2_3',
-                'button_1_3_1', 'button_1_3_2', 'button_1_3_3',
-            ]
-            sensor_text = " | ".join(_state(config.sensors, sid) for sid in sensor_ids)
-            button_text = " | ".join(str(_state(config.buttons, bid)) for bid in button_ids)
-
-            belt_1 = next((b for b in config.belts if b.id == 'belt_1_1_1'), None)
-            b1_speed = belt_1.speed if belt_1 else 'N/A'
-            b1_text = f"{b1_speed:.2f}" if isinstance(b1_speed, (int, float)) else str(b1_speed)
-
-            print(f"[<- RECV {input_topic}] S: {sensor_text} | BTN: {button_text} | B1 Spd: {b1_text}")
 
     def handle_belt_feedback(raw):
         payload = raw if isinstance(raw, (bytes, bytearray)) else raw.encode()
@@ -319,10 +326,10 @@ def main():
         metrics.record_rx(len(payload))
         with lock:
             feedback_msg.deserialize(payload, config)
-            belt_1 = next((b for b in config.belts if b.id == 'belt_1_1_1'), None)
-            if belt_1 is not None and args.print_feedback:
-                print(f"[<- RECV {feedback_topic}] belt_1_1_1 actual {belt_1.actualSpeed:.3f} m/s "
-                      f"(cmd {belt_1.speed:.2f}) encoder {belt_1.encoderCount}")
+            if args.print_feedback:
+                for belt in config.belts:
+                    print(f"[<- RECV {feedback_topic}] {belt.id} actual {belt.actualSpeed:.3f} m/s "
+                          f"(cmd {belt.speed:.2f}) encoder {belt.encoderCount}")
 
     print(f"Starting Mock PLC Client...")
     if transport == "mqtt":
@@ -372,34 +379,25 @@ def main():
     print(f"Reporting metrics on: {metrics_topic} (layout 1), {metric3_topic} (layout 3)")
 
     try:
-        counter = 0
         last_loop_start = time.perf_counter()
+        next_report = time.monotonic() + args.send_interval
+        was_sent = True
         while True:
             loop_start = time.perf_counter()
             loop_period_ms = (loop_start - last_loop_start) * 1000.0
             last_loop_start = loop_start
 
-            # Every ~2 seconds, toggle belt 1_1_1 speed and publish it back
+            # One PLC scan: logic on the latest inputs, then send the outputs.
             send_start = time.perf_counter()
             with lock:
-                belt_1_1_1 = next((b for b in config.belts if b.id == 'belt_1_1_1'), None)
-                if belt_1_1_1:
-
-                    belt_1_1_1.speed = 2.0 if (counter % 2 == 0) else 0.0
-                    speed_val = belt_1_1_1.speed
-                else:
-                    speed_val = 0.0
-                led_1_1_1 = next((b for b in config.leds if b.id == 'led_1_1_1'), None)
-                led_1_1_2 = next((b for b in config.leds if b.id == 'led_1_1_2'), None)
-                if led_1_1_1:
-                    led_1_1_1.isOn = True if (counter % 2 == 0) else False
-                if led_1_1_2:
-                    led_1_1_2.isOn = False if (counter % 2 == 0) else True
-                # Captured under the lock - the send loop reads these below,
-                # off-lock, while the sim mutates config from another thread.
-                led_1_on = bool(led_1_1_1.isOn) if led_1_1_1 else False
-                led_2_on = bool(led_1_1_2.isOn) if led_1_1_2 else False
+                events = controller.step()
+                first_belt = config.belts[0] if config.belts else None
+                speed_val = float(first_belt.speed) if first_belt is not None else 0.0
+                # Captured under the lock - the receive thread mutates config.
+                led_1_on = bool(config.leds[0].isOn) if len(config.leds) > 0 else False
+                led_2_on = bool(config.leds[1].isOn) if len(config.leds) > 1 else False
                 payload = output_msg.serialize(config)
+                status = controller.summary()
 
             if mqtt is not None:
                 mqtt.publish(output_topic, payload)
@@ -413,41 +411,48 @@ def main():
             else:
                 sent = False
             send_elapsed_us = (time.perf_counter() - send_start) * 1_000_000.0
-
             metrics.record_tx(len(payload), sent)
-            print(f"[-> SEND {output_topic}] Sent command -> B1 Spd: {speed_val:.2f}" if sent else f"[-> SEND {output_topic}] Dropped command: not connected")
 
-            # Report this client's own measured values through the metrics
-            # channel, over the SAME connection as the output payload above.
-            # serialize() takes the MetricLayout1 instance directly.
-            metrics_payload = metrics_msg.serialize(
-                _build_layout1_sample(
-                    loop_period_ms=loop_period_ms,
-                    rtt_latency_ms=last_latency_ms,
-                    send_elapsed_us=send_elapsed_us,
-                    tx_count=metrics.tx_count,
-                    sent_ok=sent,
-                    belt_speed=speed_val,
+            for event in events:
+                print(f"[PLC] {event}")
+            if sent != was_sent:
+                print(f"[-> SEND {output_topic}] " + ("Sending commands again." if sent else
+                                                       "Dropping commands: not connected"))
+                was_sent = sent
+
+            if time.monotonic() >= next_report:
+                next_report += args.send_interval
+                print(f"[PLC] {status}")
+                # Report this client's own measured values through the metrics
+                # channel, over the SAME connection as the output payload above.
+                # serialize() takes the MetricLayout1 instance directly.
+                metrics_payload = metrics_msg.serialize(
+                    _build_layout1_sample(
+                        loop_period_ms=loop_period_ms,
+                        rtt_latency_ms=last_latency_ms,
+                        send_elapsed_us=send_elapsed_us,
+                        tx_count=metrics.tx_count,
+                        sent_ok=sent,
+                        belt_speed=speed_val,
+                    )
                 )
-            )
-            if mqtt is not None:
-                mqtt.publish(metrics_topic, metrics_payload)
-            elif tcp is not None:
-                tcp.send(metrics_payload, frame_type=FrameType.METRIC_LAYOUT_1, node_id=args.node_id)
+                if mqtt is not None:
+                    mqtt.publish(metrics_topic, metrics_payload)
+                elif tcp is not None:
+                    tcp.send(metrics_payload, frame_type=FrameType.METRIC_LAYOUT_1, node_id=args.node_id)
 
-            # The second layout (METRIC_LAYOUT_3) - its own topic over MQTT,
-            # its own frame_type over TCP.
-            metric3_payload = metric3_msg.serialize(
-                _build_layout3_sample(led_on=led_1_on, led2_on=led_2_on, value=speed_val)
-            )
-            if mqtt is not None:
-                mqtt.publish(metric3_topic, metric3_payload)
-            elif tcp is not None:
-                tcp.send(metric3_payload, frame_type=FrameType.METRIC_LAYOUT_3, node_id=args.node_id)
+                # The second layout (METRIC_LAYOUT_3) - its own topic over MQTT,
+                # its own frame_type over TCP.
+                metric3_payload = metric3_msg.serialize(
+                    _build_layout3_sample(led_on=led_1_on, led2_on=led_2_on, value=speed_val)
+                )
+                if mqtt is not None:
+                    mqtt.publish(metric3_topic, metric3_payload)
+                elif tcp is not None:
+                    tcp.send(metric3_payload, frame_type=FrameType.METRIC_LAYOUT_3, node_id=args.node_id)
 
-            counter += 1
             metrics.maybe_report()
-            time.sleep(args.send_interval)
+            time.sleep(max(0.0, args.scan - (time.perf_counter() - loop_start)))
 
     except KeyboardInterrupt:
         print("\nStopping Mock PLC...")
