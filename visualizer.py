@@ -7,6 +7,9 @@ from config_parser import SimulatorConfig, Belt, Sensor, ControlButton, LedIndic
 from math_utils import get_rect_vertices, point_in_polygon, point_in_arc, get_belt_polygon, get_default_quad_vertices
 from id_utils import next_indexed_id
 from physics import parcel_speed_info
+from surface import belt_contains
+from cad.checks import belt_footprint
+from cad.ports import centerline_points
 from editor_ui import EditorUI
 
 
@@ -375,10 +378,26 @@ class Renderer:
             elif belt.type == "curved":
                 if point_in_arc(wx, wy, belt.x, belt.y, belt.radius, belt.beltWidth, belt.startAngle, belt.endAngle):
                     return belt
+            elif belt.type == "path":
+                if belt_contains(belt, wx, wy):
+                    return belt
         return None
 
     def draw_belt(self, belt: Belt):
         color = self._hex_to_rgb(belt.color)
+        if belt.type == "path":
+            # Drawn belt: the offset footprint (cad/path.py), a loop's inner
+            # hole cut back out, and the centerline the parcels follow.
+            shape = belt_footprint(belt)
+            if shape.is_empty:
+                return
+            pygame.draw.polygon(self.screen, color, [self._world_to_screen(x, y) for x, y in shape.exterior.coords])
+            for hole in shape.interiors:
+                pygame.draw.polygon(self.screen, (30, 30, 30), [self._world_to_screen(x, y) for x, y in hole.coords])
+            line = [self._world_to_screen(x, y) for x, y in centerline_points(belt)]
+            if len(line) >= 2:
+                pygame.draw.lines(self.screen, (255, 140, 0), False, line, 1)
+            return
         if belt.type == "linear":
             if getattr(belt, 'shape', 'rectangle') == 'quadrilateral':
                 screen_verts = [self._world_to_screen(wx, wy) for wx, wy in get_belt_polygon(belt)]

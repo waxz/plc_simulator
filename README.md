@@ -169,6 +169,45 @@ The Qt layout editor is where belt shapes and positions are designed:
 | File > Export DXF... | | Layout in metres, one layer per kind (BELTS, BELT_CENTERLINES, FLOW, SENSORS, ...) | ezdxf |
 | View > Show Ports | | Inlet (green ring), outlet (orange arrow), connection (cyan ring; red = broken) | |
 
+### Drawing belts (path belts)
+
+![Drawing a belt path](docs/path_tool.png)
+
+**Tools > Draw Belt Path (P)** draws a belt along any path:
+
+| Input | Effect |
+|---|---|
+| click | add an anchor (snaps to component key points and the grid) |
+| Shift | segment angle snaps to 15 deg steps |
+| L / A (or the toolbar) | following segments are straight lines / tangent arcs |
+| typing `x,y` `@dx,dy` `len<angle` `len` + Enter | exact anchor (absolute, relative, polar, or along the cursor direction) |
+| click the first anchor (or C) | close the path into a loop conveyor |
+| Enter / right-click / double-click | finish an open path |
+| Backspace / Esc | remove the last anchor / cancel |
+
+The live preview shows the belt surface, the current segment's length and
+angle, and the total length. When the path is finished, sharp corners are
+rounded with the toolbar's **Corner R** (0 = keep them sharp, mitred).
+**Tools > Insert Belt Shape... (Shift+P)** adds a triangle, rectangle,
+regular-polygon or circle loop, a U-turn, an L-bend or an S-bend.
+
+Select a drawn belt to edit its anchors: drag a handle to move it,
+Ctrl+click to switch the segment after it between straight and tangent arc,
+Shift+click to insert an anchor, Alt+click to delete one. Everything is undoable.
+
+How it's stored and simulated (`cad/path.py`): a path belt is `type: "path"`
+with `path: [{x, y, bulge}, ...]` (local to the belt's `x`/`y`/`rotation`) and
+`closed`. `bulge` is the DXF polyline convention (0 = straight,
+tan(sweep/4) = arc), so arcs are exact and export to DXF as native bulge
+polylines. The belt surface is the centerline offset by half the belt width
+on each side (Shapely); a loop is a ring. In the simulator, a point on the
+belt moves along the nearest centerline piece at belt speed, and arc pieces
+turn rigidly about their center like a curved belt, so parcels keep their
+orientation through curves (kinematic and friction traction). The layout
+check flags curves tighter than half the belt width. Path belts can't be
+used with Connect/Fillet (the constraint solver handles straight and curved
+belts); draw the joint into the path instead.
+
 Connections are saved in the layout (`connections`) and kept while editing:
 dragging a belt moves every belt connected to it, in the same undo step. The
 background reference is saved as `background` (`path` relative to the layout,

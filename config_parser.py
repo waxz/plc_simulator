@@ -14,10 +14,23 @@ class DriveConfig(BaseModel):
     countsPerM: float = 10000.0  # encoder resolution
 
 
+class PathNode(BaseModel):
+    """An anchor point of a path belt's centerline, in the belt's local
+    frame (metres, rotated by Belt.rotation, offset by Belt.x/y). `bulge`
+    shapes the segment from this node to the next, as in DXF polylines:
+    0 = straight, tan(sweep/4) = arc (positive turns left / CCW,
+    1 = semicircle)."""
+    x: float
+    y: float
+    bulge: float = 0.0
+
+
 class Belt(BaseModel):
     id: str
-    type: Literal["linear", "curved"]
-    shape: Literal["quadrilateral", "arc", "rectangle"] = "rectangle"
+    # "path": a drawn belt - centerline through `path` anchors (lines and
+    # arcs), offset by beltWidth on both sides (cad/path.py).
+    type: Literal["linear", "curved", "path"]
+    shape: Literal["quadrilateral", "arc", "rectangle", "path"] = "rectangle"
     x: float
     y: float
     length: float = 0.0
@@ -31,6 +44,8 @@ class Belt(BaseModel):
     direction: int = 1
     color: str
     vertexs: Optional[List[Dict[str, float]]] = None
+    path: Optional[List[PathNode]] = None
+    closed: bool = False      # path belt: last anchor joins the first (a loop conveyor)
     speedBinding: Optional[str] = None
     directionAngleBinding: Optional[str] = None
     directionBinding: Optional[str] = None

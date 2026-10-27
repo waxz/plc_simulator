@@ -16,7 +16,10 @@ from ezdxf import disassemble, path as ezpath, units
 
 from config_parser import SimulatorConfig
 from cad.checks import belt_footprint
-from cad.ports import arc_angles, belt_ports, curved_ccw
+from shapely.geometry import LineString
+
+from cad.path import belt_world_path, path_flow_sign
+from cad.ports import arc_angles, belt_ports, centerline_points, curved_ccw
 from math_utils import get_rect_vertices
 
 Polyline = List[Tuple[float, float]]
@@ -117,7 +120,14 @@ def export_layout(config: SimulatorConfig, path: str) -> None:
     for belt in config.belts:
         outline = list(belt_footprint(belt).exterior.coords)
         msp.add_lwpolyline(outline, close=True, dxfattribs={"layer": "BELTS"})
-        if belt.type == "curved":
+        if belt.type == "path":
+            # Native DXF polyline with bulges: exact arcs, editable in any CAD tool.
+            pts, bulges = belt_world_path(belt)
+            msp.add_lwpolyline([(x, y, b) for (x, y), b in zip(pts, bulges)], format="xyb", close=belt.closed,
+                               dxfattribs={"layer": "BELT_CENTERLINES"})
+            for hole in belt_footprint(belt).interiors:
+                msp.add_lwpolyline(list(hole.coords), close=True, dxfattribs={"layer": "BELTS"})
+        elif belt.type == "curved":
             start, end = arc_angles(belt)
             msp.add_arc((belt.x, belt.y), belt.radius, start, end, dxfattribs={"layer": "BELT_CENTERLINES"})
         elif belt_ports(belt) is not None:
@@ -125,7 +135,16 @@ def export_layout(config: SimulatorConfig, path: str) -> None:
             msp.add_line((ports.inlet.x, ports.inlet.y), (ports.outlet.x, ports.outlet.y),
                          dxfattribs={"layer": "BELT_CENTERLINES"})
         ports = belt_ports(belt)
-        if ports is not None:
+        if belt.type == "path" and belt.path:
+            line = LineString(centerline_points(belt))
+            for frac in (0.25, 0.75) if belt.closed else (0.5,):
+                a, b = line.interpolate(frac - 0.005, normalized=True), line.interpolate(frac + 0.005, normalized=True)
+                heading = math.degrees(math.atan2(b.y - a.y, b.x - a.x))
+                if path_flow_sign(belt) < 0:
+                    heading += 180.0
+                mid = line.interpolate(frac, normalized=True)
+                _add_arrow(msp, mid.x, mid.y, heading, min(belt.beltWidth, 0.6))
+        elif ports is not None:
             if belt.type == "curved":
                 start, end = arc_angles(belt)
                 mid_deg = (start + end) / 2.0

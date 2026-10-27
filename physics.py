@@ -501,6 +501,13 @@ class PhysicsEngine:
                             cvx = belt_speed * math.cos(rad)
                             cvy = belt_speed * math.sin(rad)
                             cw = 0.0
+                        elif belt.type == "path":
+                            # Drawn belt: tangent of the nearest centerline
+                            # piece, turning at speed * curvature on arcs.
+                            sv = surface_velocity(belt, pos.x, pos.y)
+                            if sv is None:
+                                continue
+                            cvx, cvy, cw = sv
                         elif belt.type == "curved":
                             dx = pos.x - belt.x
                             dy = pos.y - belt.y

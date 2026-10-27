@@ -75,7 +75,7 @@ from typing import Callable, Optional
 
 from PySide6.QtCore import Qt, QPointF, QMimeData, QRectF, QTimer
 from PySide6.QtGui import (
-    QBrush, QColor, QPen, QPainter, QDrag, QPolygonF, QTransform, QKeySequence, QAction,
+    QBrush, QColor, QPen, QPainter, QPainterPath, QDrag, QPolygonF, QTransform, QKeySequence, QAction,
     QUndoStack, QUndoCommand,
 )
 from PySide6.QtWidgets import (
@@ -83,11 +83,25 @@ from PySide6.QtWidgets import (
     QGraphicsPolygonItem, QListWidget, QListWidgetItem, QDockWidget, QWidget,
     QFormLayout, QDoubleSpinBox, QSpinBox, QComboBox, QPushButton, QColorDialog,
     QLineEdit, QLabel, QVBoxLayout, QHBoxLayout, QDialog, QStackedWidget, QToolBar,
-    QFileDialog, QCheckBox, QMessageBox,
+    QFileDialog, QCheckBox, QMessageBox, QStyle,
 )
 
 from config_parser import Belt, Sensor, Source, Sink, ControlButton, LedIndicator, SimulatorConfig, load_config
+from cad.path import (
+    belt_local_path, flatten as path_flatten, footprint as path_footprint, path_flow_sign, path_length,
+    segments as path_segments,
+)
 from id_utils import next_indexed_id, unique_incremented_id
+
+def _path_signature(model) -> tuple:
+    return (tuple((n.x, n.y, n.bulge) for n in (model.path or [])), model.closed, model.beltWidth)
+
+
+def _path_footprint_local(model):
+    """Path belt footprint in its local frame (metres) - see cad/path.py."""
+    pts, bulges = belt_local_path(model)
+    return path_footprint(pts, bulges, model.closed, model.beltWidth, tolerance=0.005)
+
 
 SCALE = 50.0  # px per "meter" - arbitrary for this prototype, not tied to the real world scale
 GRID_SIZE = 50
@@ -1007,6 +1021,11 @@ class BeltItem(PlacedItem):
 
     @staticmethod
     def _local_points_for_model(model: Belt) -> list[QPointF]:
+        if model.type == "path":
+            outline = _path_footprint_local(model)
+            if outline.is_empty:
+                return [QPointF(0, 0)] * 3
+            return [QPointF(x * SCALE, -y * SCALE) for x, y in list(outline.exterior.coords)[:-1]]
         if model.type == "curved":
             return [
                 QPointF(x * SCALE, -y * SCALE)
@@ -1023,7 +1042,37 @@ class BeltItem(PlacedItem):
     def is_curved(self) -> bool:
         return self.model.type == "curved"
 
+    def is_path(self) -> bool:
+        return self.model.type == "path"
+
+    def _path_painter_path(self) -> QPainterPath:
+        """Footprint with any hole (a loop's inside), for paint and hit tests."""
+        cached = getattr(self, "_painter_path_cache", None)
+        key = _path_signature(self.model)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        painter_path = QPainterPath()
+        painter_path.setFillRule(Qt.OddEvenFill)
+        outline = _path_footprint_local(self.model)
+        rings = [] if outline.is_empty else [outline.exterior, *outline.interiors]
+        for ring in rings:
+            painter_path.addPolygon(QPolygonF([QPointF(x * SCALE, -y * SCALE) for x, y in ring.coords]))
+            painter_path.closeSubpath()
+        self._painter_path_cache = (key, painter_path)
+        return painter_path
+
+    def shape(self) -> QPainterPath:
+        if self.is_path():
+            return self._path_painter_path()
+        return super().shape()
+
+    def path_anchor_scene_points(self) -> list[QPointF]:
+        """Anchors in this item's local (scene-unit) coordinates."""
+        return [QPointF(n.x * SCALE, -n.y * SCALE) for n in (self.model.path or [])]
+
     def _local_key_points(self):
+        if self.is_path():
+            return self.path_anchor_scene_points()
         if self.is_curved():
             # A full ring-segment polygon has dozens of vertices (one per
             # rendering segment) - meaningless as individual snap targets.
@@ -1042,6 +1091,12 @@ class BeltItem(PlacedItem):
         return super()._local_key_points()
 
     def _local_edges(self):
+        if self.is_path():
+            nodes = self.model.path or []
+            pts = self.path_anchor_scene_points()
+            count = len(nodes) if self.model.closed else len(nodes) - 1
+            return [(pts[i], pts[(i + 1) % len(nodes)]) for i in range(max(count, 0))
+                    if abs(nodes[i].bulge) < 1e-12]
         if self.is_curved():
             # The ring segment's two straight radial edges (inner->outer at
             # the start angle, and again at the end angle) - the arc
@@ -1091,7 +1146,53 @@ class BeltItem(PlacedItem):
         self.prepareGeometryChange()
         self.setPolygon(QPolygonF(self._local_points_for_model(self.model)))
 
+    def _paint_path(self, painter: QPainter, option):
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(QColor(self.model.color)))
+        painter.drawPath(self._path_painter_path())
+        if option.state & QStyle.State_Selected:
+            painter.setPen(QPen(QColor(255, 255, 255), 0, Qt.DashLine))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawPath(self._path_painter_path())
+        # Centerline, and flow arrows spaced along it.
+        pts, bulges = belt_local_path(self.model)
+        segs = path_segments(pts, bulges, self.model.closed)
+        if not segs:
+            return
+        flat, _ = path_flatten(segs, tolerance=0.01)
+        painter.setPen(QPen(QColor(255, 140, 0, 160), 0, Qt.DashLine))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawPolyline(QPolygonF([QPointF(x * SCALE, -y * SCALE) for x, y in flat]))
+        total = path_length(segs)
+        step = max(total / 6.0, 1.0)
+        backwards = path_flow_sign(self.model) < 0
+        painter.setPen(QPen(QColor(255, 140, 0), 2))
+        painter.setBrush(QBrush(QColor(255, 140, 0)))
+        d = step / 2.0
+        while d < total:
+            acc = 0.0
+            for seg in segs:
+                if acc + seg.length >= d:
+                    t = (d - acc) / seg.length if seg.length > 0 else 0.0
+                    x, y = seg.point_at(t)
+                    h = seg.heading_at(t) + (math.pi if backwards else 0.0)
+                    c, sn = math.cos(h), math.sin(h)
+                    px, py = x * SCALE, -y * SCALE
+                    tip = QPointF(px + 8 * c, py - 8 * sn)
+                    left = QPointF(px - 6 * c - 5 * sn, py + 6 * sn - 5 * c)
+                    right = QPointF(px - 6 * c + 5 * sn, py + 6 * sn + 5 * c)
+                    painter.drawPolygon(QPolygonF([tip, left, right]))
+                    break
+                acc += seg.length
+            d += step
+        x, y = segs[0].point_at(0.0)
+        painter.setPen(QPen(Qt.white))
+        painter.drawText(QPointF(x * SCALE + 4, -y * SCALE - 4), f"{self.model.id}  speed={self.model.speed:.2f}")
+
     def paint(self, painter: QPainter, option, widget=None):
+        if self.is_path():
+            self._paint_path(painter, option)
+            return
         super().paint(painter, option, widget)
         # Direction arrow, rotated locally by `directionAngle` (the belt's
         # travel direction offset from its own shape orientation - see
@@ -2178,6 +2279,9 @@ class CanvasView(QGraphicsView):
         # standalone-demo/no-undo case) falls back to applying mutations
         # directly instead of going through a command.
         self.undo_stack: Optional[QUndoStack] = None
+        # An interactive drawing tool (path_tool.PathDrawTool) that gets
+        # mouse/key events before the default select/drag handling.
+        self.tool = None
         self._pan_tool_active = False
         self._middle_pan_active = False
         self._middle_pan_last_pos = None
@@ -2344,6 +2448,9 @@ class CanvasView(QGraphicsView):
             self._draw_measure_selection(target)
 
     def keyPressEvent(self, event):
+        if self.tool is not None and self.tool.key_press(event):
+            event.accept()
+            return
         # Don't fight the Pan Tool toggle: if it's already active, Space
         # has nothing to add (already in ScrollHandDrag), and releasing
         # Space later must not drop back to RubberBandDrag out from under it.
@@ -2371,6 +2478,9 @@ class CanvasView(QGraphicsView):
             self._middle_pan_active = True
             self._middle_pan_last_pos = event.pos()
             self.setCursor(Qt.ClosedHandCursor)
+            event.accept()
+            return
+        if self.tool is not None and self.tool.mouse_press(event):
             event.accept()
             return
         if self._measure_mode and event.button() == Qt.LeftButton:
@@ -2440,6 +2550,9 @@ class CanvasView(QGraphicsView):
             v_bar.setValue(v_bar.value() - delta.y())
             event.accept()
             return
+        if self.tool is not None and self.tool.mouse_move(event):
+            event.accept()
+            return
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event):
@@ -2448,7 +2561,16 @@ class CanvasView(QGraphicsView):
             self.unsetCursor()
             event.accept()
             return
+        if self.tool is not None and self.tool.mouse_release(event):
+            event.accept()
+            return
         super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if self.tool is not None and self.tool.mouse_double_click(event):
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
 
     def _copy_selected(self):
         selected = [i for i in self.scene().selectedItems() if isinstance(i, PlacedItem)]
@@ -2526,7 +2648,9 @@ def _field_specs_for(item: PlacedItem):
         specs.append(("float", "rotation", "Rotation", -360.0, 360.0, 1.0))
     if isinstance(item, BeltItem):
         specs.append(("float", "directionAngle", "Direction", -360.0, 360.0, 1.0))
-        if item.is_curved():
+        if item.is_path():
+            specs.append(("float", "beltWidth", "Width", 0.05, 100.0, 0.05))
+        elif item.is_curved():
             specs.append(("float", "radius", "Radius", 0.1, 100.0, 0.1))
             specs.append(("float", "startAngle", "StartAng", -360.0, 360.0, 1.0))
             specs.append(("float", "endAngle", "EndAng", -360.0, 360.0, 1.0))
@@ -2760,6 +2884,8 @@ class PropertiesPanel(QWidget):
             item.setRotation(-value)
         elif isinstance(item, BeltItem) and item.is_curved() and attr in ("radius", "startAngle", "endAngle", "beltWidth"):
             item.set_arc_params(item.model.radius, item.model.startAngle, item.model.endAngle, item.model.beltWidth)
+        elif isinstance(item, BeltItem) and item.is_path() and attr == "beltWidth":
+            item.sync_from_model()
         elif isinstance(item, BeltItem) and not item.is_curved() and attr in ("length", "beltWidth"):
             item.set_size(item.model.length, item.model.beltWidth)
         elif attr in ("width", "height") and isinstance(item, (SensorItem, SinkItem, ButtonItem)):
@@ -3144,6 +3270,7 @@ class MainWindow(QMainWindow):
         # because layout_editor_cad builds on this module's classes.
         from layout_editor_cad import CadController
         self.cad = CadController(self, belt_item_cls=BeltItem, to_scene_pos=to_scene_pos,
+                                 from_scene_pos=from_scene_pos, snap_free_point=_snap_free_point,
                                  scale=SCALE, file_menu=file_menu)
         check_dock = QDockWidget("Layout Check", self)
         check_dock.setWidget(self.cad.check_panel)

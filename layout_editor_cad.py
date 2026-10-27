@@ -33,6 +33,7 @@ from cad.constraints import (
 from cad.ports import belt_ports
 from config_parser import BackgroundDrawing, BeltConnection
 from id_utils import next_indexed_id
+from path_tool import AnchorGripManager, InsertShapeDialog, PathDrawTool, make_preset_belt
 
 PORT_Z = 1500
 BACKGROUND_Z = -1000
@@ -219,11 +220,16 @@ class LayoutCheckPanel(QWidget):
 # ---------------------------------------------------------------------------
 
 class CadController:
-    def __init__(self, window, *, belt_item_cls, to_scene_pos, scale, file_menu):
+    def __init__(self, window, *, belt_item_cls, to_scene_pos, from_scene_pos, snap_free_point, scale, file_menu):
         self.window = window
         self.belt_item_cls = belt_item_cls
         self.to_scene_pos = to_scene_pos
+        self.from_scene_pos = from_scene_pos
         self.scale = scale
+        self.path_tool = PathDrawTool(window, belt_item_cls=belt_item_cls, to_scene_pos=to_scene_pos,
+                                      from_scene_pos=from_scene_pos, snap_free_point=snap_free_point, scale=scale)
+        self.grips = AnchorGripManager(window, belt_item_cls=belt_item_cls, scale=scale,
+                                       snap_free_point=snap_free_point)
         self.ports = PortOverlay(self)
         self.closing = False  # set by MainWindow.closeEvent: stop touching the scene
         self.background_item: Optional[BackgroundItem] = None
@@ -236,8 +242,15 @@ class CadController:
         self.ports.refresh()
 
     def _on_undo_index_changed(self, _index):
-        if not self.closing:
+        if self.closing:
+            return
+        try:
             self.ports.refresh()
+            self.grips.refresh()
+        except RuntimeError:
+            # Qt already destroyed the scene (process exiting without a
+            # closeEvent) - nothing left to draw on.
+            self.closing = True
 
     # -- model access --------------------------------------------------------
 
@@ -370,6 +383,15 @@ class CadController:
 
         tools = w.menuBar().addMenu("Tools")
         for text, shortcut, slot in (
+            ("Draw Belt Path", "P", self.path_tool.start),
+            ("Insert Belt Shape...", "Shift+P", self.insert_shape),
+        ):
+            action = QAction(text, w)
+            action.setShortcut(QKeySequence(shortcut))
+            action.triggered.connect(slot)
+            tools.addAction(action)
+        tools.addSeparator()
+        for text, shortcut, slot in (
             ("Connect Belts", "Ctrl+J", self.connect_selected),
             ("Fillet Belts...", "Ctrl+Shift+F", self.fillet_selected),
             ("Disconnect Belts", "Ctrl+Shift+J", self.disconnect_selected),
@@ -499,6 +521,17 @@ class CadController:
             return
         self._push("Solve connections", [cmd])
         self._status(f"Re-attached {len(geometry)} belt(s).")
+
+    def insert_shape(self):
+        dialog = InsertShapeDialog(self.window)
+        if dialog.exec() != InsertShapeDialog.Accepted:
+            return
+        center = self.from_scene_pos(self.window.view.mapToScene(self.window.view.viewport().rect().center()))
+        belt = make_preset_belt(dialog.values(), center, [i.model.id for i in self.window.items_list])
+        item = self.window.view._add_item(self.belt_item_cls(belt), text="Insert Belt Shape")
+        self.window.scene.clearSelection()
+        item.setSelected(True)
+        self._status(f"Inserted {belt.id}. Drag its anchors to adjust; Ctrl+click an anchor to toggle an arc.")
 
     def run_check(self):
         issues = check_layout(self.window._build_export_config())

@@ -272,6 +272,8 @@ class EditorUI:
                     props_to_show.append("beltVertexs")
             elif item.type == "curved":
                 props_to_show += ["radius", "beltWidth", "startAngle", "endAngle"]
+            elif item.type == "path":
+                props_to_show += ["beltWidth"]  # anchors are edited in layout_editor.py
         elif isinstance(item, Sensor):
             props_to_show += ["width", "height", "sensorType", "label"]
             if item.sensorType == "laser_banner":

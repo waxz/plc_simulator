@@ -24,6 +24,7 @@ from shapely import STRtree
 from shapely.geometry import LineString, Point, Polygon, box
 
 from config_parser import Belt, SimulatorConfig
+from cad.path import belt_world_path, footprint as path_footprint, segments
 from cad.ports import belt_ports, centerline_points, heading_difference
 from math_utils import get_belt_polygon, get_rect_vertices
 
@@ -45,6 +46,9 @@ class Issue:
 
 
 def belt_footprint(belt: Belt) -> Polygon:
+    if belt.type == "path":
+        pts, bulges = belt_world_path(belt)
+        return path_footprint(pts, bulges, belt.closed, belt.beltWidth)
     if belt.type == "curved":
         line = LineString(centerline_points(belt, segments_per_90deg=32))
         return line.buffer(belt.beltWidth / 2.0, cap_style="flat", join_style="round")
@@ -135,6 +139,18 @@ def check_layout(config: SimulatorConfig) -> List[Issue]:
             issues.append(Issue("warning", "open outlet",
                                 f"Parcels leaving {belt.id} at ({ports.outlet.x:.2f}, {ports.outlet.y:.2f}) "
                                 f"land on no belt and no sink.", [belt.id], (ports.outlet.x, ports.outlet.y)))
+
+    # Drawn belts: an arc tighter than half the belt width folds the inner edge.
+    for belt in config.belts:
+        if belt.type != "path" or not belt.path:
+            continue
+        pts, bulges = belt_world_path(belt)
+        tight = [s for s in segments(pts, bulges, belt.closed) if s.kind == "arc" and s.radius < belt.beltWidth / 2.0]
+        if tight:
+            issues.append(Issue("error", "curve too tight",
+                                f"{belt.id} has a curve of radius {min(s.radius for s in tight):.2f} m, less than half "
+                                f"its width ({belt.beltWidth / 2:.2f} m) - the inner edge folds over.",
+                                [belt.id], tight[0].p0))
 
     # Sensors and sources must sit over a belt.
     for sensor in config.sensors:

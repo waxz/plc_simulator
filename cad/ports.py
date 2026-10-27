@@ -16,6 +16,7 @@ import math
 from dataclasses import dataclass
 from typing import Optional
 
+from cad.path import belt_world_path, end_heading, flatten, path_flow_sign, segments, start_heading
 from config_parser import Belt
 
 
@@ -39,6 +40,9 @@ def flow_sign(belt: Belt) -> float:
 
 
 def is_portable(belt: Belt) -> bool:
+    if belt.type == "path":
+        # A loop has no inlet/outlet.
+        return not belt.closed and belt.path is not None and len(belt.path) >= 2
     if belt.type == "curved":
         return belt.radius > 0.0
     if getattr(belt, "shape", "rectangle") == "quadrilateral":
@@ -73,6 +77,14 @@ def curved_ccw(belt: Belt) -> bool:
 def belt_ports(belt: Belt) -> Optional[BeltPorts]:
     if not is_portable(belt):
         return None
+    if belt.type == "path":
+        pts, bulges = belt_world_path(belt)
+        segs = segments(pts, bulges, False)
+        first = Port(pts[0][0], pts[0][1], math.degrees(start_heading(segs)))
+        last = Port(pts[-1][0], pts[-1][1], math.degrees(end_heading(segs)))
+        if path_flow_sign(belt) > 0:
+            return BeltPorts(first, last)
+        return BeltPorts(Port(last.x, last.y, last.heading + 180.0), Port(first.x, first.y, first.heading + 180.0))
     if belt.type == "curved":
         start, end = arc_angles(belt)
         r = belt.radius
@@ -105,6 +117,9 @@ def heading_difference(a: float, b: float) -> float:
 
 def centerline_points(belt: Belt, segments_per_90deg: int = 16) -> list[tuple[float, float]]:
     """Centerline from one end to the other (not necessarily in flow order)."""
+    if belt.type == "path":
+        pts, bulges = belt_world_path(belt)
+        return flatten(segments(pts, bulges, belt.closed))[0]
     if belt.type == "curved":
         start, end = arc_angles(belt)
         n = max(2, int(math.ceil((end - start) / 90.0 * segments_per_90deg)) + 1)

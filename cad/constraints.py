@@ -182,6 +182,11 @@ def _check_connections(belts: Dict[str, Belt], connections: Iterable[BeltConnect
 
 def validate_connection(a: Belt, b: Belt) -> None:
     for belt in (a, b):
+        if belt.type == "path":
+            raise ConstraintError(
+                f"{belt.id} is a drawn (path) belt - the constraint solver handles straight and "
+                f"curved belts only. Draw the joint into the path, or edit its anchors."
+            )
         if belt_ports(belt) is None:
             raise ConstraintError(
                 f"{belt.id} has no inlet/outlet (custom-shaped belt, or parcels run across it)."
