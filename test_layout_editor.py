@@ -246,3 +246,42 @@ class CadToolsTest(unittest.TestCase):
         with mock.patch("layout_editor_cad.QFileDialog.getSaveFileName", return_value=(out, "")):
             self.window.cad.export_dxf()
         self.assertEqual(len(ezdxf.readfile(out).modelspace().query('LWPOLYLINE[layer=="BELTS"]')), 2)
+
+
+# ---------------------------------------------------------------------------
+# Shutdown
+# ---------------------------------------------------------------------------
+import subprocess  # noqa: E402
+import sys  # noqa: E402
+
+_SHUTDOWN_SCRIPT = r'''
+import os, sys
+os.environ["QT_QPA_PLATFORM"] = "offscreen"
+from unittest import mock
+from PySide6.QtCore import QTimer
+from PySide6.QtGui import QUndoCommand
+from PySide6.QtWidgets import QApplication, QMessageBox
+import layout_editor
+
+def main():  # like layout_editor.main(): the window dies while sys.exit unwinds
+    app = QApplication([])
+    window = layout_editor.MainWindow(config_path=None)
+    window.show()
+    window.undo_stack.push(QUndoCommand("unsaved edit"))
+    mock.patch("layout_editor.QMessageBox.question", return_value=QMessageBox.Discard).start()
+    QTimer.singleShot(50, window.close)
+    sys.exit(app.exec())
+
+main()
+'''
+
+
+class ShutdownTest(unittest.TestCase):
+    def test_closing_with_discarded_edits_exits_without_a_traceback(self):
+        # Destroying a dirty QUndoStack emits cleanChanged; the title slot
+        # must not touch the half-deleted stack.
+        result = subprocess.run([sys.executable, "-c", _SHUTDOWN_SCRIPT], cwd=os.path.dirname(os.path.abspath(__file__)),
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertNotIn("already deleted", result.stderr)

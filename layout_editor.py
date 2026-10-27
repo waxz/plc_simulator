@@ -3201,7 +3201,7 @@ class MainWindow(QMainWindow):
 
         self._update_title()
         # Title shows "*" while there are unsaved edits.
-        self.undo_stack.cleanChanged.connect(lambda _clean: self._update_title())
+        self.undo_stack.cleanChanged.connect(self._on_clean_changed)
 
         # File menu. Save writes back to the file that was opened (or asks for
         # a path the first time); the simulator runs it with
@@ -3288,9 +3288,15 @@ class MainWindow(QMainWindow):
     def _update_coord_label(self, world_x: float, world_y: float):
         self._coord_label.setText(f"x: {world_x:.2f}  y: {world_y:.2f}")
 
+    def _on_clean_changed(self, _clean):
+        self._update_title()
+
     def _update_title(self):
         name = os.path.basename(self.config_path) if self.config_path else "untitled"
-        dirty = "" if self.undo_stack.isClean() else "*"
+        try:
+            dirty = "" if self.undo_stack.isClean() else "*"
+        except RuntimeError:
+            return  # the undo stack is being destroyed (window closing)
         self.setWindowTitle(f"Conveyor Layout Editor - {name}{dirty}")
 
     def closeEvent(self, event):
@@ -3313,6 +3319,13 @@ class MainWindow(QMainWindow):
             self.scene.selectionChanged.disconnect()
         except (RuntimeError, TypeError):
             pass  # already disconnected, or nothing was ever connected
+        # Same for the undo stack: discarding unsaved edits leaves it dirty,
+        # and while Qt destroys it, it emits cleanChanged once more
+        # ("Internal C++ object (QUndoStack) already deleted").
+        try:
+            self.undo_stack.cleanChanged.disconnect(self._on_clean_changed)
+        except (RuntimeError, TypeError):
+            pass
         if getattr(self, "cad", None) is not None:
             self.cad.closing = True
         super().closeEvent(event)
