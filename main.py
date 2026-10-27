@@ -23,8 +23,7 @@ def run_pygame(config, physics_engine, mqtt, headless: bool, runner=None):
     # Console fallback for the visual "Sim/Real" indicator (visualizer.py's
     # overlay) - the one place that still verifies timing when running
     # --headless, where there's no on-screen overlay to look at.
-    real_start = time.perf_counter()
-    last_timing_report = real_start
+    last_timing_report = time.perf_counter()
 
     try:
         while running:
@@ -55,9 +54,10 @@ def run_pygame(config, physics_engine, mqtt, headless: bool, runner=None):
                 # No display: nothing else paces this loop.
                 time.sleep(1 / 60.0)
 
+            play_real = renderer.track_play_time()  # wall time spent playing, not since launch
             now = time.perf_counter()
             if now - last_timing_report >= 5.0:
-                real_elapsed = now - real_start
+                real_elapsed = play_real
                 ratio = physics_engine.sim_time / real_elapsed if real_elapsed > 0 else 0.0
                 print(f"[TIMING] sim={physics_engine.sim_time:.1f}s real={real_elapsed:.1f}s ratio={ratio:.3f}x "
                       f"dropped={physics_engine.dropped_time:.2f}s exchange={mqtt.stats()}")

@@ -19,7 +19,7 @@ class Renderer:
         self.height = 800
         self.screen = None
         self.clock = pygame.time.Clock()
-        self.fps = 30
+        self.fps = 60
         
         if not self.headless:
             pygame.init()
@@ -56,8 +56,12 @@ class Renderer:
 
         # For the "Sim/Real" timing indicator - time.perf_counter() rather
         # than pygame.time.get_ticks(), since the latter needs pygame.init()
-        # which is skipped entirely in headless mode.
+        # which is skipped entirely in headless mode. Only wall time spent
+        # PLAYING counts: the app starts paused, and dividing sim time by
+        # time-since-launch reported e.g. 0.48x after 18 s spent paused.
         self.sim_start_perf = time.perf_counter()
+        self.play_real_time = 0.0
+        self._play_clock_last = self.sim_start_perf
         
         # GUI
         if not self.headless:
@@ -741,6 +745,15 @@ class Renderer:
                 label = self.small_font.render(label_text, True, label_color)
                 self.screen.blit(label, label.get_rect(center=(sx, sy)))
 
+    def track_play_time(self) -> float:
+        """Accumulate wall time spent playing; call once per loop iteration.
+        Returns the total."""
+        now = time.perf_counter()
+        if self.playing:
+            self.play_real_time += now - self._play_clock_last
+        self._play_clock_last = now
+        return self.play_real_time
+
     def render(self, physics_engine=None):
         if self.headless:
             return
@@ -831,11 +844,13 @@ class Renderer:
                 # keeping pace with real time rather than silently falling
                 # behind under load - "does the parcel really move at the
                 # speed it's set to" starts with "is time itself correct".
-                real_elapsed = max(1e-6, time.perf_counter() - self.sim_start_perf)
+                real_elapsed = max(1e-6, self.track_play_time())
                 ratio = physics_engine.sim_time / real_elapsed
                 ratio_color = (150, 255, 150) if abs(ratio - 1.0) <= 0.1 else (255, 200, 0)
+                dropped = getattr(physics_engine, "dropped_time", 0.0)
                 texts.append(self.font.render(
-                    f"Sim/Real: {ratio:.2f}x (sim={physics_engine.sim_time:.1f}s real={real_elapsed:.1f}s)",
+                    f"Sim/Real: {ratio:.2f}x (sim={physics_engine.sim_time:.1f}s real={real_elapsed:.1f}s "
+                    f"dropped={dropped:.2f}s)",
                     True, ratio_color,
                 ))
             texts.append(self._cached_text(
