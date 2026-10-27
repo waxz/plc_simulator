@@ -9,10 +9,14 @@ Three tools (Tools menu), sharing one input model:
   Draw Belt Outline (O)  the belt's outline itself, corner by corner - any
                          polygon, e.g. a skewed quad feeding a merge ->
                          polygon belt (shape "quadrilateral")
-  Belt from Drawing (B)  on an imported DXF layout: click inside an area
-                         bounded by drawing lines -> polygon belt with that
-                         exact outline; click on a drawing line/polyline/arc
-                         -> path belt along it (arcs kept exact)
+  Belt from Sketch/Drawing (B)  on sketch geometry or an imported DXF
+                         layout: click inside a closed area, or on a
+                         line/arc (and everything joined to it). Toolbar Type
+                         (auto / linear / curved / path) and Direction choose
+                         the belt; the preview shows it with flow arrows.
+                         Shift+click collects split pieces; Enter joins them.
+  Sketch Rectangle / Circle / Polygon   basic closed shapes as sketch
+                         geometry, to turn into belts the same way
 
 Point input (Path and Outline tools):
   click            place a point. Object snap (OSNAP) picks the point you
@@ -28,9 +32,6 @@ Point input (Path and Outline tools):
   Backspace / Esc  remove the last point / cancel
   L / A            (path only) straight lines / tangent arcs
 
-Insert Belt Shape (Shift+P): triangle / rectangle / polygon / circle loops,
-U-turn, L-bend, S-bend presets.
-
 Editing: select a path or polygon belt to show handles on its points.
   drag handle          move the point (with object snap)
   Ctrl+click handle    (path) toggle the segment after it: straight <-> arc
@@ -42,18 +43,21 @@ belts.py); this module is only the Qt interaction around it.
 import math
 from typing import Callable, List, Optional, Tuple
 
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import QPointF, QRectF, Qt, QTimer
 from PySide6.QtGui import QBrush, QColor, QFont, QPainterPath, QPen, QPolygonF, QUndoCommand
 from PySide6.QtWidgets import (
-    QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QGraphicsEllipseItem,
+    QButtonGroup, QComboBox, QDoubleSpinBox, QGraphicsEllipseItem,
     QGraphicsItem, QGraphicsPathItem, QGraphicsRectItem, QGraphicsSimpleTextItem, QLabel, QLineEdit,
     QSpinBox, QToolBar, QToolButton,
 )
 from shapely.geometry import Polygon
 
 from cad import path as cpath
-from cad.belts import outline_belt, path_belt
-from cad.snap import DrawingPicker, Snap, SnapIndex, best_snap, chain_from, polygon_vertices
+from shapely.ops import unary_union
+
+from cad.belts import belt_from_target, flow_arrows, outline_belt, path_belt
+from cad.checks import belt_footprint
+from cad.snap import DrawingPicker, Snap, SnapIndex, best_snap, join_shapes
 from config_parser import Belt, PathNode, SketchEntity
 from id_utils import next_indexed_id
 
@@ -165,6 +169,38 @@ class PathToolbar(QToolBar):
         self.corner_spin = QDoubleSpinBox(minimum=0.0, maximum=50.0, singleStep=0.25, value=1.0, decimals=3, suffix=" m")
         self.corner_spin.setToolTip("Path: sharp corners are rounded with this radius when finished (0 = sharp)")
         self.addWidget(self.corner_spin)
+        self.sides_actions = [self.addWidget(QLabel(" Sides "))]
+        self.sides_spin = QSpinBox(minimum=3, maximum=64, value=6)
+        self.sides_actions.append(self.addWidget(self.sides_spin))
+        # Belt from Sketch/Drawing: what kind of belt, which way parcels go.
+        self.pick_actions = [self.addWidget(QLabel(" Type "))]
+        self.type_combo = QComboBox()
+        for label, key in (("Auto", "auto"), ("Linear", "linear"), ("Curved", "curved"), ("Path", "path")):
+            self.type_combo.addItem(label, key)
+        self.type_combo.setToolTip(
+            "Auto: straight line -> linear, arc/circle -> curved, other chains -> path; arc-shaped area -> "
+            "curved, other areas -> linear.\nLinear: parcels move one way. Curved: parcels turn about the "
+            "arc's center. Path: parcels follow the line.")
+        self.pick_actions.append(self.addWidget(self.type_combo))
+        self.pick_actions.append(self.addWidget(QLabel(" Direction ")))
+        self.direction_combo = QComboBox()
+        for label, key in (("Forward", "forward"), ("Reverse", "reverse"), ("Across +90°", "across+"),
+                           ("Across -90°", "across-")):
+            self.direction_combo.addItem(label, key)
+        self.direction_combo.setToolTip(
+            "Forward: along a picked line in its drawn order; for an area along its long axis (linear) or "
+            "counter-clockwise (curved). Reverse: the other way. Across: linear only, sideways.\n"
+            "The preview arrows show the result.")
+        self.pick_actions.append(self.addWidget(self.direction_combo))
+        self.pick_actions.append(self.addWidget(QLabel(" Join gap ")))
+        self.gap_spin = QDoubleSpinBox(minimum=0.0, maximum=1.0, singleStep=0.005, value=0.02, decimals=3, suffix=" m")
+        self.gap_spin.setToolTip("Line ends this close count as joined (drawings rarely join exactly)")
+        self.pick_actions.append(self.addWidget(self.gap_spin))
+        self.on_options_changed: Optional[Callable[[], None]] = None
+        for signal in (self.type_combo.currentIndexChanged, self.direction_combo.currentIndexChanged,
+                       self.gap_spin.valueChanged, self.width_spin.valueChanged, self.sides_spin.valueChanged,
+                       self.corner_spin.valueChanged):
+            signal.connect(self._options_changed)
         self.addSeparator()
         self.osnap_button = QToolButton(text="OSNAP", checkable=True, checked=True)
         self.osnap_button.setToolTip("Snap to drawing and component points (endpoint, center, midpoint, nearest)")
@@ -174,6 +210,8 @@ class PathToolbar(QToolBar):
         self.input.setMinimumWidth(240)
         self.input.returnPressed.connect(lambda: on_input(self.input.text()))
         self.addWidget(self.input)
+        for action in self.pick_actions + self.sides_actions:
+            action.setVisible(False)
         self.setEnabled(False)
 
     @property
@@ -183,7 +221,20 @@ class PathToolbar(QToolBar):
     def set_arc_mode(self, arc: bool):
         (self.arc_button if arc else self.line_button).setChecked(True)
 
-    def configure(self, title: str, *, segments: bool, width: bool, corner: bool, points: bool):
+    @property
+    def belt_kind(self) -> str:
+        return self.type_combo.currentData()
+
+    @property
+    def direction(self) -> str:
+        return self.direction_combo.currentData()
+
+    def _options_changed(self, *_):
+        if self.on_options_changed is not None:
+            self.on_options_changed()
+
+    def configure(self, title: str, *, segments: bool, width: bool, corner: bool, points: bool,
+                  belt_type: bool = False, sides: bool = False):
         self.setEnabled(True)
         self.mode_label.setText(f"  {title}  ")
         for w in (self.line_button, self.arc_button):
@@ -191,6 +242,11 @@ class PathToolbar(QToolBar):
         self.width_spin.setEnabled(width)
         self.corner_spin.setEnabled(corner)
         self.input.setEnabled(points)
+        for action in self.pick_actions:
+            action.setVisible(belt_type)
+        for action in self.sides_actions:
+            action.setVisible(sides)
+        self.on_options_changed = None  # the tool that wants live updates sets it after configure()
 
 
 # ---------------------------------------------------------------------------
@@ -615,6 +671,129 @@ class SketchArcTool(_PointTool):
         self._draw_snap_marker()
 
 
+class _SketchShapeTool(_PointTool):
+    """Two clicks (or typed points) -> a closed basic shape as sketch
+    geometry; Belt from Sketch/Drawing then turns it into any belt type."""
+
+    on_sketch: Optional[Callable[[SketchEntity], None]] = None
+    corner = False   # toolbar Corner R rounds the corners
+    sides = False    # toolbar Sides applies
+
+    def _configure_toolbar(self):
+        self.toolbar.configure(self.title, segments=False, width=False, corner=self.corner, points=True,
+                               sides=self.sides)
+
+    def shape(self, a, b) -> Tuple[List[Tuple[float, float]], List[float]]:
+        raise NotImplementedError
+
+    def describe(self, a, b) -> str:
+        raise NotImplementedError
+
+    def add_anchor(self, p):
+        if self.anchors and math.hypot(p[0] - self.anchors[0][0], p[1] - self.anchors[0][1]) < 1e-9:
+            return
+        self.anchors.append(p)
+        self.bulges.append(0.0)
+        if len(self.anchors) >= 2:
+            self.finish()
+        else:
+            self._update_preview()
+
+    def close_path(self):
+        pass
+
+    def finish(self, closed: bool = True):
+        if len(self.anchors) < 2:
+            if not self.anchors:
+                self.stop()
+            return
+        a, b = self.anchors[:2]
+        try:
+            pts, bulges = self.shape(a, b)
+        except ValueError as exc:
+            self.anchors, self.bulges = self.anchors[:1], self.bulges[:1]
+            self._status(str(exc), 5000)
+            return
+        entity = SketchEntity(points=pts, bulges=bulges, closed=True)
+        text = self.describe(a, b)
+        self.stop()
+        if self.on_sketch:
+            self.on_sketch(entity)
+        self._status(f"Sketched {text}. Press B, then click inside it (area) or on it (line) for a belt.", 8000)
+
+    def _update_preview(self):
+        self._clear_preview()
+        if not self.active:
+            return
+        if self.anchors and self.cursor is not None:
+            try:
+                pts, bulges = self.shape(self.anchors[0], self.cursor)
+            except ValueError:
+                pts = None
+            if pts:
+                flat, _ = cpath.flatten(cpath.segments(pts, bulges, True), tolerance=0.01)
+                line = QPainterPath()
+                line.addPolygon(QPolygonF([self.to_scene(x, y) for x, y in flat + flat[:1]]))
+                self._add_preview(QGraphicsPathItem(line)).setPen(QPen(QColor("#22d3ee"), 2))
+                self._draw_readout(self.describe(self.anchors[0], self.cursor))
+        self._draw_anchor_markers()
+        self._draw_snap_marker()
+
+
+class SketchRectangleTool(_SketchShapeTool):
+    title = "Sketch Rectangle"
+    hint = ("Sketch Rectangle: click one corner, then the opposite corner (OSNAP), or type @length,width. "
+            "Corner R rounds the corners. Esc to cancel.")
+    corner = True
+
+    def shape(self, a, b):
+        (x0, y0), (x1, y1) = a, b
+        if abs(x1 - x0) < 1e-9 or abs(y1 - y0) < 1e-9:
+            raise ValueError("A rectangle needs a width and a height.")
+        pts = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+        r = min(self.toolbar.corner_spin.value(), abs(x1 - x0) / 2, abs(y1 - y0) / 2)
+        return cpath.fillet_corners(pts, [0.0] * 4, True, r) if r > 0 else (pts, [0.0] * 4)
+
+    def describe(self, a, b):
+        return f"rectangle {abs(b[0] - a[0]):.3f} x {abs(b[1] - a[1]):.3f} m"
+
+
+class SketchCircleTool(_SketchShapeTool):
+    title = "Sketch Circle"
+    hint = "Sketch Circle: click the center, then a point on the circle (OSNAP), or type the radius. Esc to cancel."
+
+    def shape(self, a, b):
+        r = math.hypot(b[0] - a[0], b[1] - a[1])
+        if r < 1e-9:
+            raise ValueError("A circle needs a radius.")
+        return [(a[0] + r, a[1]), (a[0] - r, a[1])], [1.0, 1.0]
+
+    def describe(self, a, b):
+        return f"circle R {math.hypot(b[0] - a[0], b[1] - a[1]):.3f} m"
+
+
+class SketchPolygonTool(_SketchShapeTool):
+    title = "Sketch Polygon"
+    hint = ("Sketch Polygon: click the center, then a corner (OSNAP), or type the corner. Toolbar Sides sets "
+            "the number of sides, Corner R rounds them. Esc to cancel.")
+    corner = True
+    sides = True
+
+    def shape(self, a, b):
+        r = math.hypot(b[0] - a[0], b[1] - a[1])
+        if r < 1e-9:
+            raise ValueError("A polygon needs a size.")
+        n = self.toolbar.sides_spin.value()
+        a0 = math.atan2(b[1] - a[1], b[0] - a[0])
+        pts = [(a[0] + r * math.cos(a0 + 2 * math.pi * i / n), a[1] + r * math.sin(a0 + 2 * math.pi * i / n))
+               for i in range(n)]
+        corner = self.toolbar.corner_spin.value()
+        return cpath.fillet_corners(pts, [0.0] * n, True, corner) if corner > 0 else (pts, [0.0] * n)
+
+    def describe(self, a, b):
+        return f"{self.toolbar.sides_spin.value()}-sided polygon R {math.hypot(b[0] - a[0], b[1] - a[1]):.3f} m"
+
+
 class OutlineDrawTool(_PointTool):
     """The belt outline itself, corner by corner -> polygon belt. The first
     edge drawn sets the flow direction."""
@@ -676,13 +855,19 @@ class OutlineDrawTool(_PointTool):
 
 
 class PickFromDrawingTool:
-    """Belt from Drawing: hover the imported layout; inside a closed area the
-    area is highlighted, on a line the line is. Click to create the belt."""
+    """Belt from Sketch/Drawing: hover the sketch or imported layout; inside
+    a closed area the area is highlighted, on a line the chain of lines/arcs
+    joined to it. The preview shows the belt that a click creates - its type
+    (toolbar Type) and where parcels go (toolbar Direction, arrows).
+
+    Shift+click collects pieces when what you mean is split: several areas
+    (merged into one outline) or several lines/arcs (joined into one chain,
+    e.g. across a branch). Enter creates the belt from them, Esc clears."""
 
     title = "Belt from Sketch/Drawing"
-    hint = ("Belt from Sketch/Drawing: click on a line or arc for a belt along it and every line/arc "
-            "connected to it (toolbar Width), or inside a closed area for a belt with that outline. "
-            "Esc to finish.")
+    hint = ("Belt from Sketch/Drawing: click on a line/arc (belt along it and everything joined to it) or inside "
+            "a closed area (belt filling it). Toolbar: Type, Direction, Width, Join gap. Shift+click collects "
+            "split pieces, Enter makes one belt of them. Esc to finish.")
 
     def __init__(self, window, toolbar: PathToolbar, snap: SnapEngine, *, belt_item_cls):
         self.window = window
@@ -694,72 +879,176 @@ class PickFromDrawingTool:
         self.from_scene = snap.from_scene
         self.active = False
         self._preview_items = []
-        self.target = None  # ("region", Polygon) | ("line", DrawingShape)
+        self.target = None      # ("region", Polygon) | ("line", (points, bulges, closed))
+        self.selection = []     # Shift+click pieces: ("region", Polygon) | ("line", DrawingShape)
+        self._cursor: Optional[Tuple[float, float]] = None
+        self._chain_cache = (None, None)  # (shape, chain) under the cursor, reused while hovering it
+        self._refresh_pending = False
+
+    @property
+    def picker(self) -> Optional[DrawingPicker]:
+        return self.snapper.picker
 
     def start(self):
-        if self.snapper.picker is None:
+        if self.picker is None:
             self.window.statusBar().showMessage(
-                "Nothing to pick: sketch lines/arcs first (Tools > Sketch Line / Sketch Arc) "
+                "Nothing to pick: sketch lines/arcs/shapes first (Tools > Sketch ...) "
                 "or import a DXF background.", 6000)
             return
         current = getattr(self.view, "tool", None)
         if current is not None and current is not self:
             current.stop()
         self.active = True
+        self.selection = []
         self.view.tool = self
         self.view.setDragMode(self.view.DragMode.NoDrag)
         self.view.viewport().setCursor(Qt.PointingHandCursor)
-        self.toolbar.configure("From drawing", segments=False, width=True, corner=False, points=False)
+        self.toolbar.configure("From drawing", segments=False, width=True, corner=False, points=False,
+                               belt_type=True)
+        self.toolbar.on_options_changed = self._options_changed
         self.window.statusBar().showMessage(self.hint)
+        self.picker.set_join_gap(self.toolbar.gap_spin.value())
         # Closed areas are found on a worker thread: hovering lines works meanwhile.
-        self.snapper.picker.start_regions()
+        self.picker.start_regions()
 
     def stop(self):
         self.active = False
+        self.selection = []
         _PointTool._clear_preview(self)
         if getattr(self.view, "tool", None) is self:
             self.view.tool = None
         self.view.setDragMode(self.view.DragMode.RubberBandDrag)
         self.view.viewport().unsetCursor()
+        self.toolbar.on_options_changed = None
         self.toolbar.setEnabled(False)
         self.toolbar.mode_label.setText("  ")
+
+    def _options_changed(self):
+        if not self.active or self.picker is None:
+            return
+        self.picker.set_join_gap(self.toolbar.gap_spin.value())
+        self._chain_cache = (None, None)
+        if self._cursor is not None:
+            self.target = self.target_at(*self._cursor, wait=False)
+        self._update_preview()
+
+    # -- what is under the cursor ------------------------------------------------
+
+    def _line_at(self, x: float, y: float):
+        picker = self.picker
+        return picker.pick_line(x, y, self.snapper.tolerance_m()) if picker is not None else None
 
     def target_at(self, x: float, y: float, wait: bool = True):
         """("line", (points, bulges, closed)) for the chain of connected
         lines/arcs through the entity under the cursor, ("region", polygon)
         for the closed area around it, or None. wait=False: no area while
         they are still being found (hovering must not block the UI)."""
-        picker = self.snapper.picker
+        picker = self.picker
         if picker is None:
             return None
-        line = picker.pick_line(x, y, self.snapper.tolerance_m())
+        picker.set_join_gap(self.toolbar.gap_spin.value())
+        line = self._line_at(x, y)
         if line is not None:
-            return ("line", chain_from(picker.shapes, line))
+            cached_shape, chain = self._chain_cache
+            if cached_shape is not line:
+                chain = picker.chain(line)
+                self._chain_cache = (line, chain)
+            return ("line", chain)
         region = picker.pick_region(x, y, wait=wait)
         if region is None and not wait and not picker.regions_ready():
             self.window.statusBar().showMessage(
                 f"Finding closed areas in the drawing ({len(picker.shapes)} entities)... lines can be picked now.",
                 2000)
+            if not self._refresh_pending:  # show the area as soon as it is found, without a mouse move
+                self._refresh_pending = True
+                QTimer.singleShot(150, self._refresh_hover)
         return ("region", region) if region is not None else None
 
+    def _refresh_hover(self):
+        self._refresh_pending = False
+        if self.active and self._cursor is not None and not self.selection:
+            self.target = self.target_at(*self._cursor, wait=False)
+            self._update_preview()
+
+    def piece_at(self, x: float, y: float, wait: bool = True):
+        """The single piece under the cursor for Shift+click: one line/arc
+        shape (not its chain), or the closed area."""
+        line = self._line_at(x, y)
+        if line is not None:
+            return ("line", line)
+        region = self.picker.pick_region(x, y, wait=wait) if self.picker is not None else None
+        return ("region", region) if region is not None else None
+
+    def toggle_piece(self, piece):
+        if piece is None:
+            return
+        if self.selection and self.selection[0][0] != piece[0]:
+            self.selection = []  # areas and lines don't combine: start over with this kind
+        for i, (_, geom) in enumerate(self.selection):
+            if geom is piece[1] or (piece[0] == "region" and geom.equals(piece[1])):
+                del self.selection[i]
+                break
+        else:
+            self.selection.append(piece)
+        what = "area(s)" if self.selection and self.selection[0][0] == "region" else "line(s)"
+        self.window.statusBar().showMessage(
+            f"{len(self.selection)} {what} selected. Shift+click more, Enter to make one belt, Esc to clear.", 0)
+        self._update_preview()
+
+    def selection_target(self):
+        """One target from the Shift+click pieces (ValueError if they don't
+        make one: areas that don't touch, lines that don't join)."""
+        if not self.selection:
+            return None
+        if self.selection[0][0] == "region":
+            merged = unary_union([geom for _, geom in self.selection])
+            gap = self.toolbar.gap_spin.value()
+            if merged.geom_type != "Polygon" and gap > 0:
+                merged = merged.buffer(gap / 2, join_style=2).buffer(-gap / 2, join_style=2)
+            if merged.geom_type != "Polygon":
+                raise ValueError("The selected areas don't touch: they can't be one belt.")
+            return ("region", merged)
+        tol = self.picker.chain_tolerance() if self.picker is not None else 1e-3
+        return ("line", join_shapes([geom for _, geom in self.selection], tol))
+
+    # -- building ------------------------------------------------------------------
+
+    def build(self, target, belt_id: Optional[str] = None) -> Belt:
+        """The belt for a target with the toolbar's Type/Direction/Width
+        (ValueError with the reason if that type doesn't fit)."""
+        picker = self.picker
+        return belt_from_target(
+            belt_id or next_indexed_id([i.model.id for i in self.window.items_list], "belt"), target,
+            kind=self.toolbar.belt_kind, direction=self.toolbar.direction, width=self.toolbar.width_spin.value(),
+            shapes=picker.shapes if picker is not None else (), tol=max(0.01, self.toolbar.gap_spin.value()))
+
     def create(self, target) -> Optional[Belt]:
-        new_id = next_indexed_id([i.model.id for i in self.window.items_list], "belt")
-        kind, geom = target
         try:
-            if kind == "region":
-                belt = outline_belt(new_id, polygon_vertices(geom))
-            else:
-                points, bulges, closed = geom
-                belt = path_belt(new_id, points, bulges, closed, self.toolbar.width_spin.value())
+            belt = self.build(target)
         except ValueError as exc:
             self.window.statusBar().showMessage(str(exc), 6000)
             return None
         item = self.view._add_item(self.belt_item_cls(belt), text="Belt from Drawing")
         self.window.scene.clearSelection()
         item.setSelected(True)
-        what = "outline" if kind == "region" else "centerline"
-        self.window.statusBar().showMessage(f"Created {belt.id} from the drawing {what}. "
+        kind = {"linear": "linear", "curved": "curved", "path": "path"}[belt.type]
+        shape = " polygon" if belt.shape == "quadrilateral" else ""
+        self.window.statusBar().showMessage(f"Created {belt.id}: {kind}{shape} belt. "
                                             f"Click another, or Esc to finish.", 8000)
+        return belt
+
+    def create_from_selection(self) -> Optional[Belt]:
+        try:
+            target = self.selection_target()
+        except ValueError as exc:
+            self.window.statusBar().showMessage(str(exc), 6000)
+            return None
+        if target is None:
+            return None
+        belt = self.create(target)
+        if belt is not None:
+            self.selection = []
+            self._update_preview()
         return belt
 
     # -- events --------------------------------------------------------------------
@@ -767,6 +1056,9 @@ class PickFromDrawingTool:
     def mouse_press(self, event) -> bool:
         if event.button() == Qt.LeftButton:
             x, y = self.from_scene(self.view.mapToScene(event.position().toPoint()))
+            if event.modifiers() & Qt.ShiftModifier:
+                self.toggle_piece(self.piece_at(x, y))
+                return True
             target = self.target_at(x, y)
             if target is not None:
                 self.create(target)
@@ -778,23 +1070,15 @@ class PickFromDrawingTool:
 
     def mouse_move(self, event) -> bool:
         x, y = self.from_scene(self.view.mapToScene(event.position().toPoint()))
-        self.target = self.target_at(x, y, wait=False)
-        _PointTool._clear_preview(self)
-        if self.target is not None:
-            kind, geom = self.target
-            if kind == "region":
-                item = _PointTool._add_preview(self, QGraphicsPathItem(_world_painter_path(geom, self.to_scene)))
-                item.setBrush(QBrush(QColor(250, 204, 21, 70)))
-                item.setPen(QPen(QColor("#facc15"), 2))
-            else:
-                points, bulges, closed = geom
-                flat, _ = cpath.flatten(cpath.segments(points, bulges, closed), 0.01)
-                if closed:
-                    flat.append(flat[0])
-                path = QPainterPath()
-                path.addPolygon(QPolygonF([self.to_scene(px, py) for px, py in flat]))
-                item = _PointTool._add_preview(self, QGraphicsPathItem(path))
-                item.setPen(QPen(QColor("#facc15"), 4))
+        self._cursor = (x, y)
+        if event.modifiers() & Qt.ShiftModifier:
+            piece = self.piece_at(x, y, wait=False)
+            self.target = None if piece is None else (
+                piece if piece[0] == "region" else ("line", (list(piece[1].points), list(piece[1].bulges),
+                                                             piece[1].closed)))
+        else:
+            self.target = self.target_at(x, y, wait=False)
+        self._update_preview()
         return True
 
     def mouse_release(self, event) -> bool:
@@ -804,72 +1088,107 @@ class PickFromDrawingTool:
         return True
 
     def key_press(self, event) -> bool:
-        if event.key() in (Qt.Key_Escape, Qt.Key_Return, Qt.Key_Enter):
-            self.stop()
+        key = event.key()
+        if key in (Qt.Key_Return, Qt.Key_Enter):
+            if self.selection:
+                self.create_from_selection()
+            else:
+                self.stop()
+            return True
+        if key == Qt.Key_Escape:
+            if self.selection:
+                self.selection = []
+                self.window.statusBar().showMessage("Selection cleared.", 3000)
+                self._update_preview()
+            else:
+                self.stop()
             return True
         return False
 
+    # -- preview -------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# Shape presets
-# ---------------------------------------------------------------------------
+    def _outline(self, kind, geom, pen: QPen, brush=None):
+        if kind == "region":
+            item = _PointTool._add_preview(self, QGraphicsPathItem(_world_painter_path(geom, self.to_scene)))
+            if brush is not None:
+                item.setBrush(brush)
+        else:
+            points, bulges, closed = geom
+            flat, _ = cpath.flatten(cpath.segments(points, bulges, closed), 0.01)
+            if closed:
+                flat.append(flat[0])
+            path = QPainterPath()
+            path.addPolygon(QPolygonF([self.to_scene(px, py) for px, py in flat]))
+            item = _PointTool._add_preview(self, QGraphicsPathItem(path))
+        item.setPen(pen)
+        return item
 
-class InsertShapeDialog(QDialog):
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.setWindowTitle("Insert Belt Shape")
-        form = QFormLayout(self)
-        self.kind = QComboBox()
-        for key, (label, _closed, _params) in cpath.PRESETS.items():
-            self.kind.addItem(label, key)
-        form.addRow("Shape:", self.kind)
-        self.size = QDoubleSpinBox(minimum=0.5, maximum=500.0, value=8.0, decimals=3, suffix=" m")
-        self.size_b = QDoubleSpinBox(minimum=0.0, maximum=500.0, value=4.0, decimals=3, suffix=" m")
-        self.sides = QSpinBox(minimum=3, maximum=24, value=6)
-        self.corner = QDoubleSpinBox(minimum=0.0, maximum=100.0, value=1.0, decimals=3, suffix=" m")
-        self.width = QDoubleSpinBox(minimum=0.05, maximum=20.0, value=1.0, decimals=3, suffix=" m")
-        self.size_label, self.size_b_label = QLabel("Size:"), QLabel("Size B:")
-        form.addRow(self.size_label, self.size)
-        form.addRow(self.size_b_label, self.size_b)
-        form.addRow("Sides:", self.sides)
-        form.addRow("Corner radius:", self.corner)
-        form.addRow("Belt width:", self.width)
-        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        form.addRow(buttons)
-        self.kind.currentIndexChanged.connect(self._sync_fields)
-        self._sync_fields()
+    def _arrow(self, x: float, y: float, heading: float, color: QColor):
+        """A fixed-size flow arrow (screen pixels) at a world point."""
+        path = QPainterPath()
+        path.moveTo(-20, 0)
+        path.lineTo(20, 0)
+        path.moveTo(8, -10)
+        path.lineTo(20, 0)
+        path.lineTo(8, 10)
+        item = _fixed_size(_PointTool._add_preview(self, QGraphicsPathItem(path)))
+        item.setPen(QPen(color, 3))
+        item.setPos(self.to_scene(x, y))
+        # Scene y points down (to_scene flips y), so a CCW world angle is a CW scene rotation.
+        item.setRotation(-heading)
 
-    _HINTS = {
-        "triangle": ("Side:", None), "rectangle": ("Length:", "Depth:"), "polygon": ("Circumradius:", None),
-        "circle": ("Diameter:", None), "u_turn": ("Leg length:", "Leg spacing:"),
-        "l_bend": ("Leg 1:", "Leg 2:"), "s_bend": ("Length:", "Offset:"),
-    }
+    def _update_preview(self):
+        _PointTool._clear_preview(self)
+        if not self.active:
+            return
+        for kind, geom in self.selection:
+            shown = geom if kind == "region" else (list(geom.points), list(geom.bulges), geom.closed)
+            self._outline(kind, shown, QPen(QColor("#22d3ee"), 3), QBrush(QColor(34, 211, 238, 60)))
+        target = None
+        if self.selection:
+            try:
+                target = self.selection_target()
+            except ValueError as exc:
+                self.window.statusBar().showMessage(str(exc), 3000)
+        elif self.target is not None:
+            target = self.target
+            self._outline(*target, QPen(QColor("#facc15"), 2 if target[0] == "region" else 4))
+        if target is None:
+            return
+        try:
+            belt = self.build(target, belt_id="preview")
+        except ValueError as exc:
+            self._outline(*target, QPen(QColor("#ef4444"), 3))
+            self.window.statusBar().showMessage(str(exc), 3000)
+            return
+        try:
+            surface = belt_footprint(belt)
+        except Exception:  # noqa: BLE001 - preview only
+            surface = None
+        if surface is not None and not surface.is_empty and surface.geom_type == "Polygon":
+            body = _PointTool._add_preview(self, QGraphicsPathItem(_world_painter_path(surface, self.to_scene)))
+            body.setBrush(QBrush(QColor(250, 204, 21, 70)))
+            body.setPen(QPen(QColor("#facc15"), 0))
+        for x, y, heading in flow_arrows(belt):
+            self._arrow(x, y, heading, QColor(255, 140, 0))
+        label = _fixed_size(_PointTool._add_preview(self, QGraphicsSimpleTextItem(_belt_label(belt))))
+        label.setBrush(QBrush(QColor("#facc15")))
+        label.setFont(QFont("Segoe UI", 9))
+        if self._cursor is not None:
+            label.setPos(self.to_scene(*self._cursor) + QPointF(14, 10))
 
-    def _sync_fields(self):
-        kind = self.kind.currentData()
-        params = cpath.PRESETS[kind][2]
-        size_hint, b_hint = self._HINTS[kind]
-        self.size_label.setText(size_hint)
-        self.size_b.setEnabled("size_b" in params)
-        self.size_b_label.setText(b_hint or "Size B:")
-        self.sides.setEnabled("sides" in params)
-        self.corner.setEnabled(kind in ("triangle", "rectangle", "polygon", "l_bend"))
 
-    def values(self) -> dict:
-        return {"kind": self.kind.currentData(), "size": self.size.value(), "size_b": self.size_b.value(),
-                "sides": self.sides.value(), "corner_radius": self.corner.value(), "width": self.width.value()}
-
-
-def make_preset_belt(values: dict, center: Tuple[float, float], existing_ids) -> Belt:
-    pts, bulges, closed = cpath.preset(values["kind"], values["size"], values["size_b"], values["sides"],
-                                       values["corner_radius"])
-    return Belt(
-        id=next_indexed_id(existing_ids, "belt"), type="path", shape="path", x=center[0], y=center[1],
-        rotation=0.0, beltWidth=values["width"], speed=1.0, directionAngle=0.0, color="#3b82f6",
-        path=[PathNode(x=x, y=y, bulge=b) for (x, y), b in zip(pts, bulges)], closed=closed,
-    )
+def _belt_label(belt: Belt) -> str:
+    if belt.type == "curved":
+        sweep = (belt.endAngle - belt.startAngle) % 360.0 or 360.0
+        turn = "CCW" if belt.directionAngle > 0 else "CW"
+        return f"Curved R {belt.radius:.3f} m, {sweep:.0f} deg, width {belt.beltWidth:.3f} m, {turn}"
+    if belt.type == "path":
+        backwards = math.cos(math.radians(belt.directionAngle)) < 0
+        return f"Path{' loop' if belt.closed else ''}, width {belt.beltWidth:.3f} m{', reversed' if backwards else ''}"
+    if belt.shape == "quadrilateral":
+        return f"Linear polygon, {len(belt.vertexs or [])} corners, flow {belt.directionAngle % 360:.0f} deg"
+    return f"Linear {belt.length:.3f} x {belt.beltWidth:.3f} m, flow {(belt.rotation + belt.directionAngle) % 360:.0f} deg"
 
 
 # ---------------------------------------------------------------------------

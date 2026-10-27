@@ -9,7 +9,6 @@ import math
 import os
 import tempfile
 import unittest
-from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -22,7 +21,7 @@ from cad.checks import belt_footprint  # noqa: E402
 from cad.ports import belt_ports  # noqa: E402
 from config_parser import SimulatorConfig, load_config  # noqa: E402
 from layout_editor import MainWindow, to_scene_pos  # noqa: E402
-from path_tool import AnchorGrip, InsertShapeDialog  # noqa: E402
+from path_tool import AnchorGrip  # noqa: E402
 from physics import PhysicsEngine  # noqa: E402
 
 _app = QApplication.instance() or QApplication([])
@@ -158,13 +157,19 @@ class PathToolTest(unittest.TestCase):
         self.assertEqual(self.drawn(), [])
         self.assertIsNone(self.view.tool)
 
-    # -- presets -----------------------------------------------------------------
+    # -- loops from basic shapes (replaces the old shape presets) ------------------
 
-    def test_insert_shape_preset(self):
-        values = {"kind": "rectangle", "size": 10.0, "size_b": 4.0, "sides": 6, "corner_radius": 1.0, "width": 1.2}
-        with mock.patch.object(InsertShapeDialog, "exec", return_value=InsertShapeDialog.Accepted), \
-                mock.patch.object(InsertShapeDialog, "values", return_value=values):
-            self.window.cad.insert_shape()
+    def test_loop_belt_from_a_sketched_rounded_rectangle(self):
+        cad = self.window.cad
+        cad.draw_toolbar.corner_spin.setValue(1.0)
+        cad.sketch_rect_tool.start()
+        cad.sketch_rect_tool.typed_input("0,0")
+        cad.sketch_rect_tool.typed_input("10,4")
+        self.assertEqual(self.drawn(), [], "sketching must not create belts")
+        cad.draw_toolbar.width_spin.setValue(1.2)
+        cad.pick_tool.start()
+        cad.draw_toolbar.type_combo.setCurrentIndex(cad.draw_toolbar.type_combo.findData("path"))
+        self.click(5, 0)                                   # on the outline
         belt = self.drawn()[0].model
         self.assertTrue(belt.closed)
         self.assertEqual(belt.beltWidth, 1.2)

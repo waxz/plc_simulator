@@ -41,8 +41,8 @@ from cad.ports import belt_ports
 from config_parser import BackgroundDrawing, BeltConnection, SketchEntity
 from id_utils import next_indexed_id
 from path_tool import (
-    AnchorGripManager, InsertShapeDialog, OutlineDrawTool, PathDrawTool, PathToolbar, PickFromDrawingTool,
-    SketchArcTool, SketchLineTool, SnapEngine, make_preset_belt,
+    AnchorGripManager, OutlineDrawTool, PathDrawTool, PathToolbar, PickFromDrawingTool, SketchArcTool,
+    SketchCircleTool, SketchLineTool, SketchPolygonTool, SketchRectangleTool, SnapEngine,
 )
 from cad.path import flatten as path_flatten, segments as path_segments
 
@@ -261,6 +261,11 @@ class CadController:
         self.sketch_arc_tool = SketchArcTool(window, self.draw_toolbar, self.snap, belt_item_cls=belt_item_cls)
         self.sketch_line_tool.on_sketch = self.add_sketch
         self.sketch_arc_tool.on_sketch = self.add_sketch
+        self.sketch_rect_tool = SketchRectangleTool(window, self.draw_toolbar, self.snap, belt_item_cls=belt_item_cls)
+        self.sketch_circle_tool = SketchCircleTool(window, self.draw_toolbar, self.snap, belt_item_cls=belt_item_cls)
+        self.sketch_polygon_tool = SketchPolygonTool(window, self.draw_toolbar, self.snap, belt_item_cls=belt_item_cls)
+        for tool in (self.sketch_rect_tool, self.sketch_circle_tool, self.sketch_polygon_tool):
+            tool.on_sketch = self.add_sketch
         self.sketch_items: List[SketchItem] = []
         self._background_shapes = []
         window.view.on_delete_extra = self._delete_selected_sketch
@@ -470,12 +475,14 @@ class CadController:
         for text, shortcut, slot in (
             ("Sketch Line", "S", self.sketch_line_tool.start),
             ("Sketch Arc (3 points)", "Shift+S", self.sketch_arc_tool.start),
+            ("Sketch Rectangle", "Shift+R", self.sketch_rect_tool.start),
+            ("Sketch Circle", "Shift+C", self.sketch_circle_tool.start),
+            ("Sketch Polygon", "Shift+G", self.sketch_polygon_tool.start),
             ("Clear Sketch", "", self.clear_sketch),
             (None, None, None),
             ("Belt from Sketch/Drawing", "B", self.pick_tool.start),
             ("Draw Belt Path", "P", self.path_tool.start),
             ("Draw Belt Outline", "O", self.outline_tool.start),
-            ("Insert Belt Shape...", "Shift+P", self.insert_shape),
         ):
             if text is None:
                 tools.addSeparator()
@@ -620,17 +627,6 @@ class CadController:
         tool = getattr(self.window.view, "tool", None)
         if tool is not None and hasattr(tool, "typed_input"):
             tool.typed_input(text)
-
-    def insert_shape(self):
-        dialog = InsertShapeDialog(self.window)
-        if dialog.exec() != InsertShapeDialog.Accepted:
-            return
-        center = self.from_scene_pos(self.window.view.mapToScene(self.window.view.viewport().rect().center()))
-        belt = make_preset_belt(dialog.values(), center, [i.model.id for i in self.window.items_list])
-        item = self.window.view._add_item(self.belt_item_cls(belt), text="Insert Belt Shape")
-        self.window.scene.clearSelection()
-        item.setSelected(True)
-        self._status(f"Inserted {belt.id}. Drag its anchors to adjust; Ctrl+click an anchor to toggle an arc.")
 
     def run_check(self):
         issues = check_layout(self.window._build_export_config())

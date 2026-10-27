@@ -178,6 +178,11 @@ The Qt layout editor is where belt shapes and positions are designed:
    - **Tools > Sketch Line (S)** draws construction lines and tangent arcs
      (L / A), and **Tools > Sketch Arc (Shift+S)** draws a 3-point arc
      (start, end, a point on the arc).
+   - Basic shapes: **Sketch Rectangle (Shift+R)** (two corners),
+     **Sketch Circle (Shift+C)** (center, radius) and **Sketch Polygon
+     (Shift+G)** (center, a corner; toolbar Sides). Corner R rounds the
+     rectangle's and polygon's corners. Loop conveyors are built from these:
+     sketch the shape, then make a belt along it or filling it (step 3).
    - Or **File > Import DXF Background...** a plant layout. Its lines, arcs,
      circles and polylines are read exactly (with arc bulges). Real drawings
      often need fixing on the way in, so the import dialog shows a preview
@@ -205,13 +210,33 @@ The Qt layout editor is where belt shapes and positions are designed:
    typed `x,y`, `@dx,dy` and `len<angle` give exact points. A free click is
    only pixel-accurate, so type or snap points that must be exact.
 3. **Connect geometry into a belt with Tools > Belt from Sketch/Drawing (B)**:
-   - Click **on a line or arc** to get a path belt along it *and every
-     line/arc joined to it end to end*, in any drawing direction (a branch
-     stops the chain). The belt width comes from the toolbar's Width.
-   - Click **inside a closed area**, even one bounded by separate lines, to
-     get a polygon belt with exactly that outline (any shape, like a skewed
-     merge feeder). Parcels flow along its long axis; change it with
-     Direction in Properties.
+   - Click **on a line or arc** for a belt along it *and every line/arc
+     joined to it end to end*, in any drawing direction (a branch stops the
+     chain). The belt width comes from the toolbar's Width.
+   - Click **inside a closed area**, even one bounded by separate lines, for
+     a belt filling exactly that area (any shape, like a skewed merge
+     feeder).
+   - The toolbar's **Type** chooses the belt, and the preview shows it before
+     you click:
+
+     | Type | On a line / arc | In a closed area |
+     |---|---|---|
+     | Auto | straight -> Linear, an arc or circle -> Curved, anything else -> Path | arc-shaped -> Curved, else Linear |
+     | Linear | a rectangle belt along a straight line | a polygon belt with that outline; parcels move one way |
+     | Curved | a curved belt along an arc or circle | a ring sector, ring or disc bounded by concentric arcs, filled by a curved belt (parcels turn about the center) |
+     | Path | a path belt along the whole chain | the middle arc of an arc-shaped area |
+
+     **Direction** sets where parcels go, shown by the preview's arrows:
+     Forward (along the line in its drawn order; in an area along its long
+     axis, or counter-clockwise for curved), Reverse, or Across +/-90 deg
+     (linear only). It can still be changed in Properties afterwards.
+   - **Shapes split into parts**: line ends that miss each other by up to
+     the toolbar's **Join gap** (default 2 cm) count as joined, both for
+     lines and for closed areas, and a line drawn twice on top of itself
+     doesn't stop a chain. When what you mean is still split (an area cut
+     by a line, a chain through a branch), **Shift+click** each piece and
+     press **Enter** for one belt: areas are merged, lines joined. Esc
+     clears the pieces.
 
 Sketch geometry is saved in the layout (`sketch`), exported to DXF on the
 SKETCH layer, and ignored by physics. Select a sketch line and press Delete
@@ -243,8 +268,8 @@ Shift+click to insert a corner, Alt+click to delete one.
 The live preview shows the belt surface, the current segment's length and
 angle, and the total length. When the path is finished, sharp corners are
 rounded with the toolbar's **Corner R** (0 = keep them sharp, mitred).
-**Tools > Insert Belt Shape... (Shift+P)** adds a triangle, rectangle,
-regular-polygon or circle loop, a U-turn, an L-bend or an S-bend.
+For loops of standard shapes, sketch a rectangle, circle or polygon and
+use Belt from Sketch/Drawing with Type Path (on its outline) instead.
 
 Select a drawn belt to edit its anchors: drag a handle to move it,
 Ctrl+click to switch the segment after it between straight and tangent arc,
