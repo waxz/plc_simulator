@@ -14,6 +14,7 @@ def run_pygame(config, physics_engine, mqtt, headless: bool, runner=None):
     print(f"Initializing visualizer (Headless: {headless})...")
     renderer = Renderer(config, headless=headless)
     renderer.exchange = mqtt  # the status bar shows the PLC link
+    renderer.physics = physics_engine  # Clear Parcels / Reset
     if headless:
         # There's no Play button to press without a window.
         renderer.playing = True
@@ -37,9 +38,9 @@ def run_pygame(config, physics_engine, mqtt, headless: bool, runner=None):
             elif cmd == 'TOGGLE_PLAY':
                 print(f"Simulation {'Playing' if renderer.playing else 'Paused'}")
             elif cmd == 'RESET':
-                print("Simulation Reset (TODO)")
+                print("Simulation reset: parcels cleared, time and counters back to 0")
             elif cmd == 'CLEAR':
-                print("Simulation Cleared (TODO)")
+                print("Parcels cleared")
 
             if runner is not None:
                 # Physics + exchange run on the runner's own thread; this

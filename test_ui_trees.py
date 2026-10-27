@@ -163,7 +163,7 @@ class SimulatorTreesTest(unittest.TestCase):
 
     def test_toolbar_folders_collapse(self):
         titles = [f[3] for f in self.ui._toolbar_folders]
-        self.assertEqual(titles, ["BELTS", "SENSORS", "PARCEL FLOW", "OPERATOR PANEL", "LAYOUT"])
+        self.assertEqual(titles, ["SIMULATION", "BELTS", "SENSORS", "PARCEL FLOW", "OPERATOR PANEL", "LAYOUT", "VIEW"])
         height = self.ui.toolbar_panel.get_relative_rect().height
         self.ui.toggle_toolbar_folder("BELTS")
         self.assertFalse(self.ui.add_linear_btn.visible)

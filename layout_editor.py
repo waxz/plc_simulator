@@ -68,6 +68,7 @@ rotation is applied.
 import argparse
 import math
 import os
+import subprocess
 import sys
 from copy import deepcopy
 from dataclasses import dataclass
@@ -76,7 +77,7 @@ from typing import Callable, List, Optional
 from PySide6.QtCore import Qt, QPointF, QMimeData, QRectF, QTimer
 from PySide6.QtGui import (
     QBrush, QColor, QPen, QPainter, QPainterPath, QDrag, QPolygonF, QTransform, QKeySequence, QAction,
-    QUndoStack, QUndoCommand, QFont, QFontMetricsF, QIcon, QPixmap,
+    QUndoStack, QUndoCommand, QFont, QFontMetricsF, QIcon, QPixmap, QActionGroup,
 )
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QGraphicsView, QGraphicsScene, QGraphicsItem,
@@ -84,7 +85,7 @@ from PySide6.QtWidgets import (
     QFormLayout, QDoubleSpinBox, QSpinBox, QComboBox, QPushButton, QColorDialog,
     QLineEdit, QLabel, QVBoxLayout, QHBoxLayout, QDialog, QStackedWidget, QToolBar,
     QFileDialog, QCheckBox, QMessageBox, QStyle, QInputDialog, QTreeWidget, QTreeWidgetItem, QMenu,
-    QAbstractItemView,
+    QAbstractItemView, QHeaderView,
 )
 
 from config_parser import Belt, Sensor, Source, Sink, ControlButton, LedIndicator, SimulatorConfig, load_config
@@ -1556,7 +1557,7 @@ class ButtonItem(PlacedItem):
         if not _SIM_STATE["playing"] and event.button() == Qt.LeftButton:
             label = self.model.label or self.model.id
             print(f"[Sim] '{label}' is selected for editing, not pressed - "
-                  f"press Play to resume the simulation so button presses register.")
+                  f"press Start in the simulator so button presses register.")
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event):
@@ -3242,25 +3243,27 @@ def _field_specs_for(item: PlacedItem):
         ("float", "x", "X", -1000.0, 1000.0, 0.1),
         ("float", "y", "Y", -1000.0, 1000.0, 0.1),
     ]
+    PACK_FORMATS = ["bit", "byte", "uint16", "uint32", "float"]
     if hasattr(item.model, "rotation"):
         # Sink has no `rotation` field at all (always drawn upright,
         # matching the pygame app), so skip the row entirely for it
         # instead of showing a control that can't do anything.
         specs.append(("float", "rotation", "Rotation", -360.0, 360.0, 1.0))
     if isinstance(item, BeltItem):
+        specs.append(("combo", "commandFormat", "Command", ["speed", "vfd"]))
         specs.append(("float", "directionAngle", "Direction", -360.0, 360.0, 1.0))
         if item.is_path():
             specs.append(("float", "beltWidth", "Width", 0.05, 100.0, 0.05))
         elif item.is_curved():
             specs.append(("float", "radius", "Radius", 0.1, 100.0, 0.1))
-            specs.append(("float", "startAngle", "StartAng", -360.0, 360.0, 1.0))
-            specs.append(("float", "endAngle", "EndAng", -360.0, 360.0, 1.0))
+            specs.append(("float", "startAngle", "Start angle", -360.0, 360.0, 1.0))
+            specs.append(("float", "endAngle", "End angle", -360.0, 360.0, 1.0))
             specs.append(("float", "beltWidth", "Width", 0.05, 100.0, 0.05))
         elif not item.is_custom_shape():
             specs.append(("float", "length", "Length", 0.1, 100.0, 0.1))
             specs.append(("float", "beltWidth", "Width", 0.1, 100.0, 0.1))
         specs.append(("float", "speed", "Speed", -50.0, 50.0, 0.1))
-        specs.append(("float", "transition_momentum_duration", "Trans Dur", 0.0, 10.0, 0.1))
+        specs.append(("float", "transition_momentum_duration", "Transition", 0.0, 10.0, 0.1))
     elif isinstance(item, SensorItem):
         specs.append(("float", "width", "Width", 0.05, 50.0, 0.05))
         specs.append(("float", "height", "Height", 0.05, 50.0, 0.05))
@@ -3268,13 +3271,17 @@ def _field_specs_for(item: PlacedItem):
         specs.append(("combo", "sensorType", "Type", ["ir", "laser_banner"]))
         if item.model.sensorType == "laser_banner":
             specs.append(("int", "laserCount", "Beams", 1, 128))
-            specs.append(("float", "beamDistance", "BeamDist", 0.01, 5.0, 0.01))
+            specs.append(("float", "beamDistance", "Beam pitch", 0.01, 5.0, 0.01))
+        specs.append(("float", "onDelay", "On delay", 0.0, 10.0, 0.01))
+        specs.append(("float", "offDelay", "Off delay", 0.0, 10.0, 0.01))
+        specs.append(("bool", "invert", "Light-on (NC)"))
+        specs.append(("combo", "packFormat", "Packing", PACK_FORMATS))
     elif isinstance(item, SourceItem):
         specs.append(("float", "interval", "Interval", 0.1, 3600.0, 0.1))
-        specs.append(("float", "minWidth", "MinW", 0.05, 50.0, 0.05))
-        specs.append(("float", "maxWidth", "MaxW", 0.05, 50.0, 0.05))
-        specs.append(("float", "minHeight", "MinH", 0.05, 50.0, 0.05))
-        specs.append(("float", "maxHeight", "MaxH", 0.05, 50.0, 0.05))
+        specs.append(("float", "minWidth", "Min width", 0.05, 50.0, 0.05))
+        specs.append(("float", "maxWidth", "Max width", 0.05, 50.0, 0.05))
+        specs.append(("float", "minHeight", "Min length", 0.05, 50.0, 0.05))
+        specs.append(("float", "maxHeight", "Max length", 0.05, 50.0, 0.05))
         specs.append(("text", "label", "Label"))
     elif isinstance(item, SinkItem):
         specs.append(("float", "width", "Width", 0.05, 50.0, 0.05))
@@ -3284,20 +3291,35 @@ def _field_specs_for(item: PlacedItem):
         specs.append(("float", "width", "Width", 0.05, 50.0, 0.05))
         specs.append(("float", "height", "Height", 0.05, 50.0, 0.05))
         specs.append(("text", "label", "Label"))
-        # `sensor_states` (pressed/released) is live and momentary - driven
-        # only by mouse press/release while playing (see ButtonItem), not
-        # something to hand-edit here.
+        # `sensor_states` (pressed/released) is live - driven by the operator
+        # (devices.press / release), not something to hand-edit here.
+        specs.append(("combo", "buttonType", "Type", ["momentary", "latching"]))
+        specs.append(("bool", "normallyClosed", "NC contact"))
+        specs.append(("text", "key", "Key"))
     elif isinstance(item, LedItem):
         specs.append(("float", "radius", "Radius", 0.02, 50.0, 0.02))
         specs.append(("text", "label", "Label"))
         specs.append(("bool", "isOn", "On"))
+        specs.append(("combo", "packFormat", "Signal", ["bit", "byte"]))
     return specs
 
 
+# Units shown in the property grid's number boxes.
+_FIELD_UNITS = {
+    "x": " m", "y": " m", "rotation": "\u00b0", "directionAngle": "\u00b0", "startAngle": "\u00b0",
+    "endAngle": "\u00b0", "length": " m", "beltWidth": " m", "width": " m", "height": " m", "radius": " m",
+    "beamDistance": " m", "minWidth": " m", "maxWidth": " m", "minHeight": " m", "maxHeight": " m",
+    "speed": " m/s", "transition_momentum_duration": " s", "interval": " s", "onDelay": " s", "offDelay": " s",
+}
+
+
 class PropertiesPanel(QWidget):
-    """Docked property editor - replaces editor_ui.py's hand-positioned
-    widgets. Rebuilds its field rows on selection change to match the
-    selected item's type (see `_field_specs_for`)."""
+    """Property grid of the selected component - like an engineering tool's:
+    a header naming it, then its fields in collapsible sections (Identity,
+    Position, Geometry, Motion, Signal, Operation, Display - the same
+    sections, in the same order, as the simulator window's panel), numbers
+    with their units. Rebuilt on selection change to match the item's type
+    (see `_field_specs_for`); every edit goes through the undo stack."""
 
     def __init__(self, scene: SnapGuideScene, items, on_model_changed=None):
         super().__init__()
@@ -3311,28 +3333,41 @@ class PropertiesPanel(QWidget):
         self.texts = {}
         self.combos = {}
         self.checkboxes = {}
+        self.id_edit: Optional[QLineEdit] = None
+        self.color_btn: Optional[QPushButton] = None
+        self._collapsed_groups = set()
 
         outer = QVBoxLayout(self)
-        # `self.form` holds only Id + the dynamic per-type fields, since
-        # QFormLayout.removeRow() (used by _clear_dynamic_rows below) does
-        # not just detach a row's widgets - it deletes them. Color needs to
-        # survive every rebuild, so it lives in its own layout that
-        # _clear_dynamic_rows never touches.
-        self.form = QFormLayout()
-        outer.addLayout(self.form)
-        self.id_edit = QLineEdit()
-        self.id_edit.editingFinished.connect(self._apply_id)
-        self.form.addRow("Id:", self.id_edit)
-
-        color_form = QFormLayout()
-        self.color_btn = QPushButton("-")
-        self.color_btn.clicked.connect(self._pick_color)
-        color_form.addRow("Color:", self.color_btn)
-        outer.addLayout(color_form)
-        outer.addStretch(1)
-
-        self.setEnabled(False)
+        outer.setContentsMargins(4, 4, 4, 4)
+        outer.setSpacing(4)
+        self.header = QLabel()
+        self.header.setTextFormat(Qt.RichText)
+        self.header.setWordWrap(True)
+        self.header.setContentsMargins(4, 2, 4, 4)
+        outer.addWidget(self.header)
+        self.tree = QTreeWidget()
+        self.tree.setColumnCount(2)
+        self.tree.setHeaderLabels(["Property", "Value"])
+        self.tree.setIndentation(10)
+        self.tree.setSelectionMode(QAbstractItemView.NoSelection)
+        self.tree.setFocusPolicy(Qt.NoFocus)
+        self.tree.setUniformRowHeights(False)
+        self.tree.header().setStretchLastSection(True)
+        self.tree.itemCollapsed.connect(lambda it: self._collapsed_groups.add(it.text(0)))
+        self.tree.itemExpanded.connect(lambda it: self._collapsed_groups.discard(it.text(0)))
+        outer.addWidget(self.tree, 1)
+        self.empty = QLabel("Select a component on the canvas\nto see and edit its properties.")
+        self.empty.setAlignment(Qt.AlignCenter)
+        self.empty.setWordWrap(True)
+        outer.addWidget(self.empty, 1)
+        self._show_empty()
         scene.selectionChanged.connect(self._on_selection_changed)
+
+    def _show_empty(self):
+        self.header.hide()
+        self.tree.hide()
+        self.empty.show()
+        self.setEnabled(False)
 
     def _on_selection_changed(self):
         try:
@@ -3344,26 +3379,66 @@ class PropertiesPanel(QWidget):
             self._rebuild_fields()
             self._load()
             self.setEnabled(True)
+            self.empty.hide()
+            self.header.show()
+            self.tree.show()
         else:
             self.current = None
             self._clear_dynamic_rows()
-            self._update_color_swatch()
-            self.setEnabled(False)
+            self.empty.setText("Select a component on the canvas\nto see and edit its properties."
+                               if not selected else f"{len(selected)} components selected.\n"
+                               "Select one to edit its properties.")
+            self._show_empty()
 
     def _clear_dynamic_rows(self):
-        while self.form.rowCount() > 1:
-            self.form.removeRow(1)
+        self.tree.clear()  # deletes the editor widgets too
         self.spins.clear()
         self.texts.clear()
         self.combos.clear()
         self.checkboxes.clear()
+        self.id_edit = None
+        self.color_btn = None
+
+    def _update_header(self):
+        item = self.current
+        if item is None:
+            return
+        dim = hmi.hex_(hmi.TEXT_DIM)
+        details = ComponentManagerPanel.describe(item)
+        self.header.setText(f"<span style='font-size:8pt; color:{dim}; letter-spacing:1px'>{item.kind.upper()}</span>"
+                            f"<br><b style='font-size:11pt'>{item.model.id}</b>"
+                            f"<br><span style='color:{dim}'>{details}</span>")
+
+    def _add_row(self, group: str, label: str, widget: QWidget):
+        groups = self.__dict__.setdefault("_group_items", {})
+        parent = groups.get(group)
+        if parent is None:
+            parent = QTreeWidgetItem([group])
+            font = parent.font(0)
+            font.setBold(True)
+            parent.setFont(0, font)
+            parent.setForeground(0, QBrush(hmi.qcolor(hmi.ACCENT)))
+            parent.setFlags(Qt.ItemIsEnabled)
+            self.tree.addTopLevelItem(parent)
+            parent.setFirstColumnSpanned(True)
+            groups[group] = parent
+        row = QTreeWidgetItem([label])
+        row.setFlags(Qt.ItemIsEnabled)
+        parent.addChild(row)
+        self.tree.setItemWidget(row, 1, widget)
+        return row
 
     def _rebuild_fields(self):
         self._clear_dynamic_rows()
+        self._group_items = {}
         item = self.current
         if not item:
             return
-        for spec in _field_specs_for(item):
+        self.id_edit = QLineEdit()
+        self.id_edit.editingFinished.connect(self._apply_id)
+        self._add_row("Identity", "Id", self.id_edit)
+        specs = sorted(_field_specs_for(item), key=lambda spec: hmi.group_sort_key(spec[1]))
+        for spec in specs:
             field_kind, attr, label = spec[0], spec[1], spec[2]
             if field_kind == "float":
                 _, _, _, lo, hi, step = spec
@@ -3371,6 +3446,7 @@ class PropertiesPanel(QWidget):
                 widget.setRange(lo, hi)
                 widget.setDecimals(3)
                 widget.setSingleStep(step)
+                widget.setSuffix(_FIELD_UNITS.get(attr, ""))
                 widget.valueChanged.connect(lambda v, a=attr: self._apply_field(a, v))
                 self.spins[attr] = widget
             elif field_kind == "int":
@@ -3395,7 +3471,16 @@ class PropertiesPanel(QWidget):
                 self.checkboxes[attr] = widget
             else:
                 continue
-            self.form.addRow(f"{label}:", widget)
+            widget.setToolTip(attr)
+            self._add_row(hmi.property_group(attr), label, widget)
+        if hasattr(item.model, "color"):
+            self.color_btn = QPushButton("-")
+            self.color_btn.clicked.connect(self._pick_color)
+            self._add_row("Display", "Color", self.color_btn)
+        for group, tree_item in self._group_items.items():
+            tree_item.setExpanded(group not in self._collapsed_groups)
+        self.tree.resizeColumnToContents(0)
+        self._update_header()
 
     # Some model fields are `Optional[...] = None` (e.g. Sensor.laserCount/
     # beamDistance when a config never set them) - QSpinBox/QDoubleSpinBox
@@ -3413,11 +3498,12 @@ class PropertiesPanel(QWidget):
         for widget in (*self.spins.values(), *self.texts.values(), *self.combos.values(), *self.checkboxes.values()):
             widget.blockSignals(True)
 
-        self.id_edit.blockSignals(True)
-        self.id_edit.setText(item.model.id)
-        self.id_edit.setStyleSheet("")
-        self.id_edit.setToolTip("")
-        self.id_edit.blockSignals(False)
+        if self.id_edit is not None:
+            self.id_edit.blockSignals(True)
+            self.id_edit.setText(item.model.id)
+            self.id_edit.setStyleSheet("")
+            self.id_edit.setToolTip("")
+            self.id_edit.blockSignals(False)
 
         for attr, widget in self.spins.items():
             value = getattr(item.model, attr)
@@ -3477,6 +3563,8 @@ class PropertiesPanel(QWidget):
         self._push_property_change(item, attr, old_value, value, self._do_apply_field)
 
     def _do_apply_field(self, item, attr: str, value):
+        if item is self.current:
+            QTimer.singleShot(0, self._update_header)
         """Apply a single edited field, touching only the Qt geometry that
         field actually affects - not all of setPos/setRotation/set_size on
         every keystroke, which used to re-trigger the drag-snap logic (and
@@ -3516,6 +3604,8 @@ class PropertiesPanel(QWidget):
             return
         old_value = getattr(item.model, attr)
         new_value = self.texts[attr].text()
+        if attr == "key":
+            new_value = new_value.strip()[:1].lower() or None  # one key, or none
         if old_value == new_value:
             return
         self._push_property_change(item, attr, old_value, new_value, self._do_apply_text_field)
@@ -3598,6 +3688,7 @@ class PropertiesPanel(QWidget):
         if self.on_model_changed:
             self.on_model_changed()
         if item is self.current:
+            self._update_header()
             self.id_edit.blockSignals(True)
             self.id_edit.setText(value)
             self.id_edit.blockSignals(False)
@@ -3625,6 +3716,8 @@ class PropertiesPanel(QWidget):
             self._update_color_swatch()
 
     def _update_color_swatch(self):
+        if self.color_btn is None:
+            return
         if self.current and hasattr(self.current.model, "color"):
             self.color_btn.setEnabled(True)
             self.color_btn.setStyleSheet(f"background-color: {self.current.model.color};")
@@ -3690,6 +3783,8 @@ class ComponentManagerPanel(QWidget):
         self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.header().setStretchLastSection(True)
+        self.tree.header().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.tree.header().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         layout.addWidget(self.tree)
         self.list_widget = self.tree  # older name
 
@@ -3907,6 +4002,7 @@ class MainWindow(QMainWindow):
     def __init__(self, config=None, config_path=None, library_path=None):
         super().__init__()
         self.resize(1400, 880)
+        hmi.apply_saved_theme()
         self.setStyleSheet(hmi.qt_stylesheet())
 
         # A new layout still gets a real config, so connections/background
@@ -4059,6 +4155,23 @@ class MainWindow(QMainWindow):
         clear_measure_action.triggered.connect(self.scene.clear_measurements)
         view_toolbar.addAction(clear_measure_action)
 
+        # Simulation + theme: one toolbar on the right of the main one.
+        sim_toolbar = QToolBar("Simulation", self)
+        sim_toolbar.setObjectName("simToolbar")
+        self.addToolBar(sim_toolbar)
+        self.run_sim_action = QAction("\u25b6  Run in Simulator", self)
+        self.run_sim_action.setShortcut("F5")
+        self.run_sim_action.setToolTip("Save the layout and open it in the simulator window (F5)")
+        self.run_sim_action.triggered.connect(self.run_simulation)
+        sim_toolbar.addAction(self.run_sim_action)
+        sim_toolbar.widgetForAction(self.run_sim_action).setObjectName("runSimButton")
+        sim_toolbar.addSeparator()
+        self.theme_action = QAction("", self)
+        self.theme_action.setToolTip("Switch between the dark and the light theme")
+        self.theme_action.triggered.connect(lambda: self.set_theme(hmi.other_theme()))
+        sim_toolbar.addAction(self.theme_action)
+        self._sim_process = None
+
         # CAD tools: connections/fillet (planegcs), layout checks (Shapely),
         # DXF background/export (ezdxf). Imported here, not at module top,
         # because layout_editor_cad builds on this module's classes.
@@ -4071,6 +4184,17 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.BottomDockWidgetArea, check_dock)
         # Compact by default: the canvas is what matters; drag to enlarge.
         self.resizeDocks([check_dock], [120], Qt.Vertical)
+        # View > Theme: dark / light (also the toolbar switch), remembered.
+        theme_menu = self.cad.view_menu.addMenu("Theme")
+        self.theme_group = QActionGroup(self)
+        self.theme_actions = {}
+        for name in ("dark", "light"):
+            action = QAction(name.capitalize(), self, checkable=True)
+            action.triggered.connect(lambda _c=False, n=name: self.set_theme(n))
+            self.theme_group.addAction(action)
+            theme_menu.addAction(action)
+            self.theme_actions[name] = action
+        self._sync_theme_controls()
         # View > Panels: show / hide every dock and toolbar.
         panels = self.cad.view_menu.addMenu("Panels")
         for dock in (library_dock, manager_dock, props_dock, check_dock):
@@ -4084,6 +4208,38 @@ class MainWindow(QMainWindow):
             "Drag a template from the library onto the canvas. Drag items to see snap guides. "
             "Ctrl+C/Ctrl+V to copy-paste, Delete to remove. Space+drag to pan, wheel to zoom."
         )
+
+    # -- theme and simulation -------------------------------------------------------
+
+    def set_theme(self, name: str):
+        """Dark or light, for every widget and the canvas; remembered for
+        both windows (hmi_style settings)."""
+        hmi.set_theme(name)
+        hmi.save_settings(theme=name)
+        self.setStyleSheet(hmi.qt_stylesheet())
+        self.scene.setBackgroundBrush(QBrush(hmi.qcolor(hmi.BG)))
+        self.view.viewport().update()
+        if getattr(self, "properties_panel", None) is not None:
+            self.properties_panel._on_selection_changed()
+        self._sync_theme_controls()
+
+    def _sync_theme_controls(self):
+        self.theme_action.setText("Light Theme" if hmi.THEME == "dark" else "Dark Theme")
+        if getattr(self, "theme_actions", None):
+            self.theme_actions[hmi.THEME].setChecked(True)
+
+    def run_simulation(self) -> bool:
+        """Save the layout, then open it in the simulator window
+        (python main.py <layout>) as its own process."""
+        if not self.config_path or not self.undo_stack.isClean():
+            if not self._save_config():
+                return False
+        main_py = os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py")
+        self._sim_process = subprocess.Popen([sys.executable, main_py, self.config_path],
+                                             cwd=os.path.dirname(main_py))
+        self.statusBar().showMessage(f"Simulator started for {os.path.basename(self.config_path)} - press Start "
+                                     f"(or Space) there to run it.", 8000)
+        return True
 
     def _update_coord_label(self, world_x: float, world_y: float):
         self._coord_label.setText(f"x: {world_x:.2f}  y: {world_y:.2f}")

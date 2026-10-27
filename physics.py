@@ -403,6 +403,41 @@ class PhysicsEngine:
             parcel.traction = None
         self.space.remove(parcel.body, parcel.shape)
 
+    def clear_parcels(self) -> int:
+        """Remove every parcel (the simulator's Clear Parcels button);
+        returns how many. Sources keep spawning."""
+        with self._lock:
+            parcels, self.parcels = list(self.parcels), []
+            for parcel in parcels:
+                self._remove_parcel(parcel)
+        return len(parcels)
+
+    def reset(self) -> None:
+        """Back to the start (the Reset button): no parcels, time 0, sources
+        due at once, delivery counts, sensors and drives back to rest."""
+        self.clear_parcels()
+        with self._lock:
+            self.sim_time = 0.0
+            self._accumulator = 0.0
+            self.dropped_time = 0.0
+            self.step_count = 0
+            self.config.simTimeNs = 0
+            self.delivered = {}
+            self.source_timers = {source.id: 100.0 for source in self.config.sources}
+            for sensor in self.config.sensors:
+                sensor._filter = None
+                sensor.risingEdges = 0
+                sensor.blockedBeams = 0
+                sensor.sensor_states = "0" * len(sensor.sensor_states) if isinstance(sensor.sensor_states, str) \
+                    else sensor.sensor_states
+            for belt in self.config.belts:
+                belt.actualSpeed = 0.0
+                belt.encoderCount = 0
+                belt.fault = belt.running = belt.atSpeed = belt.reversing = False
+                belt._drive_ref = 0.0
+                belt._encoder_frac = 0.0
+                belt._overload_s = 0.0
+
     def _play_area_bounds(self) -> Optional[Tuple[float, float, float, float]]:
         """Bounding box covering every belt/source/sink, padded generously -
         a safety net for handle_sinks(). Walls are currently disabled

@@ -53,6 +53,7 @@ class Renderer:
         self._labels = []
         self.show_values = False
         self.exchange = None  # set by main.run_pygame: the status bar shows the PLC link
+        self.physics = None   # set by main.run_pygame: Clear Parcels / Reset act on it
 
         # Camera - initialize to center the origin
         self.camera_x = self.width / 2.0
@@ -79,10 +80,36 @@ class Renderer:
         
         # GUI
         if not self.headless:
-            theme = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hmi_theme.json")
-            self.manager = pygame_gui.UIManager((self.width, self.height), theme if os.path.exists(theme) else None)
+            hmi.apply_saved_theme()
+            self.manager = pygame_gui.UIManager((self.width, self.height), hmi.pygame_gui_theme())
             self.editor_ui = EditorUI(self.manager, self.width, self.height, self.config)
             
+    def set_theme(self, name: str):
+        """Switch the whole window between the dark and light palette (and
+        remember it for both windows)."""
+        hmi.set_theme(name)
+        hmi.save_settings(theme=name)
+        self._surface_cache.clear()
+        self._text_cache.clear()
+        if not self.headless:
+            self.manager.get_theme().load_theme(hmi.pygame_gui_theme())
+            self.manager.rebuild_all_from_changed_theme_data()
+
+    def run_command(self, cmd):
+        """The simulation buttons / keys: returns the command for main.py's
+        log, after doing what the window itself can."""
+        if cmd == "TOGGLE_PLAY":
+            self.playing = not self.playing
+        elif cmd == "TOGGLE_THEME":
+            self.set_theme(hmi.other_theme())
+        elif cmd == "CLEAR" and self.physics is not None:
+            self.physics.clear_parcels()
+        elif cmd == "RESET" and self.physics is not None:
+            self.physics.reset()
+            self.play_real_time = 0.0
+            self._play_clock_last = time.perf_counter()
+        return cmd
+
     def _init_fonts(self):
         pygame.font.init()
         regular, bold = hmi.bundled_font_path(), hmi.bundled_font_path(bold=True)
@@ -175,6 +202,9 @@ class Renderer:
                 
             self.manager.process_events(event)
             ui_cmd = self.editor_ui.handle_event(event)
+            if ui_cmd in ("TOGGLE_PLAY", "CLEAR", "RESET", "TOGGLE_THEME"):
+                cmd = self.run_command(ui_cmd)
+                continue
             if ui_cmd:
                 cmd = ui_cmd
                 if isinstance(ui_cmd, tuple) and ui_cmd[0] == "SELECT_ITEM":
@@ -192,14 +222,15 @@ class Renderer:
 
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_SPACE:
-                    self.playing = not self.playing
-                    cmd = 'TOGGLE_PLAY'
+                    cmd = self.run_command('TOGGLE_PLAY')
                 elif event.key == pygame.K_r:
-                    cmd = 'RESET'
+                    cmd = self.run_command('RESET')
                 elif event.key == pygame.K_v:
                     self.show_values = not self.show_values
+                elif event.key == pygame.K_t:
+                    cmd = self.run_command('TOGGLE_THEME')
                 elif event.key == pygame.K_c:
-                    cmd = 'CLEAR'
+                    cmd = self.run_command('CLEAR')
                     
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1: # Left click
@@ -237,11 +268,10 @@ class Renderer:
                             self.pressed_button = clicked_item
                             self.editor_ui.show_props_for(clicked_item)
                             self.editor_ui.refresh_button_state()
-                            self.editor_ui._refresh_composer_table()
                             continue
                         else:
                             print(f"[Sim] '{clicked_item.label or clicked_item.id}' is selected for editing, not pressed - "
-                                  f"press Space (or the Play control) to resume the simulation so button presses register.")
+                                  f"press Start (or Space) to run the simulation so button presses register.")
 
                     self.is_dragging = True
                     self.drag_start = event.pos
@@ -258,7 +288,6 @@ class Renderer:
                         if self.selected_item == self.pressed_button:
                             self.editor_ui.show_props_for(self.pressed_button)
                             self.editor_ui.refresh_button_state()
-                        self.editor_ui._refresh_composer_table()
                         self.pressed_button = None
                     self.is_dragging = False
                     self.dragging_vertex_idx = None
@@ -946,6 +975,7 @@ class Renderer:
 
         if physics_engine:
             self.editor_ui.update_sensor_state(physics_engine)
+        self.editor_ui.sync_sim_buttons(self.playing, hmi.THEME)
         self.manager.draw_ui(self.screen)
         self._draw_status_bar(physics_engine)
         self._draw_hint_bar()
@@ -1013,8 +1043,8 @@ class Renderer:
         pygame.draw.line(self.screen, hmi.PANEL_BORDER, bar.topleft, bar.topright)
         hint = self._cached_text(
             self.hud_small,
-            "SPACE play / pause    R reset    C clear    V parcel speeds " + ("on" if self.show_values else "off")
-            + "    wheel zoom    drag pan    click a button to press it", hmi.TEXT_FAINT)
+            "SPACE start / pause    C clear parcels    R reset    V parcel speeds " + ("on" if self.show_values else "off")
+            + "    T theme    wheel zoom    drag pan    click a button to press it", hmi.TEXT_FAINT)
         self.screen.blit(hint, (12, bar.y + (BOTTOM_BAR - hint.get_height()) // 2))
 
     def quit(self):

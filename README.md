@@ -179,8 +179,18 @@ The Qt layout editor is where belt shapes and positions are designed:
 - Menus grouped like a CAD tool's: **File > Background (DXF)**, **Tools >
   Sketch / Belts / Connections**, **Tools > Check Layout**, **View > Show
   Ports** and **View > Panels** (show / hide every dock and toolbar).
-- Undo/redo, copy/paste, rubber-band multi-select, Properties dock.
-- The same quiet dark style as the simulator. Canvas labels are upright tags
+- Undo/redo, copy/paste, rubber-band multi-select.
+- The Properties dock is a property grid: a header with the kind, id and a
+  one-line summary, then foldable sections (Identity, Position, Geometry,
+  Motion, Signal, Operation, Display) with units on every number. Sensors
+  expose on/off delay, light-on (NC) and bit/byte packing; buttons their type,
+  NC contact and key; belts the speed or VFD command format.
+- **Run in Simulator** (toolbar, `F5`) saves the layout if needed and starts
+  `main.py` on it in its own window.
+- Dark and light themes: the toolbar button or **View > Theme**. The choice
+  is shared with the simulator and remembered in
+  `~/.conveyor_sim/settings.json` (or `$CONVEYOR_SIM_SETTINGS`).
+- The same quiet style as the simulator. Canvas labels are upright tags
   of one small size at any zoom, shown only where they fit and never on top
   of each other (selected items first, then devices, then belt ids). Belt
   inlet/outlet markers are under View > Show Ports; connections are always
@@ -342,6 +352,7 @@ python main.py test_config.json --headless
 ```
 
 ![Simulator window](docs/simulator.png)
+![Simulator window, light theme](docs/simulator_light.png)
 
 The window follows an operator-panel style (`hmi_style.py`, shared with the
 layout editor): a quiet grey canvas, colour only for state - green running /
@@ -353,9 +364,17 @@ outline and a FAULT tag. Labels are small, upright tags placed by priority
 (faults, then devices, then belt ids); a label that would overlap another is
 left out until you zoom in, and the selected item always shows its tag and
 coordinates. `V` toggles the per-parcel speed readout (actual / belt speed).
-The toolbar on the left is in folders (Belts, Sensors, Parcel Flow, Operator
-Panel, Layout) that fold up on a click, and Layout > Components opens the
-layout as a tree, a folder per kind.
+The toolbar on the left is in folders (Simulation, Belts, Sensors, Parcel
+Flow, Operator Panel, Layout, View) that fold up on a click, and Layout >
+Components opens the layout as a tree, a folder per kind. The property panel
+uses the editor's sections and wording.
+
+| Control | Key | Does |
+|---|---|---|
+| Simulation > Start / Pause | `Space` | run or pause the physics (green Start, amber Pause) |
+| Simulation > Clear Parcels | `C` | remove every parcel, keep time and drives running |
+| Simulation > Reset | `R` | clear parcels, time, counters, sensor filters and drive state |
+| View > Light / Dark Theme | `T` | switch palette (shared with the editor, remembered) |
 
 Add `--exchange-config <file.json>` to override the MQTT/TCP settings baked into
 the workspace config (see `tcp_exchange_config.json` for the shape).
@@ -604,3 +623,8 @@ python -m unittest discover -s . -p "test_*.py"
 # or, using the project's uv-managed environment:
 uv run python -m unittest discover -s . -p "test_*.py"
 ```
+
+`test_ui_clicks.py` drives both windows with simulated mouse clicks (Qt
+`QTest` clicks on the toolbar, menus, property grid and canvas; posted pygame
+mouse events on the simulator's buttons). It points `CONVEYOR_SIM_SETTINGS` at
+a temporary file so the tests never change your saved theme.

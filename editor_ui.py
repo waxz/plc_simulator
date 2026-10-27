@@ -1,4 +1,5 @@
 import pygame
+import hmi_style as hmi
 import pygame_gui
 from copy import deepcopy
 from config_parser import Belt, Sensor, Source, Sink, ControlButton, LedIndicator
@@ -13,11 +14,14 @@ BOTTOM_BAR = 24  # px, key hint bar
 TOOLBAR_W = 150
 # The toolbar's folders: (title, [(attribute, button text)]).
 TOOLBAR_FOLDERS = (
+    ("SIMULATION", (("sim_play_btn", "Start", "#sim_primary"), ("sim_clear_btn", "Clear Parcels"),
+                    ("sim_reset_btn", "Reset"))),
     ("BELTS", (("add_linear_btn", "Linear Belt"), ("add_curved_btn", "Curved Belt"))),
     ("SENSORS", (("add_sensor_btn", "Sensor"),)),
     ("PARCEL FLOW", (("add_source_btn", "Source"), ("add_sink_btn", "Sink"))),
     ("OPERATOR PANEL", (("add_button_btn", "Push Button"), ("add_led_btn", "LED"))),
     ("LAYOUT", (("manager_btn", "Components"),)),
+    ("VIEW", (("theme_btn", "Light Theme"),)),
 )
 
 
@@ -50,12 +54,13 @@ class EditorUI:
                 object_id="#folder_header",
             )
             buttons = []
-            for attr, text in tools:
+            for attr, text, *style in tools:
                 button = pygame_gui.elements.UIButton(
                     relative_rect=pygame.Rect(16, 0, TOOLBAR_W - 28, 24),
                     text=text,
                     manager=self.manager,
                     container=self.toolbar_panel,
+                    object_id=style[0] if style else None,
                 )
                 setattr(self, attr, button)
                 buttons.append(button)
@@ -82,30 +87,9 @@ class EditorUI:
             "label", "isOn", "color", "beltShape","beltVertexs"
         ]
         
-        # Short display names to keep labels from overflowing
-        display_names = {
-            "directionAngle": "Direction",
-            "beltWidth": "Width",
-            "startAngle": "StartAng",
-            "endAngle": "EndAng",
-            "sensorType": "Type",
-            "laserCount": "Beams",
-            "beamDistance": "BeamDist",
-            "minWidth": "MinW",
-            "maxWidth": "MaxW",
-            "minHeight": "MinH",
-            "maxHeight": "MaxH",
-            "beltVertexs":"BeltVertexs",
-            "beltShape":"BeltShape",
-            "speed":"Speed",
-            'transition_momentum_duration':'Trans Dur',
-            
-            "isOn": "On",
-        }
-        
         y_offset = 10
         for prop in all_props:
-            disp = display_names.get(prop, prop.capitalize())
+            disp = hmi.property_label(prop)  # same wording as the editor's property grid
             lbl = pygame_gui.elements.UILabel(
                 relative_rect=pygame.Rect(5, y_offset, 100, 28),
                 text=disp + ":",
@@ -206,7 +190,18 @@ class EditorUI:
         self.placement_cancel_btn = None
         self.placement_cmd_type = None
 
+    def _group_header(self, group: str):
+        """The section heading of one property group (created on first use)."""
+        headers = self.__dict__.setdefault("_group_headers", {})
+        if group not in headers:
+            headers[group] = pygame_gui.elements.UILabel(
+                relative_rect=pygame.Rect(5, 0, 235, 20), text=group.upper(), manager=self.manager,
+                container=self.prop_panel, object_id="#prop_group")
+        return headers[group]
+
     def hide_all_props(self):
+        for header in self.__dict__.get("_group_headers", {}).values():
+            header.hide()
         for lbl in self.prop_labels.values():
             lbl.hide()
         for inp in self.prop_inputs.values():
@@ -281,9 +276,19 @@ class EditorUI:
         elif isinstance(item, LedIndicator):
             props_to_show = ["id", "x", "y", "radius", "label", "isOn", "color"]
             
-        current_y = 10
+        # Same sections, same order as the layout editor's property grid.
+        props_to_show.sort(key=hmi.group_sort_key)
+        current_y = 8
+        last_group = None
         for p in props_to_show:
             if p in self.prop_inputs:
+                group = hmi.property_group(p)
+                if group != last_group:
+                    last_group = group
+                    header = self._group_header(group)
+                    header.set_relative_position((5, current_y + (4 if current_y > 8 else 0)))
+                    header.show()
+                    current_y += 26 if current_y > 8 else 22
                 self.prop_labels[p].set_relative_position((5, current_y))
                 self.prop_labels[p].show()
                 
@@ -583,6 +588,16 @@ class EditorUI:
             y += 4
         self.toolbar_panel.set_dimensions((TOOLBAR_W, y + 4))
 
+    def sync_sim_buttons(self, playing: bool, theme: str):
+        """Start <-> Pause (green / amber) and the theme button's wording."""
+        if getattr(self, "_shown_playing", None) != playing:
+            self._shown_playing = playing
+            self.sim_play_btn.set_text("Pause" if playing else "Start")
+            self.sim_play_btn.change_object_id("#sim_pause" if playing else "#sim_primary")
+        label = "Dark Theme" if theme == "light" else "Light Theme"
+        if self.theme_btn.text != label:
+            self.theme_btn.set_text(label)
+
     def toggle_toolbar_folder(self, title: str):
         for folder in self._toolbar_folders:
             if folder[3] == title:
@@ -625,6 +640,10 @@ class EditorUI:
                 if event.ui_element == header:
                     self.toggle_toolbar_folder(title)
                     return None
+            for button, command in ((self.sim_play_btn, "TOGGLE_PLAY"), (self.sim_clear_btn, "CLEAR"),
+                                    (self.sim_reset_btn, "RESET"), (self.theme_btn, "TOGGLE_THEME")):
+                if event.ui_element == button:
+                    return command
             if event.ui_element == self.save_btn:
                 return "SAVE_DIALOG"
             elif event.ui_element == self.add_linear_btn:

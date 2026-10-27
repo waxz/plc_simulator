@@ -1,0 +1,277 @@
+"""
+test_ui_clicks.py - both windows driven with simulated mouse clicks, the way
+a user works: the property grid, the light/dark theme switch, the
+simulation buttons (Start/Pause, Clear Parcels, Reset), Run in Simulator,
+and selecting through the component tree.
+
+Qt: QTest.mouseClick on the real widgets / canvas / menus. pygame: mouse
+events posted to the window's own event loop (Renderer.process_events).
+"""
+import os
+import shutil
+import tempfile
+import unittest
+from unittest import mock
+
+os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+_SETTINGS_DIR = tempfile.mkdtemp()
+os.environ["CONVEYOR_SIM_SETTINGS"] = os.path.join(_SETTINGS_DIR, "settings.json")  # never the user's
+
+import pygame  # noqa: E402
+from PySide6.QtCore import QPoint, Qt  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
+from PySide6.QtWidgets import QApplication, QMenu, QToolBar  # noqa: E402
+
+import hmi_style as hmi  # noqa: E402
+from config_parser import load_config  # noqa: E402
+from layout_editor import MainWindow  # noqa: E402
+from physics import PhysicsEngine  # noqa: E402
+from visualizer import Renderer  # noqa: E402
+
+_app = QApplication.instance() or QApplication([])
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def tearDownModule():
+    shutil.rmtree(_SETTINGS_DIR, ignore_errors=True)
+
+
+class EditorClicksTest(unittest.TestCase):
+    def setUp(self):
+        hmi.set_theme("dark")
+        hmi.save_settings(theme="dark")
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.layout = os.path.join(self.tmp.name, "station.json")
+        shutil.copy(os.path.join(HERE, "test_config.json"), self.layout)
+        self.window = MainWindow(config=load_config(self.layout), config_path=self.layout,
+                                 library_path=os.path.join(self.tmp.name, "lib.json"))
+        self.window.resize(1500, 950)
+        self.window.show()
+        QTest.qWaitForWindowExposed(self.window)
+        self.addCleanup(self._close)
+
+    def _close(self):
+        hmi.set_theme("dark")
+        self.window.undo_stack.setClean()
+        self.window.close()
+        self.window.deleteLater()
+
+    def item(self, component_id):
+        return next(i for i in self.window.items_list if i.model.id == component_id)
+
+    def click_on_canvas(self, component_id):
+        view = self.window.view
+        item = self.item(component_id)
+        view.centerOn(item)
+        _app.processEvents()
+        pos = view.mapFromScene(item.sceneBoundingRect().center())
+        QTest.mouseClick(view.viewport(), Qt.LeftButton, Qt.NoModifier, pos)
+        _app.processEvents()
+
+    @staticmethod
+    def indicator(checkbox) -> QPoint:
+        """Where a user clicks a check box: on the box itself (left end)."""
+        return QPoint(8, checkbox.height() // 2)
+
+    def toolbar_button(self, action):
+        for toolbar in self.window.findChildren(QToolBar):
+            widget = toolbar.widgetForAction(action)
+            if widget is not None:
+                return widget
+        raise AssertionError(f"no toolbar button for {action.text()}")
+
+    # -- property grid --------------------------------------------------------------
+
+    def test_click_a_component_then_edit_it_in_the_property_grid(self):
+        panel = self.window.properties_panel
+        self.assertFalse(panel.tree.isVisible())
+        self.assertTrue(panel.empty.isVisible())
+        self.click_on_canvas("button_1_1_2")
+        self.assertTrue(self.item("button_1_1_2").isSelected())
+        self.assertTrue(panel.tree.isVisible())
+        self.assertIn("button_1_1_2", panel.header.text())
+        groups = [panel.tree.topLevelItem(i).text(0) for i in range(panel.tree.topLevelItemCount())]
+        self.assertEqual(groups, ["Identity", "Position", "Geometry", "Operation", "Display"])
+
+        # Click the NC contact box: the model changes, undo puts it back.
+        nc = panel.checkboxes["normallyClosed"]
+        QTest.mouseClick(nc, Qt.LeftButton, Qt.NoModifier, self.indicator(nc))
+        self.assertTrue(self.item("button_1_1_2").model.normallyClosed)
+        self.window.undo_stack.undo()
+        self.assertFalse(self.item("button_1_1_2").model.normallyClosed)
+        self.assertFalse(panel.checkboxes["normallyClosed"].isChecked())
+
+        # Click into Width, type a value, Enter.
+        width = panel.spins["width"]
+        QTest.mouseClick(width, Qt.LeftButton)
+        width.selectAll()
+        QTest.keyClicks(width, "0.9")
+        QTest.keyClick(width, Qt.Key_Return)
+        self.assertAlmostEqual(self.item("button_1_1_2").model.width, 0.9)
+
+    def test_sensor_signal_settings_are_editable(self):
+        self.click_on_canvas("sensor_1_1_1")
+        panel = self.window.properties_panel
+        box = panel.checkboxes["invert"]
+        QTest.mouseClick(box, Qt.LeftButton, Qt.NoModifier, self.indicator(box))
+        self.assertTrue(self.item("sensor_1_1_1").model.invert)
+        self.assertEqual(panel.spins["offDelay"].suffix(), " s")
+        self.assertIn("Signal", [panel.tree.topLevelItem(i).text(0) for i in range(panel.tree.topLevelItemCount())])
+
+    # -- theme ------------------------------------------------------------------------
+
+    def test_theme_switch_button_and_menu(self):
+        button = self.toolbar_button(self.window.theme_action)
+        self.assertEqual(button.text(), "Light Theme")
+        QTest.mouseClick(button, Qt.LeftButton)
+        self.assertEqual(hmi.THEME, "light")
+        self.assertIn(hmi.hex_(hmi.THEMES["light"]["PANEL"]), self.window.styleSheet())
+        self.assertEqual(self.window.scene.backgroundBrush().color().name(), hmi.hex_(hmi.THEMES["light"]["BG"]))
+        self.assertEqual(hmi.load_settings()["theme"], "light", "remembered")
+        self.assertEqual(button.text(), "Dark Theme")
+        self.assertTrue(self.window.theme_actions["light"].isChecked())
+
+        # Back to dark through View > Theme > Dark, clicked.
+        bar = self.window.menuBar()
+        view_action = next(a for a in bar.actions() if a.text() == "View")
+        QTest.mouseClick(bar, Qt.LeftButton, Qt.NoModifier, bar.actionGeometry(view_action).center())
+        view_menu = view_action.menu()
+        self.assertTrue(view_menu.isVisible())
+        theme_action = next(a for a in view_menu.actions() if a.text() == "Theme")
+        QTest.mouseClick(view_menu, Qt.LeftButton, Qt.NoModifier, view_menu.actionGeometry(theme_action).center())
+        theme_menu = theme_action.menu()
+        for _ in range(100):                      # the sub-menu opens on a short delay
+            if theme_menu.isVisible():
+                break
+            QTest.qWait(20)
+        self.assertTrue(theme_menu.isVisible())
+        dark = self.window.theme_actions["dark"]
+        QTest.mouseClick(theme_menu, Qt.LeftButton, Qt.NoModifier, theme_menu.actionGeometry(dark).center())
+        self.assertEqual(hmi.THEME, "dark")
+        self.assertEqual(button.text(), "Light Theme")
+
+    # -- run in simulator --------------------------------------------------------------
+
+    def test_run_in_simulator_saves_and_starts_main(self):
+        self.click_on_canvas("belt_1_1_2")
+        self.window.properties_panel.spins["speed"].setValue(1.25)    # unsaved edit
+        with mock.patch("layout_editor.subprocess.Popen") as popen:
+            QTest.mouseClick(self.toolbar_button(self.window.run_sim_action), Qt.LeftButton)
+        args = popen.call_args[0][0]
+        self.assertTrue(args[1].endswith("main.py"))
+        self.assertEqual(args[2], self.layout)
+        self.assertTrue(self.window.undo_stack.isClean(), "saved first")
+        saved = load_config(self.layout)
+        self.assertEqual(next(b for b in saved.belts if b.id == "belt_1_1_2").speed, 1.25)
+
+    # -- component tree ------------------------------------------------------------------
+
+    def test_click_a_row_in_the_component_tree_selects_it_on_the_canvas(self):
+        tree = self.window.manager_panel.tree
+        row = next(r for r in self.window.manager_panel._rows() if r.text(0) == "led_1_2_3")
+        tree.scrollToItem(row)
+        _app.processEvents()
+        QTest.mouseClick(tree.viewport(), Qt.LeftButton, Qt.NoModifier, tree.visualItemRect(row).center())
+        self.assertTrue(self.item("led_1_2_3").isSelected())
+        self.assertIn("led_1_2_3", self.window.properties_panel.header.text())
+
+
+class SimulatorClicksTest(unittest.TestCase):
+    def setUp(self):
+        hmi.set_theme("dark")
+        hmi.save_settings(theme="dark")
+        self.config = load_config("test_config.json")
+        self.r = Renderer(self.config)
+        self.addCleanup(self._close)
+        self.physics = PhysicsEngine(self.config)
+        self.r.physics = self.physics
+        for belt in self.config.belts:
+            belt.speed = 1.5
+        self.physics.update(6.0)                                       # some parcels about
+        self.assertGreater(len(self.physics.parcels), 0)
+        self.frame()
+
+    def _close(self):
+        hmi.set_theme("dark")
+        self.r.quit()
+
+    def frame(self):
+        self.r.manager.update(0.02)
+        self.r.render(self.physics)
+
+    def click_at(self, pos, button=1):
+        for kind in (pygame.MOUSEMOTION, pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP):
+            data = {"pos": pos}
+            if kind == pygame.MOUSEMOTION:
+                data.update(rel=(0, 0), buttons=(0, 0, 0))
+            else:
+                data["button"] = button
+            pygame.event.post(pygame.event.Event(kind, data))
+            self.r.process_events()
+            self.r.manager.update(0.02)
+        self.r.process_events()       # the UI_BUTTON_PRESSED the release produced
+        self.frame()
+
+    def click(self, ui_button):
+        self.click_at(ui_button.get_abs_rect().center)
+
+    def test_start_pause_clear_and_reset_buttons(self):
+        ui = self.r.editor_ui
+        self.assertFalse(self.r.playing)
+        self.click(ui.sim_play_btn)
+        self.assertTrue(self.r.playing)
+        self.assertEqual(ui.sim_play_btn.text, "Pause")
+        self.click(ui.sim_play_btn)
+        self.assertFalse(self.r.playing)
+        self.assertEqual(ui.sim_play_btn.text, "Start")
+
+        self.click(ui.sim_clear_btn)
+        self.assertEqual(self.physics.parcels, [])
+        self.assertGreater(self.physics.sim_time, 0)                   # clear keeps the clock
+
+        self.physics.update(3.0)
+        self.click(ui.sim_reset_btn)
+        self.assertEqual(self.physics.parcels, [])
+        self.assertEqual(self.physics.sim_time, 0.0)
+        self.assertEqual(self.physics.delivered, {})
+
+    def test_theme_button_switches_the_whole_window(self):
+        ui = self.r.editor_ui
+        self.assertEqual(ui.theme_btn.text, "Light Theme")
+        self.click(ui.theme_btn)
+        self.assertEqual(hmi.THEME, "light")
+        self.assertEqual(ui.theme_btn.text, "Dark Theme")
+        canvas = self.r.screen.get_at((220, self.r.height - 40))[:3]   # empty canvas, bottom left
+        self.assertIn(canvas, (hmi.BG, hmi.GRID, hmi.GRID_MAJOR, hmi.AXIS_X, hmi.AXIS_Y))
+        self.assertEqual(self.r.screen.get_at((self.r.width - 3, 3))[:3], hmi.PANEL_DARK)
+        self.click(ui.theme_btn)
+        self.assertEqual(hmi.THEME, "dark")
+
+    def test_folder_headers_fold_up(self):
+        ui = self.r.editor_ui
+        header = next(f[0] for f in ui._toolbar_folders if f[3] == "BELTS")
+        self.click(header)
+        self.assertFalse(ui.add_linear_btn.visible)
+        self.click(header)
+        self.assertTrue(ui.add_linear_btn.visible)
+
+    def test_click_a_push_button_on_the_canvas_while_running(self):
+        ui = self.r.editor_ui
+        self.click(ui.sim_play_btn)
+        button = self.config.buttons[0]
+        self.r.camera_x, self.r.camera_y, self.r.zoom = self.r.width / 2, self.r.height / 2, 1.0
+        self.r.camera_x -= button.x * self.r.scale
+        self.r.camera_y += button.y * self.r.scale
+        pos = self.r._world_to_screen(button.x, button.y)
+        pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, {"pos": pos, "button": 1}))
+        self.r.process_events()
+        self.assertIs(button.sensor_states, True)
+        pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONUP, {"pos": pos, "button": 1}))
+        self.r.process_events()
+        self.assertIs(button.sensor_states, False)
+
+
+if __name__ == "__main__":
+    unittest.main()

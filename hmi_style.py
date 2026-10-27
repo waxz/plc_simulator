@@ -9,32 +9,157 @@ Colours are (r, g, b) tuples; qcolor()/hex_() convert for Qt.
 """
 import os
 
-# -- palette ------------------------------------------------------------------
+# -- palettes -----------------------------------------------------------------
+#
+# Two themes with the same meaning per colour. set_theme() swaps the module
+# globals below, so code that reads hmi.BG etc. at draw time follows it.
 
-BG = (31, 35, 41)            # canvas
-GRID = (39, 44, 51)          # minor grid
-GRID_MAJOR = (47, 53, 61)    # every 5th line
-AXIS_X = (62, 92, 70)        # world X axis (y = 0)
-AXIS_Y = (92, 62, 66)        # world Y axis (x = 0)
+THEMES = {
+    "dark": {
+        "BG": (31, 35, 41),            # canvas
+        "GRID": (39, 44, 51),          # minor grid
+        "GRID_MAJOR": (47, 53, 61),    # every 5th line
+        "AXIS_X": (62, 92, 70),        # world X axis (y = 0)
+        "AXIS_Y": (92, 62, 66),        # world Y axis (x = 0)
+        "PANEL": (36, 40, 47),         # side panels, status bar
+        "PANEL_DARK": (27, 30, 36),
+        "PANEL_BORDER": (56, 62, 71),
+        "TEXT": (214, 219, 225),
+        "TEXT_DIM": (139, 148, 158),
+        "TEXT_FAINT": (98, 106, 116),
+        "ACCENT": (56, 152, 214),      # selection, focus
+        "RUNNING": (64, 178, 104),     # motor running, sensor clear, OK
+        "WARNING": (226, 168, 44),     # paused, lagging
+        "ALARM": (222, 76, 64),        # fault, blocked beam, stop
+        "BELT_EDGE": (20, 23, 28),
+        "FLOW": (236, 239, 242),       # flow chevrons on a running belt
+        "SOURCE": (70, 120, 200),
+        "SINK": (200, 128, 60),
+        "PARCEL_EDGE": (18, 20, 24),
+        "TAG_BG": (22, 25, 30, 205),   # label backdrop (with alpha)
+        "ON_ACCENT": (255, 255, 255),  # text on an accent / state colour
+    },
+    "light": {
+        "BG": (226, 229, 233),
+        "GRID": (215, 219, 224),
+        "GRID_MAJOR": (201, 206, 212),
+        "AXIS_X": (118, 168, 128),
+        "AXIS_Y": (190, 122, 126),
+        "PANEL": (244, 245, 247),
+        "PANEL_DARK": (232, 234, 237),
+        "PANEL_BORDER": (196, 201, 208),
+        "TEXT": (31, 35, 41),
+        "TEXT_DIM": (84, 92, 103),
+        "TEXT_FAINT": (132, 139, 149),
+        "ACCENT": (28, 116, 196),
+        "RUNNING": (32, 148, 78),
+        "WARNING": (196, 132, 18),
+        "ALARM": (204, 50, 40),
+        "BELT_EDGE": (88, 94, 102),
+        "FLOW": (36, 40, 46),
+        "SOURCE": (56, 108, 196),
+        "SINK": (196, 118, 44),
+        "PARCEL_EDGE": (60, 64, 70),
+        "TAG_BG": (250, 251, 252, 225),
+        "ON_ACCENT": (255, 255, 255),
+    },
+}
+THEME = "dark"
+globals().update(THEMES[THEME])
 
-PANEL = (36, 40, 47)         # side panels, status bar
-PANEL_DARK = (27, 30, 36)
-PANEL_BORDER = (56, 62, 71)
-TEXT = (214, 219, 225)
-TEXT_DIM = (139, 148, 158)
-TEXT_FAINT = (98, 106, 116)
 
-ACCENT = (56, 152, 214)      # selection, focus
-RUNNING = (64, 178, 104)     # motor running, sensor clear, OK
-WARNING = (226, 168, 44)     # paused, lagging
-ALARM = (222, 76, 64)        # fault, blocked beam, stop
+def set_theme(name: str) -> str:
+    """Switch every colour to the "dark" or "light" palette."""
+    global THEME
+    if name not in THEMES:
+        raise ValueError(f"unknown theme {name!r} (dark, light)")
+    THEME = name
+    globals().update(THEMES[name])
+    return name
 
-BELT_EDGE = (20, 23, 28)
-FLOW = (236, 239, 242)       # flow chevrons on a running belt
-SOURCE = (70, 120, 200)
-SINK = (200, 128, 60)
-PARCEL_EDGE = (18, 20, 24)
-TAG_BG = (22, 25, 30, 205)   # label backdrop (with alpha)
+
+def other_theme() -> str:
+    return "light" if THEME == "dark" else "dark"
+
+
+# -- settings (shared by both windows) ------------------------------------------
+
+def settings_path() -> str:
+    """$CONVEYOR_SIM_SETTINGS, else ~/.conveyor_sim/settings.json."""
+    return os.environ.get("CONVEYOR_SIM_SETTINGS") or os.path.join(
+        os.path.expanduser("~"), ".conveyor_sim", "settings.json")
+
+
+def load_settings() -> dict:
+    import json
+    try:
+        with open(settings_path(), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_settings(**changes) -> None:
+    import json
+    data = load_settings()
+    data.update(changes)
+    path = settings_path()
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except OSError:
+        pass  # a preference, not worth failing over
+
+
+def apply_saved_theme() -> str:
+    """Use the theme saved last time (dark if none)."""
+    theme = load_settings().get("theme", "dark")
+    return set_theme(theme if theme in THEMES else "dark")
+
+
+# -- property panels: one grouping for both windows -------------------------------
+
+PROPERTY_GROUP_ORDER = ("Identity", "Position", "Geometry", "Motion", "Signal", "Operation", "Display")
+PROPERTY_GROUPS = {
+    "id": "Identity", "label": "Identity", "sensorType": "Identity", "commandFormat": "Identity",
+    "x": "Position", "y": "Position", "rotation": "Position",
+    "length": "Geometry", "beltWidth": "Geometry", "width": "Geometry", "height": "Geometry",
+    "radius": "Geometry", "startAngle": "Geometry", "endAngle": "Geometry", "beltShape": "Geometry",
+    "beltVertexs": "Geometry", "laserCount": "Geometry", "beamDistance": "Geometry",
+    "minWidth": "Geometry", "maxWidth": "Geometry", "minHeight": "Geometry", "maxHeight": "Geometry",
+    "speed": "Motion", "directionAngle": "Motion", "transition_momentum_duration": "Motion",
+    "interval": "Motion",
+    "onDelay": "Signal", "offDelay": "Signal", "invert": "Signal", "packFormat": "Signal",
+    "buttonType": "Operation", "normallyClosed": "Operation", "key": "Operation", "isOn": "Operation",
+    "color": "Display",
+}
+
+
+# Row labels the simulator's panel shares with the editor's property grid.
+PROPERTY_LABELS = {
+    "id": "Id", "label": "Label", "x": "X", "y": "Y", "rotation": "Rotation",
+    "length": "Length", "beltWidth": "Width", "width": "Width", "height": "Height",
+    "radius": "Radius", "startAngle": "Start angle", "endAngle": "End angle", "beltShape": "Shape",
+    "beltVertexs": "Corners", "sensorType": "Type", "laserCount": "Beams", "beamDistance": "Beam pitch",
+    "minWidth": "Min width", "maxWidth": "Max width", "minHeight": "Min length", "maxHeight": "Max length",
+    "speed": "Speed", "directionAngle": "Direction", "transition_momentum_duration": "Transition",
+    "interval": "Interval", "isOn": "On", "color": "Color",
+}
+
+
+def property_label(attr: str) -> str:
+    return PROPERTY_LABELS.get(attr, attr.capitalize())
+
+
+def property_group(attr: str) -> str:
+    return PROPERTY_GROUPS.get(attr, "Display")
+
+
+def group_sort_key(attr: str) -> int:
+    return PROPERTY_GROUP_ORDER.index(property_group(attr))
+
 
 # -- type ---------------------------------------------------------------------
 
@@ -115,3 +240,62 @@ def qt_stylesheet() -> str:
     QGraphicsView {{ border: none; background: {hex_(BG)}; }}
     QSplitter::handle {{ background: {pd}; }}
     """
+
+
+# -- pygame_gui theme -----------------------------------------------------------------
+
+def pygame_gui_theme() -> dict:
+    """The simulator window's widget theme for the current palette."""
+    h = hex_
+    base = {
+        "normal_bg": h(PANEL_DARK), "hovered_bg": h(PANEL), "disabled_bg": h(PANEL_DARK),
+        "selected_bg": h(ACCENT), "active_bg": h(ACCENT), "dark_bg": h(PANEL),
+        "normal_text": h(TEXT), "hovered_text": h(TEXT), "selected_text": h(ON_ACCENT),
+        "active_text": h(ON_ACCENT), "disabled_text": h(TEXT_FAINT),
+        "normal_border": h(PANEL_BORDER), "hovered_border": h(ACCENT), "selected_border": h(ACCENT),
+        "active_border": h(ACCENT), "disabled_border": h(PANEL_BORDER),
+        "filled_bar": h(ACCENT), "unfilled_bar": h(PANEL_DARK), "text_cursor": h(TEXT),
+        "link_text": h(ACCENT), "link_hover": h(ACCENT), "link_selected": h(ACCENT),
+    }
+    flat = {"shape": "rectangle", "border_width": "0", "text_horiz_alignment": "left"}
+    return {
+        "defaults": {"colours": base, "font": {"name": "noto_sans", "size": "12"},
+                     "misc": {"shape": "rounded_rectangle", "shape_corner_radius": "3", "border_width": "1",
+                              "shadow_width": "0"}},
+        "panel": {"colours": {"dark_bg": h(PANEL), "normal_border": h(PANEL_BORDER)},
+                  "misc": {"shape": "rectangle", "border_width": "1", "shadow_width": "0"}},
+        "label": {"colours": {"dark_bg": "#00000000", "normal_text": h(TEXT_DIM)},
+                  "font": {"name": "noto_sans", "size": "12"}},
+        "text_entry_line": {"colours": {"dark_bg": h(PANEL_DARK), "normal_border": h(PANEL_BORDER),
+                                        "selected_border": h(ACCENT)},
+                            "misc": {"shape": "rectangle", "padding": "4,2"}},
+        "window": {"colours": {"dark_bg": h(PANEL), "normal_border": h(PANEL_BORDER)},
+                   "misc": {"shape": "rectangle", "shadow_width": "0", "title_bar_height": "24"}},
+        "window.#title_bar": {"colours": {"normal_bg": h(PANEL_DARK), "hovered_bg": h(PANEL_DARK),
+                                          "active_bg": h(PANEL_DARK), "normal_text": h(TEXT_DIM)},
+                              "misc": {"shape": "rectangle", "text_horiz_alignment": "left",
+                                       "text_horiz_alignment_padding": "8"}},
+        "drop_down_menu": {"misc": {"shape": "rectangle"}},
+        "#folder_header": {"colours": {"normal_bg": "#00000000", "hovered_bg": h(PANEL_DARK),
+                                       "active_bg": h(PANEL_DARK), "selected_bg": h(PANEL_DARK),
+                                       "normal_text": h(TEXT_DIM), "hovered_text": h(TEXT),
+                                       "active_text": h(TEXT), "normal_border": "#00000000",
+                                       "hovered_border": "#00000000", "active_border": "#00000000"},
+                           "font": {"name": "noto_sans", "size": "11", "bold": "1"},
+                           "misc": {**flat, "text_horiz_alignment_padding": "4"}},
+        "#prop_group": {"colours": {"dark_bg": "#00000000", "normal_text": h(ACCENT)},
+                        "font": {"name": "noto_sans", "size": "11", "bold": "1"},
+                        "misc": {"text_horiz_alignment": "left"}},
+        "#sim_primary": {"colours": {"normal_bg": h(RUNNING), "hovered_bg": h(shade(RUNNING, 1.15)),
+                                     "active_bg": h(shade(RUNNING, 0.85)), "normal_text": h(ON_ACCENT),
+                                     "hovered_text": h(ON_ACCENT), "normal_border": h(shade(RUNNING, 0.8))},
+                         "font": {"name": "noto_sans", "size": "12", "bold": "1"}},
+        "#sim_pause": {"colours": {"normal_bg": h(WARNING), "hovered_bg": h(shade(WARNING, 1.15)),
+                                   "active_bg": h(shade(WARNING, 0.85)), "normal_text": h(ON_ACCENT),
+                                   "hovered_text": h(ON_ACCENT), "normal_border": h(shade(WARNING, 0.8))},
+                       "font": {"name": "noto_sans", "size": "12", "bold": "1"}},
+        "selection_list.#item_list_item": {"misc": {**flat, "text_horiz_alignment_padding": "6"},
+                                           "colours": {"normal_bg": h(PANEL_DARK), "hovered_bg": h(PANEL),
+                                                       "selected_bg": h(ACCENT), "normal_text": h(TEXT),
+                                                       "selected_text": h(ON_ACCENT)}},
+    }
