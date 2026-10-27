@@ -12,7 +12,7 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
 
 from config_parser import Belt, DriveConfig, load_config  # noqa: E402
 from layout_editor import BeltItem, MainWindow  # noqa: E402
@@ -222,7 +222,8 @@ class CadToolsTest(unittest.TestCase):
         doc.units = ezdxf.units.MM
         doc.modelspace().add_lwpolyline([(0, 0), (20000, 0), (20000, 10000)])
         doc.saveas(plan)
-        with mock.patch("layout_editor_cad.QFileDialog.getOpenFileName", return_value=(plan, "")):
+        with mock.patch("layout_editor_cad.QFileDialog.getOpenFileName", return_value=(plan, "")), \
+                mock.patch("layout_editor_cad.BackgroundImportDialog.exec", return_value=QDialog.Accepted):
             self.window.cad.import_background()
         self.assertIsNotNone(self.window.cad.background_item)
         self.assertEqual(self.window.config.background.path, "plan.dxf")  # stored relative

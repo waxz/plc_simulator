@@ -7,13 +7,15 @@ Qt-free cad/ package.
   Tools > Disconnect Belts   (Ctrl+Shift+J)
   Tools > Solve Connections  (F6)            planegcs: re-attach every connection
   Tools > Check Layout       (F7)            Shapely: overlaps, open outlets, ...
-  File  > Import DXF Background... / Remove Background / Export DXF...   ezdxf
+  File  > Import DXF Background... / Background Settings... / Remove Background /
+          Export DXF...                       ezdxf (dialog: background_dialog.py)
   View  > Show Ports                         inlet/outlet/connection markers
 
 Connections are kept while editing: when a belt is dragged, every belt
 connected to it is re-solved in the same undo step. Every change goes
 through the editor's undo stack.
 """
+import contextlib
 import math
 import os
 from typing import Dict, List, Optional
@@ -23,9 +25,12 @@ from PySide6.QtGui import (
     QAction, QBrush, QColor, QKeySequence, QPainterPath, QPainterPathStroker, QPen, QPolygonF, QUndoCommand,
 )
 from PySide6.QtWidgets import (
-    QFileDialog, QGraphicsEllipseItem, QGraphicsPathItem, QGraphicsPolygonItem, QInputDialog,
+    QApplication, QDialog, QFileDialog, QGraphicsEllipseItem, QGraphicsPathItem, QGraphicsPolygonItem, QInputDialog,
     QListWidget, QListWidgetItem, QMessageBox, QPushButton, QStyle, QVBoxLayout, QWidget,
 )
+
+from background_dialog import BackgroundImportDialog
+import ezdxf
 
 from cad import dxf_io
 from cad.checks import check_layout
@@ -188,6 +193,16 @@ class BackgroundItem(QGraphicsPathItem):
         _inert(self)
 
 
+@contextlib.contextmanager
+def _busy():
+    """Wait cursor while reading a big drawing."""
+    QApplication.setOverrideCursor(Qt.WaitCursor)
+    try:
+        yield
+    finally:
+        QApplication.restoreOverrideCursor()
+
+
 # ---------------------------------------------------------------------------
 # Layout check panel
 # ---------------------------------------------------------------------------
@@ -333,8 +348,10 @@ class CadController:
             return
         path = self._resolve(background.path)
         try:
-            geom = dxf_io.read_background(path)
-        except (OSError, IOError, ValueError) as exc:
+            with _busy():
+                geom = dxf_io.read_background(path, clip=background.clip, skip_types=background.skipTypes,
+                                              hidden_layers=background.hiddenLayers)
+        except (OSError, IOError, ValueError, ezdxf.DXFError) as exc:
             message = f"Could not load background {path}: {exc}"
             if quiet_errors:
                 self.window.statusBar().showMessage(message, 10000)
@@ -442,6 +459,7 @@ class CadController:
         w = self.window
         file_menu.addSeparator()
         for text, slot in (("Import DXF Background...", self.import_background),
+                           ("Background Settings...", self.background_settings),
                            ("Remove Background", self.remove_background),
                            ("Export DXF...", self.export_dxf)):
             action = QAction(text, w)
@@ -627,18 +645,40 @@ class CadController:
         if not path:
             return
         try:
-            geom = dxf_io.read_background(path)
-        except (OSError, IOError, ValueError) as exc:
-            self._error("Import DXF Background", f"Could not read {path}:\n{exc}")
-            return
-        try:
             stored = os.path.relpath(path, self._layout_dir())
         except ValueError:  # different drive on Windows
             stored = path
-        background = BackgroundDrawing(path=stored, scale=geom.scale)
-        self._push("Import background", [BackgroundCommand(self, self.config.background, background, "Background")])
-        self._status(f"Background: {len(geom.polylines)} polylines, units {geom.units_name} "
-                     f"(scale {geom.scale:g} m/unit). Edit 'background' in the layout file to offset it.")
+        self._background_dialog(path, stored, None, "Import background")
+
+    def background_settings(self):
+        """Units, window, placement and layers of the current background."""
+        current = self.config.background
+        if current is None:
+            self._status("No background: File > Import DXF Background... first.")
+            return
+        self._background_dialog(self._resolve(current.path), current.path, current, "Background settings")
+
+    def _background_dialog(self, path: str, stored: str, current: Optional[BackgroundDrawing], text: str):
+        self._status(f"Reading {os.path.basename(path)}...", 0)
+        try:
+            with _busy():
+                info = dxf_io.inspect_drawing(path)
+        except (OSError, IOError, ValueError, ezdxf.DXFError) as exc:
+            self._status("")
+            self._error("Import DXF Background", f"Could not read {path}:\n{exc}")
+            return
+        self._status("")
+        dialog = BackgroundImportDialog(self.window, info, stored, current)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        background = dialog.background()
+        before = self.config.background.model_copy() if self.config.background is not None else None
+        self._push(text, [BackgroundCommand(self, before, background, "Background")])
+        count = len(self._background_shapes)
+        where = "one window" if background.clip else "whole drawing"
+        self._status(f"Background: {count:,} entities ({where}), scale {background.scale:g} m/unit, offset "
+                     f"({background.offsetX:.4g}, {background.offsetY:.4g}) m. File > Background Settings... "
+                     f"to change.")
 
     def remove_background(self):
         if self.config.background is None:

@@ -194,12 +194,18 @@ class BeltConnection(BaseModel):
 
 class BackgroundDrawing(BaseModel):
     """A DXF floor plan shown behind the layout in the editor (cad/dxf_io.py).
-    `path` is relative to the layout file when possible."""
+    `path` is relative to the layout file when possible. Only what passes the
+    filters below is shown, snapped to and picked from."""
     path: str
     scale: float = 0.001      # metres per drawing unit (0.001 = drawing in mm)
     offsetX: float = 0.0      # metres, applied after scaling
     offsetY: float = 0.0
     visible: bool = True
+    # Keep only this window of the drawing: (min_x, min_y, max_x, max_y) in
+    # drawing units (before scale/offset), e.g. one sheet of a drawing set.
+    clip: Optional[Tuple[float, float, float, float]] = None
+    skipTypes: List[str] = Field(default_factory=list)     # "DIMENSION", "HATCH", "LEADER"
+    hiddenLayers: List[str] = Field(default_factory=list)
 
 
 class SketchEntity(BaseModel):

@@ -18,9 +18,12 @@ an imported layout:
   pick_line()   - the drawing entity (line/polyline/arc) under the cursor
   pick_region() - the smallest closed area containing a point, formed by any
                   combination of entities (separate LINEs work, not just
-                  closed polylines) via Shapely polygonize.
+                  closed polylines) via Shapely polygonize. The areas are
+                  found once, lazily; start_regions() does it on a worker
+                  thread so a big drawing doesn't freeze the editor.
 """
 import math
+import threading
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
 
@@ -110,6 +113,8 @@ class DrawingPicker:
         self._line_tree = STRtree(self._lines) if self._lines else None
         self._regions = None
         self._region_tree = None
+        self._region_lock = threading.Lock()
+        self._region_thread: Optional[threading.Thread] = None
 
     def pick_line(self, x: float, y: float, tol: float):
         """The shape whose outline passes within `tol` of (x, y), or None."""
@@ -119,16 +124,47 @@ class DrawingPicker:
         i = self._line_tree.query_nearest(p, max_distance=tol)
         return self.shapes[int(i[0])] if len(i) else None
 
-    def regions(self):
-        """Every closed area bounded by the drawing's lines (computed once)."""
-        if self._regions is None:
+    def _compute_regions(self):
+        try:
             noded = unary_union(MultiLineString([list(l.coords) for l in self._lines])) if self._lines else None
-            self._regions = [r for r in polygonize(noded)] if noded is not None else []
-            self._region_tree = STRtree(self._regions) if self._regions else None
+            regions = [r for r in polygonize(noded)] if noded is not None else []
+        except Exception:  # noqa: BLE001 - GEOS gave up on odd geometry: no areas, lines still pick
+            regions = []
+        tree = STRtree(regions) if regions else None
+        with self._region_lock:
+            if self._regions is None:
+                self._region_tree, self._regions = tree, regions
+
+    def start_regions(self) -> bool:
+        """Find the closed areas on a worker thread (Shapely's GEOS calls
+        release the GIL). True when they are already available."""
+        with self._region_lock:
+            if self._regions is not None:
+                return True
+            if self._region_thread is None:
+                self._region_thread = threading.Thread(target=self._compute_regions, name="regions", daemon=True)
+                self._region_thread.start()
+        return False
+
+    def regions_ready(self) -> bool:
+        return self._regions is not None
+
+    def regions(self):
+        """Every closed area bounded by the drawing's lines (computed once;
+        waits for a running start_regions())."""
+        if self._regions is None:
+            thread = self._region_thread
+            if thread is not None:
+                thread.join()
+            else:
+                self._compute_regions()
         return self._regions
 
-    def pick_region(self, x: float, y: float):
-        """The smallest closed area containing (x, y), or None."""
+    def pick_region(self, x: float, y: float, wait: bool = True):
+        """The smallest closed area containing (x, y), or None. With
+        wait=False and the areas still being found, None at once."""
+        if not wait and not self.start_regions():
+            return None
         regions = self.regions()
         if not regions:
             return None

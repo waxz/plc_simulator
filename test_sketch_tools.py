@@ -17,7 +17,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import ezdxf  # noqa: E402
 from PySide6.QtCore import QEvent, QPointF, Qt  # noqa: E402
 from PySide6.QtGui import QKeyEvent, QMouseEvent  # noqa: E402
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
 
 from cad import dxf_io, path as cpath  # noqa: E402
 from cad.belts import default_flow_heading, outline_belt  # noqa: E402
@@ -255,7 +255,8 @@ class EditorWorkflowTest(unittest.TestCase):
         doc.modelspace().add_lwpolyline([(6000, 0, 0), (10000, 0, math.tan(math.pi / 8)), (12000, 2000, 0)],
                                         format="xyb")
         doc.saveas(plan)
-        with mock.patch("layout_editor_cad.QFileDialog.getOpenFileName", return_value=(plan, "")):
+        with mock.patch("layout_editor_cad.QFileDialog.getOpenFileName", return_value=(plan, "")), \
+                mock.patch("layout_editor_cad.BackgroundImportDialog.exec", return_value=QDialog.Accepted):
             self.cad.import_background()
 
         # Click a little off each corner: OSNAP puts the corner exactly on the drawing.

@@ -711,6 +711,8 @@ class PickFromDrawingTool:
         self.view.viewport().setCursor(Qt.PointingHandCursor)
         self.toolbar.configure("From drawing", segments=False, width=True, corner=False, points=False)
         self.window.statusBar().showMessage(self.hint)
+        # Closed areas are found on a worker thread: hovering lines works meanwhile.
+        self.snapper.picker.start_regions()
 
     def stop(self):
         self.active = False
@@ -722,15 +724,22 @@ class PickFromDrawingTool:
         self.toolbar.setEnabled(False)
         self.toolbar.mode_label.setText("  ")
 
-    def target_at(self, x: float, y: float):
+    def target_at(self, x: float, y: float, wait: bool = True):
         """("line", (points, bulges, closed)) for the chain of connected
         lines/arcs through the entity under the cursor, ("region", polygon)
-        for the closed area around it, or None."""
+        for the closed area around it, or None. wait=False: no area while
+        they are still being found (hovering must not block the UI)."""
         picker = self.snapper.picker
+        if picker is None:
+            return None
         line = picker.pick_line(x, y, self.snapper.tolerance_m())
         if line is not None:
             return ("line", chain_from(picker.shapes, line))
-        region = picker.pick_region(x, y)
+        region = picker.pick_region(x, y, wait=wait)
+        if region is None and not wait and not picker.regions_ready():
+            self.window.statusBar().showMessage(
+                f"Finding closed areas in the drawing ({len(picker.shapes)} entities)... lines can be picked now.",
+                2000)
         return ("region", region) if region is not None else None
 
     def create(self, target) -> Optional[Belt]:
@@ -769,7 +778,7 @@ class PickFromDrawingTool:
 
     def mouse_move(self, event) -> bool:
         x, y = self.from_scene(self.view.mapToScene(event.position().toPoint()))
-        self.target = self.target_at(x, y)
+        self.target = self.target_at(x, y, wait=False)
         _PointTool._clear_preview(self)
         if self.target is not None:
             kind, geom = self.target

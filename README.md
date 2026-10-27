@@ -165,7 +165,8 @@ The Qt layout editor is where belt shapes and positions are designed:
 | Tools > Disconnect Belts | Ctrl+Shift+J | Removes connections between the selected belts | |
 | Tools > Solve Connections | F6 | Re-attaches every connection, holding the selected belts fixed | planegcs |
 | Tools > Check Layout | F7 | Belt overlaps (transfer zones at belt ends are allowed), outlets leading nowhere, broken connections, sensors/sources not over a belt; double-click an issue to select it | Shapely |
-| File > Import DXF Background... | | Floor plan as a locked background (blocks expanded, units from `$INSUNITS`, unitless = mm) | ezdxf |
+| File > Import DXF Background... | | Floor plan as a locked background, via a dialog: units (prefilled from `$INSUNITS`, cross-checked against the drawing's dimensions), import only a window or one sheet of a drawing set, place it at the origin, leave out dimensions / hatches / leaders / layers | ezdxf |
+| File > Background Settings... | | Change the background's units, window, offset and layers later (undoable) | ezdxf |
 | File > Export DXF... | | Layout in metres, one layer per kind (BELTS, BELT_CENTERLINES, FLOW, SENSORS, ...) | ezdxf |
 | View > Show Ports | | Inlet (green ring), outlet (orange arrow), connection (cyan ring; red = broken) | |
 
@@ -178,7 +179,25 @@ The Qt layout editor is where belt shapes and positions are designed:
      (L / A), and **Tools > Sketch Arc (Shift+S)** draws a 3-point arc
      (start, end, a point on the arc).
    - Or **File > Import DXF Background...** a plant layout. Its lines, arcs,
-     circles and polylines are read exactly (with arc bulges).
+     circles and polylines are read exactly (with arc bulges). Real drawings
+     often need fixing on the way in, so the import dialog shows a preview
+     and:
+     - **Units**: m / cm / mm / inch / ft / unitless (typed scale), prefilled
+       from `$INSUNITS`. The dimensions cross-check it: e.g. a dimension
+       measuring 0.85 units shown as "85" (DIMLFAC 100) means metres drawn,
+       centimetres shown, so a header saying inches is flagged (Use m).
+     - **Import only a window**: pick a sheet (paper frames found in the
+       drawing, named after their titles, or groups of geometry far apart)
+       or drag a rectangle on the preview. Only geometry inside is loaded,
+       which keeps a big drawing set fast.
+     - **Placement**: the window's lower-left at (0, 0), or pick an origin
+       point, or type the offsets. The result's size in metres is shown.
+     - **Leave out** dimensions, hatches and leaders, and hide layers. What
+       is left out is not drawn, snapped to or picked.
+
+     The choices are saved in the layout's `background` (`scale`, `offsetX`,
+     `offsetY`, `clip`, `skipTypes`, `hiddenLayers`); change them later with
+     File > Background Settings...
 2. **Every point you place snaps to existing geometry (OSNAP)**, on the
    drawing, the sketch and components. A yellow marker shows the snap before
    you click: Endpoint, Center, Midpoint or Nearest (on an edge), else Grid.
