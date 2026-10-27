@@ -148,14 +148,18 @@ uv run python layout_editor.py test_config.json
 
 The Qt layout editor is where belt shapes and positions are designed:
 
-- **Component Library** dock: drag a component onto the canvas to place it.
-  Built in: Linear Belt, Curved Belt, IR Sensor, Laser Banner, Parcel Source,
-  Sink, Push Button, LED Indicator. Your own components sit below them:
+- **Component Library** dock - a folder tree with a search box: drag a
+  component onto the canvas to place it. Built in, by folder: **Belts**
+  (Linear, Curved), **Sensors** (IR, Laser Banner), **Parcel Flow** (Source,
+  Sink), **Operator Panel** (Push Button, LED). Your own components are in
+  **My Components**, in any sub-folders you like:
   - **Add Selected** saves the component selected on the canvas (any kind: a
     belt of any type or shape - e.g. one made from a DXF -, a sensor, a
     button, ...) as a reusable template, with its size, rotation, speed,
-    colour and bindings; **Update** overwrites the chosen template with the
-    canvas selection; **Rename** / **Remove**. Built-ins can't be changed.
+    colour and bindings, into the My Components folder that is current;
+    **Update** overwrites the chosen template with the canvas selection;
+    **Rename** / **Folder...** (move it, `Station 1/Lanes` for a sub-folder) /
+    **Remove**. Right-click for the same. Built-ins can't be changed.
   - Your library is saved to `~/.conveyor_sim/component_library.json` after
     every change (or the file named by `CONVEYOR_COMPONENT_LIBRARY`) and is
     there again next time.
@@ -166,8 +170,16 @@ The Qt layout editor is where belt shapes and positions are designed:
     quadrilateral or arc, with exact numeric parameters).
 - **Alignment guides** snap to other components' vertices, edge midpoints and
   centers (also when rotated), plus a measure tool (D).
-- Undo/redo, copy/paste, rubber-band multi-select, Component Manager and
-  Properties docks.
+- **Component Manager** dock - the layout as a tree: a folder per kind
+  (Belts, Sensors, Sources, Sinks, Buttons, LEDs) with its count, each
+  component with its label and details (belt type and size, banner beams,
+  button contact and key, ...). Selecting in the tree selects on the canvas
+  and the other way round; double-click centres the view; filter box above;
+  right-click to select, duplicate, delete or add to the library.
+- Menus grouped like a CAD tool's: **File > Background (DXF)**, **Tools >
+  Sketch / Belts / Connections**, **Tools > Check Layout**, **View > Show
+  Ports** and **View > Panels** (show / hide every dock and toolbar).
+- Undo/redo, copy/paste, rubber-band multi-select, Properties dock.
 - The same quiet dark style as the simulator. Canvas labels are upright tags
   of one small size at any zoom, shown only where they fit and never on top
   of each other (selected items first, then devices, then belt ids). Belt
@@ -341,6 +353,9 @@ outline and a FAULT tag. Labels are small, upright tags placed by priority
 (faults, then devices, then belt ids); a label that would overlap another is
 left out until you zoom in, and the selected item always shows its tag and
 coordinates. `V` toggles the per-parcel speed readout (actual / belt speed).
+The toolbar on the left is in folders (Belts, Sensors, Parcel Flow, Operator
+Panel, Layout) that fold up on a click, and Layout > Components opens the
+layout as a tree, a folder per kind.
 
 Add `--exchange-config <file.json>` to override the MQTT/TCP settings baked into
 the workspace config (see `tcp_exchange_config.json` for the shape).

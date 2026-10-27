@@ -10,6 +10,17 @@ TOP_BAR = 30     # px, simulator status bar
 BOTTOM_BAR = 24  # px, key hint bar
 
 
+TOOLBAR_W = 150
+# The toolbar's folders: (title, [(attribute, button text)]).
+TOOLBAR_FOLDERS = (
+    ("BELTS", (("add_linear_btn", "Linear Belt"), ("add_curved_btn", "Curved Belt"))),
+    ("SENSORS", (("add_sensor_btn", "Sensor"),)),
+    ("PARCEL FLOW", (("add_source_btn", "Source"), ("add_sink_btn", "Sink"))),
+    ("OPERATOR PANEL", (("add_button_btn", "Push Button"), ("add_led_btn", "LED"))),
+    ("LAYOUT", (("manager_btn", "Components"),)),
+)
+
+
 class EditorUI:
     def __init__(self, manager: pygame_gui.UIManager, width: int, height: int, config=None):
         self.manager = manager
@@ -24,59 +35,32 @@ class EditorUI:
             manager=self.manager
         )
         
-        # Toolbar (Left)
+        # Toolbar (Left): folders of tools, each header collapses its folder.
         self.toolbar_panel = pygame_gui.elements.UIPanel(
-            relative_rect=pygame.Rect(10, TOP_BAR + 44, 120, 330),
+            relative_rect=pygame.Rect(10, TOP_BAR + 44, TOOLBAR_W, 330),
             manager=self.manager
         )
-        self.add_linear_btn = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(10, 10, 100, 30),
-            text='+ Linear Belt',
-            manager=self.manager,
-            container=self.toolbar_panel
-        )
-        self.add_curved_btn = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(10, 50, 100, 30),
-            text='+ Curved Belt',
-            manager=self.manager,
-            container=self.toolbar_panel
-        )
-        self.add_sensor_btn = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(10, 90, 100, 30),
-            text='+ Sensor',
-            manager=self.manager,
-            container=self.toolbar_panel
-        )
-        self.add_button_btn = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(10, 130, 100, 30),
-            text='+ Button',
-            manager=self.manager,
-            container=self.toolbar_panel
-        )
-        self.add_led_btn = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(10, 170, 100, 30),
-            text='+ LED',
-            manager=self.manager,
-            container=self.toolbar_panel
-        )
-        self.add_source_btn = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(10, 210, 100, 30),
-            text='+ Source',
-            manager=self.manager,
-            container=self.toolbar_panel
-        )
-        self.add_sink_btn = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(10, 250, 100, 30),
-            text='+ Sink',
-            manager=self.manager,
-            container=self.toolbar_panel
-        )
-        self.manager_btn = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(10, 290, 100, 30),
-            text='Manager',
-            manager=self.manager,
-            container=self.toolbar_panel
-        )
+        self._toolbar_folders = []   # [header button, [tool buttons], collapsed]
+        for title, tools in TOOLBAR_FOLDERS:
+            header = pygame_gui.elements.UIButton(
+                relative_rect=pygame.Rect(4, 0, TOOLBAR_W - 10, 22),
+                text=f"\u2013  {title}",
+                manager=self.manager,
+                container=self.toolbar_panel,
+                object_id="#folder_header",
+            )
+            buttons = []
+            for attr, text in tools:
+                button = pygame_gui.elements.UIButton(
+                    relative_rect=pygame.Rect(16, 0, TOOLBAR_W - 28, 24),
+                    text=text,
+                    manager=self.manager,
+                    container=self.toolbar_panel,
+                )
+                setattr(self, attr, button)
+                buttons.append(button)
+            self._toolbar_folders.append([header, buttons, False, title])
+        self._layout_toolbar()
 
         # Properties Panel (Right)
         self.prop_panel = pygame_gui.elements.UIPanel(
@@ -211,6 +195,7 @@ class EditorUI:
         self.manager_delete_btn = None
         self.manager_refresh_btn = None
         self.manager_items = {}
+        self.manager_collapsed = set()   # kinds folded up in the manager tree
         self.manager_selected_key = None
         self.manager_clear = False
 
@@ -401,14 +386,14 @@ class EditorUI:
         )
         container = self.manager_window.get_container()
         self.manager_list = pygame_gui.elements.UISelectionList(
-            relative_rect=pygame.Rect(10, 10, 180, 395),
+            relative_rect=pygame.Rect(10, 10, 240, 395),
             item_list=[],
             manager=self.manager,
             container=container
         )
         self.manager_details = pygame_gui.elements.UITextBox(
             html_text="Select a component.",
-            relative_rect=pygame.Rect(200, 10, 290, 395),
+            relative_rect=pygame.Rect(260, 10, 240, 395),
             manager=self.manager,
             container=container
         )
@@ -447,20 +432,31 @@ class EditorUI:
     def refresh_manager_panel(self):
         if not self.manager_list or not self.config:
             return
+        # A tree: a folder row per kind ("-  Belts (16)"; click to fold it
+        # up) and its components indented under it.
         self.manager_items = {}
+        self.manager_folder_rows = {}
         rows = []
         groups = [
-            ("belt", self.config.belts),
-            ("sensor", self.config.sensors),
-            ("source", self.config.sources),
-            ("sink", self.config.sinks),
-            ("button", self.config.buttons),
-            ("led", self.config.leds),
+            ("belt", "Belts", self.config.belts),
+            ("sensor", "Sensors", self.config.sensors),
+            ("source", "Sources", self.config.sources),
+            ("sink", "Sinks", self.config.sinks),
+            ("button", "Buttons", self.config.buttons),
+            ("led", "LEDs", self.config.leds),
         ]
-        for kind, items in groups:
+        for kind, title, items in groups:
+            if not items:
+                continue
+            collapsed = kind in self.manager_collapsed
+            folder = f"{'+' if collapsed else '\u2013'}  {title} ({len(items)})"
+            rows.append(folder)
+            self.manager_folder_rows[folder] = kind
+            if collapsed:
+                continue
             for idx, item in enumerate(items):
-                key = f"{kind}:{idx}:{item.id}"
-                label = f"{kind:<6} {item.id}"
+                text = (getattr(item, "label", "") or "").strip()
+                label = f"      {item.id}" + (f"  \u00b7  {text}" if text and text != item.id else "")
                 rows.append(label)
                 self.manager_items[label] = (kind, idx, item)
         self.manager_list.set_item_list(rows)
@@ -570,6 +566,29 @@ class EditorUI:
                 return new_item
         return None
 
+    def _layout_toolbar(self):
+        """Stack the toolbar folders: header, then its tools unless collapsed."""
+        y = 6
+        for header, buttons, collapsed, title in self._toolbar_folders:
+            header.set_relative_position((4, y))
+            header.set_text(f"{'+' if collapsed else '\u2013'}  {title}")
+            y += 24
+            for button in buttons:
+                if collapsed:
+                    button.hide()
+                    continue
+                button.show()
+                button.set_relative_position((16, y))
+                y += 28
+            y += 4
+        self.toolbar_panel.set_dimensions((TOOLBAR_W, y + 4))
+
+    def toggle_toolbar_folder(self, title: str):
+        for folder in self._toolbar_folders:
+            if folder[3] == title:
+                folder[2] = not folder[2]
+        self._layout_toolbar()
+
     def _panel_height(self) -> int:
         return max(200, self.height - TOP_BAR - BOTTOM_BAR)
 
@@ -602,6 +621,10 @@ class EditorUI:
     def handle_event(self, event) -> str:
         """Returns commands or None."""
         if event.type == pygame_gui.UI_BUTTON_PRESSED:
+            for header, _buttons, _collapsed, title in self._toolbar_folders:
+                if event.ui_element == header:
+                    self.toggle_toolbar_folder(title)
+                    return None
             if event.ui_element == self.save_btn:
                 return "SAVE_DIALOG"
             elif event.ui_element == self.add_linear_btn:
@@ -664,6 +687,11 @@ class EditorUI:
 
         if event.type == pygame_gui.UI_SELECTION_LIST_NEW_SELECTION:
             if event.ui_element == self.manager_list:
+                kind = getattr(self, "manager_folder_rows", {}).get(event.text)
+                if kind is not None:             # a folder row: fold / unfold it
+                    self.manager_collapsed ^= {kind}
+                    self.refresh_manager_panel()
+                    return None
                 self.manager_selected_key = event.text
                 self._update_manager_details()
 

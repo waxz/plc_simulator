@@ -257,7 +257,7 @@ class EditorTest(unittest.TestCase):
         texts = [a.text() for m in self.window.menuBar().findChildren(type(self.window.menuBar().addMenu("x")))
                  for a in m.actions()]
         self.assertNotIn("Insert Belt Shape...", texts)
-        for name in ("Sketch Rectangle", "Sketch Circle", "Sketch Polygon"):
+        for name in ("Rectangle", "Circle", "Polygon"):            # Tools > Sketch
             self.assertIn(name, texts)
 
     def test_circle_sketch_becomes_a_curved_disc_or_a_linear_polygon(self):

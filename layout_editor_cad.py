@@ -461,50 +461,51 @@ class CadController:
     # -- actions ---------------------------------------------------------------
 
     def _build_actions(self, file_menu):
+        """Menus grouped like a CAD tool's: File > Background, Tools >
+        Sketch / Belts / Connections, View > Show Ports (+ Panels, added by
+        MainWindow)."""
         w = self.window
-        file_menu.addSeparator()
-        for text, slot in (("Import DXF Background...", self.import_background),
-                           ("Background Settings...", self.background_settings),
-                           ("Remove Background", self.remove_background),
-                           ("Export DXF...", self.export_dxf)):
+
+        def add(menu, text, slot, shortcut=""):
             action = QAction(text, w)
+            if shortcut:
+                action.setShortcut(QKeySequence(shortcut))
             action.triggered.connect(slot)
-            file_menu.addAction(action)
+            menu.addAction(action)
+            return action
+
+        file_menu.addSeparator()
+        background = file_menu.addMenu("Background (DXF)")
+        add(background, "Import DXF Background...", self.import_background)
+        add(background, "Background Settings...", self.background_settings)
+        background.addSeparator()
+        add(background, "Remove Background", self.remove_background)
+        add(file_menu, "Export DXF...", self.export_dxf)
 
         tools = w.menuBar().addMenu("Tools")
-        for text, shortcut, slot in (
-            ("Sketch Line", "S", self.sketch_line_tool.start),
-            ("Sketch Arc (3 points)", "Shift+S", self.sketch_arc_tool.start),
-            ("Sketch Rectangle", "Shift+R", self.sketch_rect_tool.start),
-            ("Sketch Circle", "Shift+C", self.sketch_circle_tool.start),
-            ("Sketch Polygon", "Shift+G", self.sketch_polygon_tool.start),
-            ("Clear Sketch", "", self.clear_sketch),
-            (None, None, None),
-            ("Belt from Sketch/Drawing", "B", self.pick_tool.start),
-            ("Draw Belt Path", "P", self.path_tool.start),
-            ("Draw Belt Outline", "O", self.outline_tool.start),
-        ):
-            if text is None:
-                tools.addSeparator()
-                continue
-            action = QAction(text, w)
-            action.setShortcut(QKeySequence(shortcut))
-            action.triggered.connect(slot)
-            tools.addAction(action)
+        sketch = tools.addMenu("Sketch")
+        add(sketch, "Line", self.sketch_line_tool.start, "S")
+        add(sketch, "Arc (3 points)", self.sketch_arc_tool.start, "Shift+S")
+        add(sketch, "Rectangle", self.sketch_rect_tool.start, "Shift+R")
+        add(sketch, "Circle", self.sketch_circle_tool.start, "Shift+C")
+        add(sketch, "Polygon", self.sketch_polygon_tool.start, "Shift+G")
+        sketch.addSeparator()
+        add(sketch, "Clear Sketch", self.clear_sketch)
+        belts = tools.addMenu("Belts")
+        add(belts, "Belt from Sketch/Drawing", self.pick_tool.start, "B")
+        add(belts, "Draw Belt Path", self.path_tool.start, "P")
+        add(belts, "Draw Belt Outline", self.outline_tool.start, "O")
+        connections = tools.addMenu("Connections")
+        add(connections, "Connect Belts", self.connect_selected, "Ctrl+J")
+        add(connections, "Fillet Belts...", self.fillet_selected, "Ctrl+Shift+F")
+        add(connections, "Disconnect Belts", self.disconnect_selected, "Ctrl+Shift+J")
+        connections.addSeparator()
+        add(connections, "Solve Connections", self.solve_all, "F6")
         tools.addSeparator()
-        for text, shortcut, slot in (
-            ("Connect Belts", "Ctrl+J", self.connect_selected),
-            ("Fillet Belts...", "Ctrl+Shift+F", self.fillet_selected),
-            ("Disconnect Belts", "Ctrl+Shift+J", self.disconnect_selected),
-            ("Solve Connections", "F6", self.solve_all),
-            ("Check Layout", "F7", self.run_check),
-        ):
-            action = QAction(text, w)
-            action.setShortcut(QKeySequence(shortcut))
-            action.triggered.connect(slot)
-            tools.addAction(action)
+        add(tools, "Check Layout", self.run_check, "F7")
 
         view = w.menuBar().addMenu("View")
+        self.view_menu = view
         show_ports = QAction("Show Ports", w)
         show_ports.setCheckable(True)
         show_ports.setChecked(False)

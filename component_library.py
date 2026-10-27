@@ -13,7 +13,7 @@ Libraries are JSON files, so they can be shared between layouts and people:
       "format": "conveyor-component-library",
       "version": 1,
       "components": [
-        {"name": "Merge 45", "kind": "belt", "model": {...Belt fields...}},
+        {"name": "Merge 45", "kind": "belt", "folder": "Merges", "model": {...}},
         ...
       ]
     }
@@ -54,6 +54,7 @@ class LibraryEntry:
     name: str
     kind: str
     model: dict = field(default_factory=dict)  # model fields without id/runtime state, x = y = 0
+    folder: str = ""  # where it sits in the library tree, e.g. "Merges/45 deg" ("" = top level)
 
     def instantiate(self, new_id: str, x: float = 0.0, y: float = 0.0) -> BaseModel:
         """A fresh component of this template with `new_id` at (x, y)."""
@@ -62,7 +63,10 @@ class LibraryEntry:
         return MODEL_FOR_KIND[self.kind].model_validate(data)
 
     def to_json(self) -> dict:
-        return {"name": self.name, "kind": self.kind, "model": self.model}
+        data = {"name": self.name, "kind": self.kind, "model": self.model}
+        if self.folder:
+            data["folder"] = self.folder
+        return data
 
 
 def kind_of(model: BaseModel) -> str:
@@ -86,6 +90,11 @@ def entry_from_model(name: str, model: BaseModel, kind: Optional[str] = None) ->
     entry = LibraryEntry(name, kind, data)
     entry.instantiate("check")  # fails now, not when it is placed, if the snapshot is unusable
     return entry
+
+
+def clean_folder(folder: str) -> str:
+    """'a / b//c ' -> 'a/b/c'."""
+    return "/".join(part.strip() for part in folder.replace("\\", "/").split("/") if part.strip())
 
 
 def unique_name(name: str, taken: Iterable[str]) -> str:
@@ -127,7 +136,7 @@ def load_library(path: str) -> Tuple[List[LibraryEntry], List[str]]:
             name, kind, model = str(raw["name"]), str(raw["kind"]), dict(raw["model"])
             if kind not in MODEL_FOR_KIND:
                 raise ValueError(f"unknown kind '{kind}'")
-            entry = LibraryEntry(name, kind, model)
+            entry = LibraryEntry(name, kind, model, clean_folder(str(raw.get("folder", "") or "")))
             entry.instantiate("check")
         except (KeyError, TypeError, ValueError, ValidationError) as exc:
             label = raw.get("name", f"#{i}") if isinstance(raw, dict) else f"#{i}"

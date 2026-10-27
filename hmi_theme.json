@@ -97,5 +97,44 @@
     "misc": {
       "shape": "rectangle"
     }
+  },
+  "#folder_header": {
+    "colours": {
+      "normal_bg": "#00000000",
+      "hovered_bg": "#2a2f37",
+      "active_bg": "#2a2f37",
+      "selected_bg": "#2a2f37",
+      "normal_text": "#8b949e",
+      "hovered_text": "#d6dbe1",
+      "active_text": "#d6dbe1",
+      "normal_border": "#00000000",
+      "hovered_border": "#00000000",
+      "active_border": "#00000000"
+    },
+    "font": {
+      "name": "noto_sans",
+      "size": "11",
+      "bold": "1"
+    },
+    "misc": {
+      "shape": "rectangle",
+      "border_width": "0",
+      "text_horiz_alignment": "left",
+      "text_horiz_alignment_padding": "4"
+    }
+  },
+  "selection_list.#item_list_item": {
+    "misc": {
+      "text_horiz_alignment": "left",
+      "text_horiz_alignment_padding": "6",
+      "shape": "rectangle",
+      "border_width": "0"
+    },
+    "colours": {
+      "normal_bg": "#1b1e24",
+      "hovered_bg": "#2a2f37",
+      "selected_bg": "#3898d6",
+      "normal_text": "#d6dbe1"
+    }
   }
 }

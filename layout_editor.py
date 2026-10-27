@@ -83,7 +83,8 @@ from PySide6.QtWidgets import (
     QGraphicsPolygonItem, QListWidget, QListWidgetItem, QDockWidget, QWidget,
     QFormLayout, QDoubleSpinBox, QSpinBox, QComboBox, QPushButton, QColorDialog,
     QLineEdit, QLabel, QVBoxLayout, QHBoxLayout, QDialog, QStackedWidget, QToolBar,
-    QFileDialog, QCheckBox, QMessageBox, QStyle, QInputDialog,
+    QFileDialog, QCheckBox, QMessageBox, QStyle, QInputDialog, QTreeWidget, QTreeWidgetItem, QMenu,
+    QAbstractItemView,
 )
 
 from config_parser import Belt, Sensor, Source, Sink, ControlButton, LedIndicator, SimulatorConfig, load_config
@@ -94,7 +95,7 @@ from cad.path import (
 )
 from id_utils import next_indexed_id, unique_incremented_id
 from component_library import (
-    LibraryEntry, default_library_path, entry_from_model, load_library, save_library, unique_name,
+    LibraryEntry, clean_folder, default_library_path, entry_from_model, load_library, save_library, unique_name,
 )
 
 def _path_signature(model) -> tuple:
@@ -2250,10 +2251,17 @@ def _template_from_entry(entry: LibraryEntry) -> ComponentTemplate:
                              removable=True, entry=entry)
 
 
-class ComponentLibrary(QListWidget):
-    """Draggable, template-driven component palette: the built-in
-    components, then the user's own (saved, editable, removable)."""
+class ComponentLibrary(QTreeWidget):
+    """The component palette as a folder tree: built-in components grouped
+    by what they are (Belts, Sensors, Parcel Flow, Operator Panel), then
+    "My Components" - your own, in any sub-folders you give them
+    (LibraryEntry.folder, e.g. "Merges/45 deg"). Drag a component onto the
+    canvas to place it. Folders are not draggable."""
 
+    MY_COMPONENTS = "My Components"
+    FOLDER_FOR_KIND = {"belt": "Belts", "sensor": "Sensors", "source": "Parcel Flow", "sink": "Parcel Flow",
+                       "button": "Operator Panel", "led": "Operator Panel"}
+    FOLDER_ORDER = ("Belts", "Sensors", "Parcel Flow", "Operator Panel", MY_COMPONENTS)
     BUILT_INS = (
         ("Linear Belt", "belt", _make_linear_belt),
         ("Curved Belt", "belt", _make_curved_belt),
@@ -2264,51 +2272,123 @@ class ComponentLibrary(QListWidget):
         ("Push Button", "button", _make_button),
         ("LED Indicator", "led", _make_led),
     )
+    FOLDER_ROLE = Qt.UserRole + 1  # folder items carry their path ("" for a built-in top folder)
 
     def __init__(self):
         super().__init__()
+        self.setHeaderHidden(True)
         self.setDragEnabled(True)
+        self.setIndentation(14)
+        self.setAnimated(True)
         self.templates: dict[str, ComponentTemplate] = {}
+        self._folders: dict[str, QTreeWidgetItem] = {}
+        for name in self.FOLDER_ORDER:
+            self._folder(name)
         for name, kind, factory in self.BUILT_INS:
             self.add_template(ComponentTemplate(name, kind, factory, removable=False))
+        self.expandAll()
+
+    # -- folders -------------------------------------------------------------------
+
+    def _folder(self, path: str) -> QTreeWidgetItem:
+        """The folder item for a path ("Belts", "My Components/Merges/45"),
+        created on demand."""
+        item = self._folders.get(path)
+        if item is not None:
+            return item
+        parent_path, _, name = path.rpartition("/")
+        item = QTreeWidgetItem([name])
+        item.setData(0, self.FOLDER_ROLE, path)
+        item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+        font = item.font(0)
+        font.setBold(not parent_path)
+        item.setFont(0, font)
+        item.setIcon(0, self.style().standardIcon(QStyle.SP_DirIcon))
+        if parent_path:
+            self._folder(parent_path).addChild(item)
+            item.parent().setExpanded(True)
+        else:
+            self.addTopLevelItem(item)
+        self._folders[path] = item
+        return item
+
+    def _folder_for(self, template: ComponentTemplate) -> str:
+        if not template.removable:
+            return self.FOLDER_FOR_KIND.get(template.kind, "Belts")
+        sub = template.entry.folder if template.entry is not None else ""
+        return f"{self.MY_COMPONENTS}/{sub}" if sub else self.MY_COMPONENTS
+
+    def folder_of(self, item: Optional[QTreeWidgetItem]) -> Optional[str]:
+        """The path of a folder item, or of a component's folder."""
+        while item is not None:
+            path = item.data(0, self.FOLDER_ROLE)
+            if path:
+                return path
+            item = item.parent()
+        return None
+
+    def current_user_folder(self) -> str:
+        """Sub-folder of My Components the current item is in ("" = its top)."""
+        path = self.folder_of(self.currentItem()) or ""
+        prefix = self.MY_COMPONENTS + "/"
+        return path[len(prefix):] if path.startswith(prefix) else ""
+
+    def _prune(self):
+        """Drop empty sub-folders of My Components."""
+        for path in sorted(self._folders, key=len, reverse=True):
+            if path.startswith(self.MY_COMPONENTS + "/") and self._folders[path].childCount() == 0:
+                item = self._folders.pop(path)
+                item.parent().removeChild(item)
+
+    # -- components ----------------------------------------------------------------
 
     def add_template(self, template: ComponentTemplate):
         """Add (or, for a user template of the same name, replace)."""
-        if template.name in self.templates:
-            existing = self.templates[template.name]
-            if not existing.removable:
-                raise ValueError(f"'{template.name}' is a built-in component.")
-            self.templates[template.name] = template
-            row = self._row(template.name)
-        else:
-            self.templates[template.name] = template
-            row = QListWidgetItem()
-            self.addItem(row)
-        row.setText(template.name if not template.removable else f"{template.name}  ({template.kind})")
-        row.setData(Qt.UserRole, template.name)
-        row.setToolTip(f"{template.kind}" + ("" if template.removable else " - built in") +
-                       ". Drag onto the canvas to place one.")
-        font = row.font()
-        font.setItalic(not template.removable)
-        row.setFont(font)
+        existing = self.templates.get(template.name)
+        if existing is not None and not existing.removable:
+            raise ValueError(f"'{template.name}' is a built-in component.")
+        row = self._row(template.name)
+        if row is not None:
+            row.parent().removeChild(row)
+        self.templates[template.name] = template
+        row = QTreeWidgetItem([template.name])
+        row.setData(0, Qt.UserRole, template.name)
+        row.setIcon(0, _kind_icon(template.kind))
+        row.setToolTip(0, f"{template.kind}" + ("" if template.removable else " - built in")
+                       + ". Drag onto the canvas to place one.")
+        row.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsDragEnabled)
+        if not template.removable:
+            font = row.font(0)
+            font.setItalic(True)
+            row.setFont(0, font)
+        folder = self._folder(self._folder_for(template))
+        folder.addChild(row)
+        folder.setExpanded(True)
+        self._prune()
         return row
 
-    def _row(self, name: str) -> Optional[QListWidgetItem]:
-        for i in range(self.count()):
-            if self.item(i).data(Qt.UserRole) == name:
-                return self.item(i)
+    def _row(self, name: str) -> Optional[QTreeWidgetItem]:
+        for folder in self._folders.values():
+            for i in range(folder.childCount()):
+                child = folder.child(i)
+                if child.data(0, Qt.UserRole) == name:
+                    return child
         return None
 
     def current_template(self) -> Optional[ComponentTemplate]:
         row = self.currentItem()
-        return self.templates.get(row.data(Qt.UserRole)) if row else None
+        name = row.data(0, Qt.UserRole) if row is not None else None
+        return self.templates.get(name) if name else None
 
     def remove_template(self, name: str) -> bool:
         template = self.templates.get(name)
         if not template or not template.removable:
             return False
         del self.templates[name]
-        self.takeItem(self.row(self._row(name)))
+        row = self._row(name)
+        if row is not None:
+            row.parent().removeChild(row)
+        self._prune()
         return True
 
     def remove_selected_template(self) -> bool:
@@ -2324,14 +2404,25 @@ class ComponentLibrary(QListWidget):
             raise ValueError("A library component needs a name.")
         if new != old and new in self.templates:
             raise ValueError(f"There is already a component called '{new}'.")
-        entry = LibraryEntry(new, template.entry.kind, template.entry.model)
-        row = self._row(old)
+        entry = LibraryEntry(new, template.entry.kind, template.entry.model, template.entry.folder)
         del self.templates[old]
+        row = self._row(old)
+        if row is not None:
+            row.parent().removeChild(row)
         renamed = _template_from_entry(entry)
-        self.templates[new] = renamed
-        row.setData(Qt.UserRole, new)
-        row.setText(f"{new}  ({entry.kind})")
+        self.setCurrentItem(self.add_template(renamed))
         return renamed
+
+    def move_template(self, name: str, folder: str) -> ComponentTemplate:
+        """Put one of your components in a sub-folder of My Components
+        ("" = its top level)."""
+        template = self.templates.get(name)
+        if template is None or not template.removable:
+            raise ValueError("Only your own components can be moved.")
+        entry = LibraryEntry(template.entry.name, template.entry.kind, template.entry.model, clean_folder(folder))
+        moved = _template_from_entry(entry)
+        self.setCurrentItem(self.add_template(moved))
+        return moved
 
     def user_entries(self) -> List[LibraryEntry]:
         return [t.entry for t in self.templates.values() if t.removable and t.entry is not None]
@@ -2339,15 +2430,36 @@ class ComponentLibrary(QListWidget):
     def get_template(self, name: str) -> Optional[ComponentTemplate]:
         return self.templates.get(name)
 
+    def set_filter(self, text: str):
+        """Show only components whose name contains `text` (and their folders)."""
+        text = text.strip().lower()
+
+        def visit(item) -> bool:
+            if item.data(0, self.FOLDER_ROLE):
+                any_visible = False
+                for i in range(item.childCount()):
+                    any_visible = visit(item.child(i)) or any_visible
+                item.setHidden(bool(text) and not any_visible)
+                if text and any_visible:
+                    item.setExpanded(True)
+                return any_visible
+            visible = not text or text in item.text(0).lower()
+            item.setHidden(not visible)
+            return visible
+        for i in range(self.topLevelItemCount()):
+            visit(self.topLevelItem(i))
+
     def mimeData(self, items):
+        names = [i.data(0, Qt.UserRole) for i in items if i.data(0, Qt.UserRole)]
+        if not names:
+            return None
         data = QMimeData()
-        name = items[0].data(Qt.UserRole)
-        data.setData("application/x-component-template", name.encode("utf-8"))
+        data.setData("application/x-component-template", names[0].encode("utf-8"))
         return data
 
     def startDrag(self, supportedActions):
         item = self.currentItem()
-        if not item:
+        if not item or not item.data(0, Qt.UserRole):
             return
         drag = QDrag(self)
         drag.setMimeData(self.mimeData([item]))
@@ -2355,18 +2467,20 @@ class ComponentLibrary(QListWidget):
 
 
 class ComponentLibraryPanel(QWidget):
-    """The draggable palette plus library management - the "component
-    library manager":
+    """The component library as a folder tree, plus library management:
 
+      search box     filter the tree by name
       Add Selected   the component selected on the canvas (any kind, e.g. a
-                     belt drawn from a DXF) becomes a reusable template
-      Update         overwrite the chosen template with the canvas selection
-      Rename / Remove   your own templates (built-ins are fixed)
-      Import / Export   library JSON files (component_library.py), to share
-                     or move templates between machines
+                     belt drawn from a DXF) becomes a reusable component, in
+                     the My Components folder that is current
+      Update         overwrite the chosen component with the canvas selection
+      Rename / Folder... / Remove   your own components (built-ins are fixed);
+                     Folder... files one into a sub-folder ("Merges/45 deg")
+      Import / Export   library JSON files (component_library.py), folders kept
       + New Custom Shape...   the Shape Designer
+      right-click    the same actions on the item under the mouse
 
-    Your templates are saved to `library_path` after every change and
+    Your components are saved to `library_path` after every change and
     loaded again next time."""
 
     def __init__(self, library_path: Optional[str] = None, get_selection: Optional[Callable[[], list]] = None,
@@ -2376,7 +2490,13 @@ class ComponentLibraryPanel(QWidget):
         self.get_selection = get_selection or (lambda: [])
         self.status = status or (lambda _msg: None)
         layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search components...")
+        self.search.setClearButtonEnabled(True)
+        layout.addWidget(self.search)
         self.list_widget = ComponentLibrary()
+        self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
         layout.addWidget(self.list_widget)
 
         row1 = QHBoxLayout()
@@ -2385,8 +2505,10 @@ class ComponentLibraryPanel(QWidget):
         self.update_btn = QPushButton("Update")
         self.update_btn.setToolTip("Replace the chosen library component with the canvas selection")
         self.rename_btn = QPushButton("Rename")
+        self.folder_btn = QPushButton("Folder...")
+        self.folder_btn.setToolTip("Move the chosen component into a folder of My Components")
         self.remove_btn = QPushButton("Remove")
-        for btn in (self.add_btn, self.update_btn, self.rename_btn, self.remove_btn):
+        for btn in (self.add_btn, self.update_btn, self.rename_btn, self.folder_btn, self.remove_btn):
             row1.addWidget(btn)
         layout.addLayout(row1)
         row2 = QHBoxLayout()
@@ -2399,14 +2521,17 @@ class ComponentLibraryPanel(QWidget):
             row2.addWidget(btn)
         layout.addLayout(row2)
 
+        self.search.textChanged.connect(self.list_widget.set_filter)
         self.new_shape_btn.clicked.connect(self._open_shape_designer)
         self.add_btn.clicked.connect(lambda: self.add_selected())
         self.update_btn.clicked.connect(lambda: self.update_from_selection())
         self.rename_btn.clicked.connect(lambda: self.rename_current())
+        self.folder_btn.clicked.connect(lambda: self.move_current())
         self.remove_btn.clicked.connect(lambda: self.remove_current())
         self.import_btn.clicked.connect(lambda: self.import_library())
         self.export_btn.clicked.connect(lambda: self.export_library())
         self.list_widget.currentItemChanged.connect(lambda *_: self._sync_buttons())
+        self.list_widget.customContextMenuRequested.connect(self._context_menu)
         self._load_own_library()
         self._sync_buttons()
 
@@ -2438,8 +2563,26 @@ class ComponentLibraryPanel(QWidget):
     def _sync_buttons(self):
         template = self.list_widget.current_template()
         own = template is not None and template.removable
-        for btn in (self.update_btn, self.rename_btn, self.remove_btn):
+        for btn in (self.update_btn, self.rename_btn, self.folder_btn, self.remove_btn):
             btn.setEnabled(own)
+
+    def _context_menu(self, pos):
+        item = self.list_widget.itemAt(pos)
+        if item is not None:
+            self.list_widget.setCurrentItem(item)
+        own = self.update_btn.isEnabled()
+        menu = QMenu(self)
+        menu.addAction("Add Canvas Selection Here", lambda: self.add_selected())
+        if own:
+            menu.addAction("Update from Canvas Selection", lambda: self.update_from_selection())
+            menu.addAction("Rename...", lambda: self.rename_current())
+            menu.addAction("Move to Folder...", lambda: self.move_current())
+            menu.addSeparator()
+            menu.addAction("Remove", lambda: self.remove_current())
+        menu.addSeparator()
+        menu.addAction("Expand All", self.list_widget.expandAll)
+        menu.addAction("Collapse All", self.list_widget.collapseAll)
+        menu.exec(self.list_widget.viewport().mapToGlobal(pos))
 
     # -- actions (also used by tests) -----------------------------------------------
 
@@ -2449,7 +2592,7 @@ class ComponentLibraryPanel(QWidget):
             raise ValueError("Select exactly one component on the canvas first.")
         return selected[0]
 
-    def add_selected(self, name: Optional[str] = None) -> Optional[ComponentTemplate]:
+    def add_selected(self, name: Optional[str] = None, folder: Optional[str] = None) -> Optional[ComponentTemplate]:
         try:
             item = self._selected_model()
         except ValueError as exc:
@@ -2466,10 +2609,12 @@ class ComponentLibraryPanel(QWidget):
             self._warn("Add to Library", str(exc))
             return None
         entry.name = unique_name(entry.name, self.list_widget.templates)
+        entry.folder = clean_folder(folder if folder is not None else self.list_widget.current_user_folder())
         template = _template_from_entry(entry)
         self.list_widget.setCurrentItem(self.list_widget.add_template(template))
         self.save()
-        self.status(f"Added '{entry.name}' ({entry.kind}) to the component library.")
+        where = f" ({entry.folder})" if entry.folder else ""
+        self.status(f"Added '{entry.name}' ({entry.kind}) to My Components{where}.")
         return template
 
     def update_from_selection(self) -> Optional[ComponentTemplate]:
@@ -2483,8 +2628,9 @@ class ComponentLibraryPanel(QWidget):
         except ValueError as exc:
             self._warn("Update Library Component", str(exc))
             return None
+        entry.folder = template.entry.folder if template.entry is not None else ""
         updated = _template_from_entry(entry)
-        self.list_widget.add_template(updated)
+        self.list_widget.setCurrentItem(self.list_widget.add_template(updated))
         self.save()
         self.status(f"Updated '{entry.name}' from {item.model.id}.")
         return updated
@@ -2502,6 +2648,20 @@ class ComponentLibraryPanel(QWidget):
         except ValueError as exc:
             self._warn("Rename Library Component", str(exc))
             return False
+        self.save()
+        return True
+
+    def move_current(self, folder: Optional[str] = None) -> bool:
+        template = self.list_widget.current_template()
+        if template is None or not template.removable:
+            return False
+        if folder is None:
+            folder, ok = QInputDialog.getText(
+                self, "Move to Folder", "Folder in My Components (use / for sub-folders, empty = top):",
+                text=template.entry.folder if template.entry is not None else "")
+            if not ok:
+                return False
+        self.list_widget.move_template(template.name, folder)
         self.save()
         return True
 
@@ -2563,6 +2723,7 @@ class ComponentLibraryPanel(QWidget):
             result = dialog.result_template
             entry = entry_from_model(result.name, result.factory("template"), result.kind)
             entry.name = unique_name(entry.name, self.list_widget.templates)
+            entry.folder = self.list_widget.current_user_folder()
             self.list_widget.add_template(_template_from_entry(entry))
             self.save()
 
@@ -3495,12 +3656,15 @@ def _kind_icon(kind: str) -> QIcon:
 
 
 class ComponentManagerPanel(QWidget):
-    """Lists every component in the scene - the "manage all placed
-    components" list ask (distinct from the drag-source palette):
-    select/duplicate/delete any placed belt or sensor, mirroring
-    editor_ui.py's pygame "Component Manager" window but as a normal Qt
-    dock instead of a hand-positioned pygame_gui window.
-    """
+    """The layout as a tree: one folder per kind (Belts, Sensors, Sources,
+    Sinks, Buttons, LEDs) with its count, each component with its label and
+    a short description (belt type and size, sensor type, button contact,
+    ...). Selecting in the tree selects on the canvas and the other way
+    round; double-click centres the view on it. Filter box above, right-click
+    for Select / Duplicate / Delete / Add to Library."""
+
+    FOLDERS = (("belt", "Belts"), ("sensor", "Sensors"), ("source", "Sources"), ("sink", "Sinks"),
+               ("button", "Buttons"), ("led", "LEDs"))
 
     def __init__(self, scene: SnapGuideScene, items, view: QGraphicsView, config=None):
         super().__init__()
@@ -3508,10 +3672,26 @@ class ComponentManagerPanel(QWidget):
         self.items_list = items
         self.view = view
         self.config = config
+        self.on_add_to_library: Optional[Callable[[], None]] = None  # set by MainWindow
+        self._collapsed: set = set()
+        self._syncing = False
 
         layout = QVBoxLayout(self)
-        self.list_widget = QListWidget()
-        layout.addWidget(self.list_widget)
+        layout.setContentsMargins(4, 4, 4, 4)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Filter by id or label...")
+        self.search.setClearButtonEnabled(True)
+        layout.addWidget(self.search)
+        self.tree = QTreeWidget()
+        self.tree.setColumnCount(3)
+        self.tree.setHeaderLabels(["Component", "Label", "Details"])
+        self.tree.setIndentation(14)
+        self.tree.setUniformRowHeights(True)
+        self.tree.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree.header().setStretchLastSection(True)
+        layout.addWidget(self.tree)
+        self.list_widget = self.tree  # older name
 
         btn_row = QHBoxLayout()
         self.select_btn = QPushButton("Select")
@@ -3521,36 +3701,179 @@ class ComponentManagerPanel(QWidget):
             btn_row.addWidget(btn)
         layout.addLayout(btn_row)
 
-        self.list_widget.itemSelectionChanged.connect(self._select)
+        self.tree.itemSelectionChanged.connect(self._select)
+        self.tree.itemDoubleClicked.connect(lambda *_: self._center())
+        self.tree.itemCollapsed.connect(lambda it: self._collapsed.add(it.data(0, Qt.UserRole + 1)))
+        self.tree.itemExpanded.connect(lambda it: self._collapsed.discard(it.data(0, Qt.UserRole + 1)))
+        self.tree.customContextMenuRequested.connect(self._context_menu)
+        self.search.textChanged.connect(lambda _t: self.refresh())
         self.select_btn.clicked.connect(self._select)
         self.duplicate_btn.clicked.connect(self._duplicate)
         self.delete_btn.clicked.connect(self._delete)
+        scene.selectionChanged.connect(self._follow_canvas_selection)
 
         self.refresh()
 
+    # -- tree ------------------------------------------------------------------------
+
+    @staticmethod
+    def describe(item) -> str:
+        m = item.model
+        kind = item.kind
+        if kind == "belt":
+            drive = " vfd" if getattr(m, "commandFormat", "speed") == "vfd" else ""
+            if m.type == "curved":
+                sweep = (m.endAngle - m.startAngle) % 360.0 or 360.0
+                return f"curved R{m.radius:g} m {sweep:.0f}°{drive}"
+            if m.type == "path":
+                return f"path{' loop' if m.closed else ''}, {len(m.path or [])} anchors{drive}"
+            if m.shape == "quadrilateral":
+                return f"polygon, {len(m.vertexs or [])} corners{drive}"
+            return f"linear {m.length:g} × {m.beltWidth:g} m{drive}"
+        if kind == "sensor":
+            return "IR" if m.sensorType == "ir" else f"laser banner, {m.laserCount or 16} beams"
+        if kind == "source":
+            return f"every {m.interval:g} s"
+        if kind == "sink":
+            return f"{m.width:g} × {m.height:g} m"
+        if kind == "button":
+            contact = "NC" if getattr(m, "normallyClosed", False) else "NO"
+            key = f", key {m.key}" if getattr(m, "key", None) else ""
+            return f"{getattr(m, 'buttonType', 'momentary')} {contact}{key}"
+        if kind == "led":
+            return "mode byte" if m.packFormat == "byte" else "on/off"
+        return ""
+
     def refresh(self):
-        self.list_widget.blockSignals(True)
-        self.list_widget.clear()
-        for item in sorted(self.items_list, key=lambda i: (_KIND_ORDER.get(i.kind, 9), i.model.id)):
-            label = (getattr(item.model, "label", "") or "").strip()
-            text = item.model.id if not label or label == item.model.id else f"{item.model.id}    {label}"
-            row = QListWidgetItem(_kind_icon(item.kind), text)
-            row.setToolTip(item.kind)
-            row.setData(Qt.UserRole, item)
-            self.list_widget.addItem(row)
-        self.list_widget.blockSignals(False)
+        selected = {id(i) for i in self.items_list if self._is_selected(i)}
+        text = self.search.text().strip().lower()
+        self._syncing = True
+        self.tree.clear()
+        by_kind = {}
+        for item in self.items_list:
+            by_kind.setdefault(item.kind, []).append(item)
+        for kind, title in self.FOLDERS:
+            members = sorted(by_kind.get(kind, []), key=lambda i: i.model.id)
+            if text:
+                members = [i for i in members if text in i.model.id.lower()
+                           or text in (getattr(i.model, "label", "") or "").lower()]
+            if not members:
+                continue
+            folder = QTreeWidgetItem([f"{title}  ({len(members)})"])
+            folder.setData(0, Qt.UserRole + 1, kind)
+            folder.setIcon(0, _kind_icon(kind))
+            folder.setFlags(Qt.ItemIsEnabled)
+            font = folder.font(0)
+            font.setBold(True)
+            folder.setFont(0, font)
+            self.tree.addTopLevelItem(folder)
+            folder.setFirstColumnSpanned(True)
+            for item in members:
+                label = (getattr(item.model, "label", "") or "").strip()
+                row = QTreeWidgetItem([item.model.id, label if label != item.model.id else "", self.describe(item)])
+                row.setData(0, Qt.UserRole, item)
+                row.setToolTip(2, row.text(2))
+                folder.addChild(row)
+                if id(item) in selected:
+                    row.setSelected(True)
+            folder.setExpanded(bool(text) or kind not in self._collapsed)
+        for col in (0, 1):
+            self.tree.resizeColumnToContents(col)
+        self._syncing = False
+
+    @staticmethod
+    def _is_selected(item) -> bool:
+        try:
+            return item.isSelected()
+        except RuntimeError:
+            return False
+
+    def _rows(self):
+        for i in range(self.tree.topLevelItemCount()):
+            folder = self.tree.topLevelItem(i)
+            for j in range(folder.childCount()):
+                yield folder.child(j)
+
+    def _selected_items(self) -> List[PlacedItem]:
+        return [r.data(0, Qt.UserRole) for r in self.tree.selectedItems() if r.data(0, Qt.UserRole) is not None]
 
     def _current_item(self) -> Optional[PlacedItem]:
-        row = self.list_widget.currentItem()
-        return row.data(Qt.UserRole) if row else None
+        row = self.tree.currentItem()
+        item = row.data(0, Qt.UserRole) if row is not None else None
+        if item is None:
+            chosen = self._selected_items()
+            item = chosen[0] if chosen else None
+        return item
+
+    def select_component(self, component_id: str) -> bool:
+        """Select a component by id in the tree (and so on the canvas)."""
+        for row in self._rows():
+            if row.data(0, Qt.UserRole).model.id == component_id:
+                self.tree.setCurrentItem(row)
+                return True
+        return False
+
+    # -- selection, both ways ------------------------------------------------------
 
     def _select(self):
-        item = self._current_item()
-        if not item:
+        if self._syncing:
             return
-        self.scene.clearSelection()
-        item.setSelected(True)
-        self.view.centerOn(item)
+        items = self._selected_items()
+        if not items:
+            return
+        self._syncing = True
+        try:
+            self.scene.clearSelection()
+            for item in items:
+                item.setSelected(True)
+        finally:
+            self._syncing = False
+        self.view.ensureVisible(items[-1], 40, 40)
+
+    def _follow_canvas_selection(self):
+        if self._syncing:
+            return
+        self._syncing = True
+        try:
+            selected = {id(i) for i in self.items_list if self._is_selected(i)}
+            first = None
+            for row in self._rows():
+                on = id(row.data(0, Qt.UserRole)) in selected
+                row.setSelected(on)
+                if on and first is None:
+                    first = row
+            if first is not None:
+                self.tree.scrollToItem(first)
+        except RuntimeError:
+            pass  # the scene is going away (window closing)
+        finally:
+            self._syncing = False
+
+    def _center(self):
+        item = self._current_item()
+        if item is not None:
+            self.view.centerOn(item)
+
+    def _context_menu(self, pos):
+        row = self.tree.itemAt(pos)
+        if row is not None and row.data(0, Qt.UserRole) is not None and not row.isSelected():
+            self.tree.setCurrentItem(row)
+        has = bool(self._selected_items())
+        menu = QMenu(self)
+        for text, slot, enabled in (("Select on Canvas", self._select, has), ("Centre View", self._center, has),
+                                    ("Duplicate", self._duplicate, has), ("Delete", self._delete, has)):
+            action = menu.addAction(text, slot)
+            action.setEnabled(enabled)
+        if self.on_add_to_library is not None:
+            menu.addSeparator()
+            action = menu.addAction("Add to Component Library...", self.on_add_to_library)
+            action.setEnabled(len(self._selected_items()) == 1)
+        menu.addSeparator()
+        menu.addAction("Expand All", self.tree.expandAll)
+        menu.addAction("Collapse All", self.tree.collapseAll)
+        menu.exec(self.tree.viewport().mapToGlobal(pos))
+
+    # -- edits -----------------------------------------------------------------------
 
     def _duplicate(self):
         item = self._current_item()
@@ -3569,10 +3892,9 @@ class ComponentManagerPanel(QWidget):
         self.refresh()
 
     def _delete(self):
-        item = self._current_item()
-        if not item:
-            return
-        self.view._remove_item(item, text="Delete Component")
+        items = self._selected_items() or ([self._current_item()] if self._current_item() else [])
+        for item in items:
+            self.view._remove_item(item, text="Delete Component")
         self.refresh()
 
 
@@ -3647,6 +3969,8 @@ class MainWindow(QMainWindow):
         self.view.get_template = library_panel.list_widget.get_template
 
         manager_panel = ComponentManagerPanel(self.scene, self.items_list, self.view, config=self.config)
+        manager_panel.on_add_to_library = lambda: library_panel.add_selected()
+        self.manager_panel = manager_panel
         manager_dock = QDockWidget("Component Manager", self)
         manager_dock.setWidget(manager_panel)
         # Stacked below the library dock in the same area (both visible at
@@ -3747,6 +4071,13 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.BottomDockWidgetArea, check_dock)
         # Compact by default: the canvas is what matters; drag to enlarge.
         self.resizeDocks([check_dock], [120], Qt.Vertical)
+        # View > Panels: show / hide every dock and toolbar.
+        panels = self.cad.view_menu.addMenu("Panels")
+        for dock in (library_dock, manager_dock, props_dock, check_dock):
+            panels.addAction(dock.toggleViewAction())
+        panels.addSeparator()
+        for toolbar in self.findChildren(QToolBar):
+            panels.addAction(toolbar.toggleViewAction())
         self.resizeDocks([library_dock, props_dock], [270, 260], Qt.Horizontal)
 
         self.statusBar().showMessage(
