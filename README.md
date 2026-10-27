@@ -169,6 +169,42 @@ The Qt layout editor is where belt shapes and positions are designed:
 | File > Export DXF... | | Layout in metres, one layer per kind (BELTS, BELT_CENTERLINES, FLOW, SENSORS, ...) | ezdxf |
 | View > Show Ports | | Inlet (green ring), outlet (orange arrow), connection (cyan ring; red = broken) | |
 
+### CAD workflow: sketch (or import), then connect into belts
+
+![Sketch and connect into belts](docs/sketch_tools.png)
+
+1. **Geometry first**, like any CAD tool:
+   - **Tools > Sketch Line (S)** draws construction lines and tangent arcs
+     (L / A), and **Tools > Sketch Arc (Shift+S)** draws a 3-point arc
+     (start, end, a point on the arc).
+   - Or **File > Import DXF Background...** a plant layout. Its lines, arcs,
+     circles and polylines are read exactly (with arc bulges).
+2. **Every point you place snaps to existing geometry (OSNAP)**, on the
+   drawing, the sketch and components. A yellow marker shows the snap before
+   you click: Endpoint, Center, Midpoint or Nearest (on an edge), else Grid.
+   The OSNAP toolbar button turns it off. Shift snaps the angle to 15 deg;
+   typed `x,y`, `@dx,dy` and `len<angle` give exact points. A free click is
+   only pixel-accurate, so type or snap points that must be exact.
+3. **Connect geometry into a belt with Tools > Belt from Sketch/Drawing (B)**:
+   - Click **on a line or arc** to get a path belt along it *and every
+     line/arc joined to it end to end*, in any drawing direction (a branch
+     stops the chain). The belt width comes from the toolbar's Width.
+   - Click **inside a closed area**, even one bounded by separate lines, to
+     get a polygon belt with exactly that outline (any shape, like a skewed
+     merge feeder). Parcels flow along its long axis; change it with
+     Direction in Properties.
+
+Sketch geometry is saved in the layout (`sketch`), exported to DXF on the
+SKETCH layer, and ignored by physics. Select a sketch line and press Delete
+to remove it, or use Tools > Clear Sketch. Shortcuts that skip the sketch
+step:
+- **Draw Belt Outline (O)**: click the corners of any polygon. The first edge
+  sets the flow direction.
+- **Draw Belt Path (P)** (below).
+
+Selecting a polygon belt shows its corner handles: drag one to move it,
+Shift+click to insert a corner, Alt+click to delete one.
+
 ### Drawing belts (path belts)
 
 ![Drawing a belt path](docs/path_tool.png)

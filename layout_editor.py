@@ -2282,6 +2282,8 @@ class CanvasView(QGraphicsView):
         # An interactive drawing tool (path_tool.PathDrawTool) that gets
         # mouse/key events before the default select/drag handling.
         self.tool = None
+        # Called first by Delete; returns True if it deleted something itself.
+        self.on_delete_extra = None
         self._pan_tool_active = False
         self._middle_pan_active = False
         self._middle_pan_last_pos = None
@@ -2618,6 +2620,8 @@ class CanvasView(QGraphicsView):
             item.setSelected(True)
 
     def _delete_selected(self):
+        if self.on_delete_extra is not None and self.on_delete_extra():
+            return  # e.g. selected sketch entities (layout_editor_cad.py)
         selected = [i for i in self.scene().selectedItems() if isinstance(i, PlacedItem)]
         if not selected:
             return

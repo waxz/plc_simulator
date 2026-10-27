@@ -19,10 +19,12 @@ import os
 from typing import Dict, List, Optional
 
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QAction, QBrush, QColor, QKeySequence, QPainterPath, QPen, QPolygonF, QUndoCommand
+from PySide6.QtGui import (
+    QAction, QBrush, QColor, QKeySequence, QPainterPath, QPainterPathStroker, QPen, QPolygonF, QUndoCommand,
+)
 from PySide6.QtWidgets import (
     QFileDialog, QGraphicsEllipseItem, QGraphicsPathItem, QGraphicsPolygonItem, QInputDialog,
-    QListWidget, QListWidgetItem, QMessageBox, QPushButton, QVBoxLayout, QWidget,
+    QListWidget, QListWidgetItem, QMessageBox, QPushButton, QStyle, QVBoxLayout, QWidget,
 )
 
 from cad import dxf_io
@@ -31,11 +33,16 @@ from cad.constraints import (
     GEOMETRY_FIELDS, ConstraintError, connect_belts, fillet_belts, solve_layout,
 )
 from cad.ports import belt_ports
-from config_parser import BackgroundDrawing, BeltConnection
+from config_parser import BackgroundDrawing, BeltConnection, SketchEntity
 from id_utils import next_indexed_id
-from path_tool import AnchorGripManager, InsertShapeDialog, PathDrawTool, make_preset_belt
+from path_tool import (
+    AnchorGripManager, InsertShapeDialog, OutlineDrawTool, PathDrawTool, PathToolbar, PickFromDrawingTool,
+    SketchArcTool, SketchLineTool, SnapEngine, make_preset_belt,
+)
+from cad.path import flatten as path_flatten, segments as path_segments
 
 PORT_Z = 1500
+SKETCH_Z = 900
 BACKGROUND_Z = -1000
 
 
@@ -226,10 +233,23 @@ class CadController:
         self.to_scene_pos = to_scene_pos
         self.from_scene_pos = from_scene_pos
         self.scale = scale
-        self.path_tool = PathDrawTool(window, belt_item_cls=belt_item_cls, to_scene_pos=to_scene_pos,
-                                      from_scene_pos=from_scene_pos, snap_free_point=snap_free_point, scale=scale)
-        self.grips = AnchorGripManager(window, belt_item_cls=belt_item_cls, scale=scale,
-                                       snap_free_point=snap_free_point)
+        # Drawing tools share one toolbar and one object-snap engine (which
+        # also snaps to the imported DXF background, see set_background).
+        self.snap = SnapEngine(window, to_scene_pos=to_scene_pos, from_scene_pos=from_scene_pos,
+                               snap_free_point=snap_free_point, scale=scale)
+        self.draw_toolbar = PathToolbar(window, self._typed_input)
+        window.addToolBar(Qt.TopToolBarArea, self.draw_toolbar)
+        self.path_tool = PathDrawTool(window, self.draw_toolbar, self.snap, belt_item_cls=belt_item_cls)
+        self.outline_tool = OutlineDrawTool(window, self.draw_toolbar, self.snap, belt_item_cls=belt_item_cls)
+        self.pick_tool = PickFromDrawingTool(window, self.draw_toolbar, self.snap, belt_item_cls=belt_item_cls)
+        self.sketch_line_tool = SketchLineTool(window, self.draw_toolbar, self.snap, belt_item_cls=belt_item_cls)
+        self.sketch_arc_tool = SketchArcTool(window, self.draw_toolbar, self.snap, belt_item_cls=belt_item_cls)
+        self.sketch_line_tool.on_sketch = self.add_sketch
+        self.sketch_arc_tool.on_sketch = self.add_sketch
+        self.sketch_items: List[SketchItem] = []
+        self._background_shapes = []
+        window.view.on_delete_extra = self._delete_selected_sketch
+        self.grips = AnchorGripManager(window, belt_item_cls=belt_item_cls, scale=scale, snap=self.snap)
         self.ports = PortOverlay(self)
         self.closing = False  # set by MainWindow.closeEvent: stop touching the scene
         self.background_item: Optional[BackgroundItem] = None
@@ -239,6 +259,7 @@ class CadController:
         window.undo_stack.indexChanged.connect(self._on_undo_index_changed)
         if self.config.background is not None:
             self.set_background(self.config.background, quiet_errors=True)
+        self.set_sketch(self.config.sketch)
         self.ports.refresh()
 
     def _on_undo_index_changed(self, _index):
@@ -306,6 +327,8 @@ class CadController:
             self.window.scene.removeItem(self.background_item)
             self.background_item = None
         self.config.background = background
+        self._background_shapes = []
+        self._refresh_snap_shapes()
         if background is None or not background.visible:
             return
         path = self._resolve(background.path)
@@ -318,12 +341,56 @@ class CadController:
                 return
             raise
         polylines = dxf_io.background_in_metres(geom, background.scale, background.offsetX, background.offsetY)
+        self._background_shapes = dxf_io.shapes_in_metres(geom, background.scale, background.offsetX,
+                                                          background.offsetY)
+        self._refresh_snap_shapes()
         scene_lines = [[self.to_scene_pos(x, y) for x, y in pl] for pl in polylines]
         self.background_item = BackgroundItem(scene_lines)
         self.window.scene.addItem(self.background_item)
         rect = self.background_item.boundingRect()
         margin = max(rect.width(), rect.height()) * 0.1
         self.window.scene.setSceneRect(self.window.scene.sceneRect().united(rect.adjusted(-margin, -margin, margin, margin)))
+
+    # -- sketch ----------------------------------------------------------------
+
+    def _refresh_snap_shapes(self):
+        """Snap/pick targets = background drawing + sketch entities."""
+        self.snap.set_background_shapes(list(self._background_shapes) + list(self.config.sketch))
+
+    def set_sketch(self, entities: List[SketchEntity]):
+        for item in self.sketch_items:
+            try:
+                if item.scene() is not None:
+                    item.scene().removeItem(item)
+            except RuntimeError:
+                pass
+        self.config.sketch = [e.model_copy() for e in entities]
+        self.sketch_items = []
+        for i, entity in enumerate(self.config.sketch):
+            item = SketchItem(entity, i, self.to_scene_pos)
+            self.window.scene.addItem(item)
+            self.sketch_items.append(item)
+        self._refresh_snap_shapes()
+
+    def add_sketch(self, entity: SketchEntity):
+        before = list(self.config.sketch)
+        self.window.undo_stack.push(SketchCommand(self, before, before + [entity], "Sketch"))
+
+    def _delete_selected_sketch(self) -> bool:
+        try:
+            selected = {i.index for i in self.window.scene.selectedItems() if isinstance(i, SketchItem)}
+        except RuntimeError:
+            return False
+        if not selected:
+            return False
+        before = list(self.config.sketch)
+        after = [e for i, e in enumerate(before) if i not in selected]
+        self.window.undo_stack.push(SketchCommand(self, before, after, "Delete sketch"))
+        return True
+
+    def clear_sketch(self):
+        if self.config.sketch:
+            self.window.undo_stack.push(SketchCommand(self, list(self.config.sketch), [], "Clear sketch"))
 
     # -- helpers ---------------------------------------------------------------
 
@@ -383,9 +450,18 @@ class CadController:
 
         tools = w.menuBar().addMenu("Tools")
         for text, shortcut, slot in (
+            ("Sketch Line", "S", self.sketch_line_tool.start),
+            ("Sketch Arc (3 points)", "Shift+S", self.sketch_arc_tool.start),
+            ("Clear Sketch", "", self.clear_sketch),
+            (None, None, None),
+            ("Belt from Sketch/Drawing", "B", self.pick_tool.start),
             ("Draw Belt Path", "P", self.path_tool.start),
+            ("Draw Belt Outline", "O", self.outline_tool.start),
             ("Insert Belt Shape...", "Shift+P", self.insert_shape),
         ):
+            if text is None:
+                tools.addSeparator()
+                continue
             action = QAction(text, w)
             action.setShortcut(QKeySequence(shortcut))
             action.triggered.connect(slot)
@@ -522,6 +598,11 @@ class CadController:
         self._push("Solve connections", [cmd])
         self._status(f"Re-attached {len(geometry)} belt(s).")
 
+    def _typed_input(self, text: str):
+        tool = getattr(self.window.view, "tool", None)
+        if tool is not None and hasattr(tool, "typed_input"):
+            tool.typed_input(text)
+
     def insert_shape(self):
         dialog = InsertShapeDialog(self.window)
         if dialog.exec() != InsertShapeDialog.Accepted:
@@ -575,6 +656,49 @@ class CadController:
             self._error("Export DXF", f"Could not write {path}:\n{exc}")
             return
         self._status(f"Exported {path}")
+
+
+class SketchCommand(QUndoCommand):
+    def __init__(self, controller, before: List[SketchEntity], after: List[SketchEntity], text: str):
+        super().__init__(text)
+        self.controller = controller
+        self.before = [e.model_copy() for e in before]
+        self.after = [e.model_copy() for e in after]
+
+    def redo(self):
+        self.controller.set_sketch(self.after)
+
+    def undo(self):
+        self.controller.set_sketch(self.before)
+
+
+class SketchItem(QGraphicsPathItem):
+    """One sketch entity on the canvas: selectable (Delete removes it), not
+    movable, drawn as thin cyan construction geometry."""
+
+    def __init__(self, entity: SketchEntity, index: int, to_scene_pos):
+        flat, _ = path_flatten(path_segments(entity.points, entity.bulges, entity.closed), 0.01)
+        if entity.closed and flat:
+            flat.append(flat[0])
+        path = QPainterPath()
+        path.addPolygon(QPolygonF([to_scene_pos(x, y) for x, y in flat]))
+        super().__init__(path)
+        self.entity = entity
+        self.index = index
+        self.setPen(QPen(QColor("#22d3ee"), 0))
+        self.setZValue(SKETCH_Z)
+        self.setFlag(QGraphicsPathItem.GraphicsItemFlag.ItemIsSelectable, True)
+        self.setToolTip("Sketch geometry - Tools > Belt from Sketch/Drawing (B) turns it into a belt; Delete removes it")
+
+    def shape(self) -> QPainterPath:
+        stroker = QPainterPathStroker()
+        stroker.setWidth(10.0)  # easy to click a thin line
+        return stroker.createStroke(self.path())
+
+    def paint(self, painter, option, widget=None):
+        selected = bool(option.state & QStyle.State_Selected)
+        painter.setPen(QPen(QColor("#facc15" if selected else "#22d3ee"), 2 if selected else 1.5))
+        painter.drawPath(self.path())
 
 
 class _AddItem(QUndoCommand):

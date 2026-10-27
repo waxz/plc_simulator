@@ -344,3 +344,29 @@ def path_flow_sign(belt) -> float:
     if math.cos(math.radians(belt.directionAngle)) < 0:
         sign = -sign
     return sign
+
+
+def three_point_bulge(p0: Point, p1: Point, through: Point) -> float:
+    """Bulge of the arc from p0 to p1 that passes through `through`
+    (0 if the three points are collinear)."""
+    ax, ay = p0
+    bx, by = p1
+    cx, cy = through
+    d = 2.0 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+    if abs(d) < 1e-12:
+        return 0.0
+    ux = ((ax * ax + ay * ay) * (by - cy) + (bx * bx + by * by) * (cy - ay) + (cx * cx + cy * cy) * (ay - by)) / d
+    uy = ((ax * ax + ay * ay) * (cx - bx) + (bx * bx + by * by) * (ax - cx) + (cx * cx + cy * cy) * (bx - ax)) / d
+    a0 = math.atan2(ay - uy, ax - ux)
+    a1 = math.atan2(by - uy, bx - ux)
+    am = math.atan2(cy - uy, cx - ux)
+    ccw = (a1 - a0) % (2 * math.pi)
+    sweep = ccw if (am - a0) % (2 * math.pi) < ccw else ccw - 2 * math.pi
+    return math.tan(sweep / 4.0)
+
+
+def reverse_polyline(points: Sequence[Point], bulges: Sequence[float]) -> Tuple[List[Point], List[float]]:
+    """The same open polyline traversed backwards (each arc's bulge negates)."""
+    n = len(points)
+    b = list(bulges) + [0.0] * (n - len(bulges))
+    return list(reversed(points)), [-b[n - 2 - j] for j in range(n - 1)] + [0.0]

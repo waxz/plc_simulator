@@ -40,7 +40,20 @@ LAYERS = {
     "IO": (2, "buttons and LEDs"),
     "CONNECTIONS": (140, "belt connections"),
     "LABELS": (7, "component ids"),
+    "SKETCH": (4, "construction geometry"),
 }
+
+
+@dataclass
+class DrawingShape:
+    """One drawing entity kept exact for picking and snapping: vertices plus
+    DXF-style bulges (0 = straight, tan(sweep/4) = arc), drawing units.
+    Lines, arcs, circles and (LW)polylines keep their true arcs; other curves
+    (splines, ellipses, hatch boundaries) are flattened to straight pieces."""
+    points: List[Tuple[float, float]]
+    bulges: List[float]
+    closed: bool
+    layer: str = "0"
 
 
 @dataclass
@@ -49,6 +62,7 @@ class BackgroundGeometry:
     scale: float                       # metres per drawing unit
     units_name: str                    # e.g. "mm", or "unitless (assumed mm)"
     bounds: Optional[Tuple[float, float, float, float]]  # min_x, min_y, max_x, max_y, drawing units
+    shapes: List[DrawingShape] = None  # exact entities, drawing units
 
 
 def read_background(path: str, flatten_tolerance: float = 0.0) -> BackgroundGeometry:
@@ -65,13 +79,20 @@ def read_background(path: str, flatten_tolerance: float = 0.0) -> BackgroundGeom
         units_name = "unitless (assumed mm)"
 
     paths = []
+    flatten_layers: List[Optional[str]] = []
+    shapes: List[DrawingShape] = []
     for entity in disassemble.recursive_decompose(doc.modelspace()):
         if entity.dxftype() in _SKIPPED_TYPES:
             continue
+        exact = _exact_shape(entity)
+        if exact is not None:
+            shapes.append(exact)
         try:
             paths.append(ezpath.make_path(entity))
         except (TypeError, ValueError):
             continue  # entity type ezdxf can't express as a path
+        # Entities with no exact form are kept as flattened shapes below.
+        flatten_layers.append(None if exact is not None else entity.dxf.get("layer", "0"))
 
     bounds = None
     if paths:
@@ -83,16 +104,63 @@ def read_background(path: str, flatten_tolerance: float = 0.0) -> BackgroundGeom
         flatten_tolerance = max(size / 1000.0, 1e-6)
 
     polylines: List[Polyline] = []
-    for p in paths:
+    for p, layer in zip(paths, flatten_layers):
         for sub in p.sub_paths():
             pts = [(v.x, v.y) for v in sub.flattening(flatten_tolerance)]
             if len(pts) >= 2:
                 polylines.append(pts)
-    return BackgroundGeometry(polylines, scale, units_name, bounds)
+                if layer is not None:  # no exact form: keep the flattened curve as a shape
+                    closed = len(pts) > 2 and math.hypot(pts[0][0] - pts[-1][0], pts[0][1] - pts[-1][1]) < flatten_tolerance
+                    shape_pts = pts[:-1] if closed else pts
+                    shapes.append(DrawingShape(shape_pts, [0.0] * len(shape_pts), closed, layer))
+    return BackgroundGeometry(polylines, scale, units_name, bounds, shapes)
+
+
+def _exact_shape(entity) -> Optional[DrawingShape]:
+    """LINE / ARC / CIRCLE / LWPOLYLINE / 2D POLYLINE as vertices + bulges.
+    Entities not in the XY plane (extrusion other than +Z) fall back to
+    flattening, so a mirrored arc is never misread."""
+    kind = entity.dxftype()
+    layer = entity.dxf.get("layer", "0")
+    extrusion = entity.dxf.get("extrusion", (0, 0, 1))
+    if abs(extrusion[2] - 1.0) > 1e-9:
+        return None
+    if kind == "LINE":
+        s, e = entity.dxf.start, entity.dxf.end
+        return DrawingShape([(s.x, s.y), (e.x, e.y)], [0.0, 0.0], False, layer)
+    if kind == "ARC":
+        c, r = entity.dxf.center, entity.dxf.radius
+        a0, a1 = entity.dxf.start_angle, entity.dxf.end_angle
+        sweep = (a1 - a0) % 360.0 or 360.0
+        p0 = (c.x + r * math.cos(math.radians(a0)), c.y + r * math.sin(math.radians(a0)))
+        p1 = (c.x + r * math.cos(math.radians(a1)), c.y + r * math.sin(math.radians(a1)))
+        return DrawingShape([p0, p1], [math.tan(math.radians(sweep) / 4.0), 0.0], False, layer)
+    if kind == "CIRCLE":
+        c, r = entity.dxf.center, entity.dxf.radius
+        return DrawingShape([(c.x + r, c.y), (c.x - r, c.y)], [1.0, 1.0], True, layer)
+    if kind == "LWPOLYLINE":
+        pts = list(entity.get_points("xyb"))
+        if len(pts) < 2:
+            return None
+        return DrawingShape([(float(x), float(y)) for x, y, _ in pts], [float(b) for _, _, b in pts],
+                            bool(entity.closed), layer)
+    if kind == "POLYLINE" and entity.is_2d_polyline:
+        verts = list(entity.vertices)
+        if len(verts) < 2:
+            return None
+        return DrawingShape([(v.dxf.location.x, v.dxf.location.y) for v in verts],
+                            [v.dxf.get("bulge", 0.0) for v in verts], bool(entity.is_closed), layer)
+    return None
 
 
 def background_in_metres(geom: BackgroundGeometry, scale: float, offset_x: float, offset_y: float) -> List[Polyline]:
     return [[(x * scale + offset_x, y * scale + offset_y) for x, y in pl] for pl in geom.polylines]
+
+
+def shapes_in_metres(geom: BackgroundGeometry, scale: float, offset_x: float, offset_y: float) -> List[DrawingShape]:
+    """Exact shapes in world metres (uniform scaling keeps every bulge)."""
+    return [DrawingShape([(x * scale + offset_x, y * scale + offset_y) for x, y in s.points], list(s.bulges),
+                         s.closed, s.layer) for s in (geom.shapes or [])]
 
 
 def _add_label(msp, text: str, x: float, y: float, height: float = 0.2) -> None:
@@ -176,6 +244,10 @@ def export_layout(config: SimulatorConfig, path: str) -> None:
     for led in config.leds:
         msp.add_circle((led.x, led.y), led.radius, dxfattribs={"layer": "IO"})
         _add_label(msp, led.id, led.x, led.y, 0.1)
+
+    for entity in config.sketch:
+        msp.add_lwpolyline([(x, y, b) for (x, y), b in zip(entity.points, list(entity.bulges) + [0.0] * len(entity.points))],
+                           format="xyb", close=entity.closed, dxfattribs={"layer": "SKETCH"})
 
     belts = {b.id: b for b in config.belts}
     for conn in config.connections:

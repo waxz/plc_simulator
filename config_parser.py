@@ -1,5 +1,5 @@
 import json
-from typing import List, Optional, Literal, Dict, Any, Union
+from typing import List, Optional, Literal, Dict, Any, Tuple, Union
 from pydantic import BaseModel, Field, PrivateAttr
 
 
@@ -202,6 +202,16 @@ class BackgroundDrawing(BaseModel):
     visible: bool = True
 
 
+class SketchEntity(BaseModel):
+    """Construction geometry drawn in the layout editor (not a belt): a
+    line/polyline whose segments may be arcs (`bulges`, DXF convention, one
+    per point). Belts are made from it with Tools > Belt from Sketch/Drawing.
+    World metres. Physics ignores it."""
+    points: List[Tuple[float, float]]
+    bulges: List[float] = Field(default_factory=list)
+    closed: bool = False
+
+
 class SimulatorConfig(BaseModel):
     version: str = "1.0.0"
     savedAt: int = 0
@@ -213,6 +223,7 @@ class SimulatorConfig(BaseModel):
     leds: List[LedIndicator] = Field(default_factory=list)
     mqttSettings: MqttSettings = Field(default_factory=MqttSettings)
     connections: List[BeltConnection] = Field(default_factory=list)
+    sketch: List[SketchEntity] = Field(default_factory=list)
     background: Optional[BackgroundDrawing] = None
     simulatorBackend: Literal["matter", "rapier"] = "matter"
     simulationSteps: int = 4
