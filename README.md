@@ -168,6 +168,11 @@ The Qt layout editor is where belt shapes and positions are designed:
   centers (also when rotated), plus a measure tool (D).
 - Undo/redo, copy/paste, rubber-band multi-select, Component Manager and
   Properties docks.
+- The same quiet dark style as the simulator. Canvas labels are upright tags
+  of one small size at any zoom, shown only where they fit and never on top
+  of each other (selected items first, then devices, then belt ids). Belt
+  inlet/outlet markers are under View > Show Ports; connections are always
+  marked (red when broken).
 
 ![Layout editor](docs/cad_editor.png)
 
@@ -323,6 +328,19 @@ python main.py test_config.json
 # Headless (no window at all)
 python main.py test_config.json --headless
 ```
+
+![Simulator window](docs/simulator.png)
+
+The window follows an operator-panel style (`hmi_style.py`, shared with the
+layout editor): a quiet grey canvas, colour only for state - green running /
+clear, red blocked / fault, amber paused. The status bar shows run state,
+simulated time, the real-time ratio, parcels in flight and delivered, drive
+faults and the PLC link (`PLC 1 link`, or `LAYOUT mismatch` when its frames
+don't fit). Running belts show flow chevrons; a tripped drive gets a red
+outline and a FAULT tag. Labels are small, upright tags placed by priority
+(faults, then devices, then belt ids); a label that would overlap another is
+left out until you zoom in, and the selected item always shows its tag and
+coordinates. `V` toggles the per-parcel speed readout (actual / belt speed).
 
 Add `--exchange-config <file.json>` to override the MQTT/TCP settings baked into
 the workspace config (see `tcp_exchange_config.json` for the shape).

@@ -113,12 +113,14 @@ def _inert(item):
 
 class PortOverlay:
     """Markers on the canvas: inlet (green ring), outlet (orange arrow head),
-    saved connection (cyan ring) or broken connection (red ring)."""
+    saved connection (cyan ring) or broken connection (red ring). Inlets and
+    outlets only with View > Show Ports (off by default - every belt end
+    marked is a lot of noise); connections always."""
 
     def __init__(self, controller):
         self.controller = controller
         self.items = []
-        self.visible = True
+        self.visible = False
 
     def clear(self):
         for item in self.items:
@@ -131,13 +133,11 @@ class PortOverlay:
 
     def refresh(self):
         self.clear()
-        if not self.visible:
-            return
         scene = self.controller.window.scene
         to_scene = self.controller.to_scene_pos
         scale = self.controller.scale
         belts = {b.id: b for b in self.controller.belt_models()}
-        for belt in belts.values():
+        for belt in (belts.values() if self.visible else ()):
             ports = belt_ports(belt)
             if ports is None:
                 continue
@@ -507,7 +507,7 @@ class CadController:
         view = w.menuBar().addMenu("View")
         show_ports = QAction("Show Ports", w)
         show_ports.setCheckable(True)
-        show_ports.setChecked(True)
+        show_ports.setChecked(False)
         show_ports.toggled.connect(self._set_ports_visible)
         view.addAction(show_ports)
 

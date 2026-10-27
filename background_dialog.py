@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem, QPushButton, QSplitter, QVBoxLayout, QWidget,
 )
 
+import hmi_style as hmi
 from cad import dxf_io
 from config_parser import BackgroundDrawing
 
@@ -53,7 +54,7 @@ class PreviewView(QGraphicsView):
         self.setScene(QGraphicsScene(self))
         self.setRenderHint(QPainter.Antialiasing, False)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
-        self.setBackgroundBrush(QBrush(QColor(250, 250, 250)))
+        self.setBackgroundBrush(QBrush(hmi.qcolor(hmi.BG)))
         self.setMinimumSize(420, 320)
         path = QPainterPath()
         vertices = []
@@ -64,7 +65,7 @@ class PreviewView(QGraphicsView):
             vertices.extend(pl)
         self._vertices = vertices
         item = QGraphicsPathItem(path)
-        item.setPen(QPen(QColor(90, 90, 90), 0))
+        item.setPen(QPen(hmi.qcolor(hmi.TEXT_DIM), 0))
         self.scene().addItem(item)
         self.sheet_items: List[QGraphicsRectItem] = []
         for sheet in info.sheets:

@@ -76,7 +76,7 @@ from typing import Callable, List, Optional
 from PySide6.QtCore import Qt, QPointF, QMimeData, QRectF, QTimer
 from PySide6.QtGui import (
     QBrush, QColor, QPen, QPainter, QPainterPath, QDrag, QPolygonF, QTransform, QKeySequence, QAction,
-    QUndoStack, QUndoCommand,
+    QUndoStack, QUndoCommand, QFont, QFontMetricsF, QIcon, QPixmap,
 )
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QGraphicsView, QGraphicsScene, QGraphicsItem,
@@ -87,6 +87,7 @@ from PySide6.QtWidgets import (
 )
 
 from config_parser import Belt, Sensor, Source, Sink, ControlButton, LedIndicator, SimulatorConfig, load_config
+import hmi_style as hmi
 from cad.path import (
     belt_local_path, flatten as path_flatten, footprint as path_footprint, path_flow_sign, path_length,
     segments as path_segments,
@@ -272,7 +273,7 @@ class SnapGuideScene(QGraphicsScene):
 
     def __init__(self):
         super().__init__(-4000, -4000, 8000, 8000)
-        self.setBackgroundBrush(QBrush(QColor(30, 30, 30)))
+        self.setBackgroundBrush(QBrush(hmi.qcolor(hmi.BG)))
         self._guide_items = []
         # Set externally by MainWindow once both exist - lets PlacedItem
         # push a MoveItemCommand when a drag completes without needing a
@@ -403,22 +404,7 @@ class SnapGuideScene(QGraphicsScene):
 
     def drawBackground(self, painter: QPainter, rect: QRectF):
         super().drawBackground(painter, rect)
-        painter.setPen(QPen(QColor(55, 55, 55), 0))
-        left = int(rect.left()) - (int(rect.left()) % GRID_SIZE)
-        top = int(rect.top()) - (int(rect.top()) % GRID_SIZE)
-        x = left
-        while x < rect.right():
-            painter.drawLine(x, rect.top(), x, rect.bottom())
-            x += GRID_SIZE
-        y = top
-        while y < rect.bottom():
-            painter.drawLine(rect.left(), y, rect.right(), y)
-            y += GRID_SIZE
-        # Origin axes
-        painter.setPen(QPen(QColor(150, 60, 60), 0))
-        painter.drawLine(0, rect.top(), 0, rect.bottom())
-        painter.setPen(QPen(QColor(60, 150, 60), 0))
-        painter.drawLine(rect.left(), 0, rect.right(), 0)
+        _draw_grid(painter, rect)
 
     def show_guides(self, v_xs, h_ys, anchor_point=None, x_highlight=None, y_highlight=None):
         """Draws just what's relevant to the ONE active anchor keypoint (the
@@ -479,6 +465,99 @@ class SnapGuideScene(QGraphicsScene):
         self._guide_items.clear()
 
 
+def _draw_grid(painter: QPainter, rect: QRectF):
+    """Canvas grid: a line every GRID_SIZE, every 5th a little brighter
+    (skipped when they would be closer than 6 px), and the world axes."""
+    scale = math.sqrt(abs(painter.worldTransform().determinant())) or 1.0
+    step = GRID_SIZE
+    while step * scale < 6:
+        step *= 5
+    minor, major = QPen(hmi.qcolor(hmi.GRID), 0), QPen(hmi.qcolor(hmi.GRID_MAJOR), 0)
+    i0, i1 = math.floor(rect.left() / step), math.ceil(rect.right() / step)
+    for i in range(i0, i1 + 1):
+        painter.setPen(major if i % 5 == 0 else minor)
+        painter.drawLine(QPointF(i * step, rect.top()), QPointF(i * step, rect.bottom()))
+    j0, j1 = math.floor(rect.top() / step), math.ceil(rect.bottom() / step)
+    for j in range(j0, j1 + 1):
+        painter.setPen(major if j % 5 == 0 else minor)
+        painter.drawLine(QPointF(rect.left(), j * step), QPointF(rect.right(), j * step))
+    painter.setPen(QPen(hmi.qcolor(hmi.AXIS_Y), 0))
+    painter.drawLine(QPointF(0, rect.top()), QPointF(0, rect.bottom()))
+    painter.setPen(QPen(hmi.qcolor(hmi.AXIS_X), 0))
+    painter.drawLine(QPointF(rect.left(), 0), QPointF(rect.right(), 0))
+
+
+_TAG_FONT = None
+
+
+def _tag_font() -> QFont:
+    global _TAG_FONT
+    if _TAG_FONT is None:
+        _TAG_FONT = QFont(hmi.UI_FONT_FAMILY)
+        _TAG_FONT.setPixelSize(hmi.LABEL_PX)
+    return _TAG_FONT
+
+
+class CanvasTag(QGraphicsItem):
+    """A canvas item's label: upright and the same small size at any zoom
+    (it ignores the view's scale and the item's rotation), on a dark tag,
+    and only drawn when its item is big enough on screen to carry it - so
+    zoomed out the canvas shows equipment, not a pile of text. The selected
+    item always shows its tag. What it says and where comes from the
+    owner's _tag_spec() / _tag_room()."""
+
+    GAP = 4  # px between the anchor and a "left"/"below" tag
+
+    def __init__(self, owner: "PlacedItem"):
+        super().__init__(owner)
+        self.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
+        self.setAcceptedMouseButtons(Qt.NoButton)
+        self.setZValue(1000)
+        self._key = None
+        self._spec = None
+        self._rect = QRectF()
+        self.shown = False  # decided by CanvasView._layout_tags (fits, no overlap)
+
+    def sync(self):
+        """Re-read the owner's tag (cheap when nothing changed)."""
+        spec = self.parentItem()._tag_spec()
+        key = None if spec is None else (spec[0], spec[2], round(spec[1].x(), 3), round(spec[1].y(), 3))
+        if key == self._key:
+            return
+        self.prepareGeometryChange()
+        self._key, self._spec = key, spec
+        if spec is None:
+            self._rect = QRectF()
+            return
+        text, anchor, align, _color = spec
+        self.setPos(anchor)
+        fm = QFontMetricsF(_tag_font())
+        w, h = fm.horizontalAdvance(text) + 8, fm.height()
+        if align == "left":
+            self._rect = QRectF(self.GAP, -h / 2, w, h)
+        elif align == "below":
+            self._rect = QRectF(-w / 2, self.GAP, w, h)
+        else:
+            self._rect = QRectF(-w / 2, -h / 2, w, h)
+
+    def boundingRect(self) -> QRectF:
+        return self._rect
+
+    def paint(self, painter: QPainter, option, widget=None):
+        if self._spec is None or self._rect.isEmpty():
+            return
+        owner = self.parentItem()
+        if not (self.shown or owner.isSelected()):
+            return
+        text, _anchor, _align, color = self._spec
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QBrush(hmi.qcolor(hmi.TAG_BG)))
+        painter.drawRoundedRect(self._rect, 3, 3)
+        painter.setFont(_tag_font())
+        painter.setPen(QPen(hmi.qcolor(hmi.ACCENT if owner.isSelected() else color)))
+        painter.drawText(self._rect, Qt.AlignCenter, text)
+
+
 class PlacedItem(QGraphicsPolygonItem):
     """Shared behavior for anything placed on the canvas: key-point capture
     (works for any polygon, so both rectangles and custom drawn shapes get
@@ -490,6 +569,7 @@ class PlacedItem(QGraphicsPolygonItem):
     def __init__(self, model, local_points: list[QPointF]):
         super().__init__(QPolygonF(local_points))
         self.model = model
+        self.tag = CanvasTag(self)
         # Only snap (and show guide lines/points) while the user is actually
         # dragging with the mouse - not for programmatic setPos() calls
         # coming from the properties panel, which should apply the typed
@@ -1008,6 +1088,33 @@ class PlacedItem(QGraphicsPolygonItem):
                 item.model.x, item.model.y = from_scene_pos(item.pos())
 
 
+def _placed_item_paint(self, painter, option, widget=None):
+    self.tag.sync()
+    QGraphicsPolygonItem.paint(self, painter, option, widget)
+
+
+def _placed_item_tag_spec(self):
+    """(text, anchor in local coordinates, "center" / "left" / "below",
+    colour) of this item's canvas tag, or None."""
+    return None
+
+
+def _placed_item_tag_room(self, scale: float) -> float:
+    """Screen pixels available for the tag at this view scale (it is not
+    drawn when it needs more)."""
+    return 0.0
+
+
+PlacedItem.paint = _placed_item_paint
+PlacedItem._tag_spec = _placed_item_tag_spec
+PlacedItem._tag_room = _placed_item_tag_room
+
+
+def _device_label(model) -> str:
+    label = (getattr(model, "label", "") or "").strip()
+    return label if label and label.upper() not in ("SENSOR", "SRC", "SNK", "BTN", "LED") else model.id
+
+
 class BeltItem(PlacedItem):
     """A linear belt: a rectangle by default, an arbitrary polygon when
     `model.shape == "quadrilateral"` and `model.vertexs` is set (freehand,
@@ -1150,6 +1257,40 @@ class BeltItem(PlacedItem):
         self.prepareGeometryChange()
         self.setPolygon(QPolygonF(self._local_points_for_model(self.model)))
 
+    def _tag_spec(self):
+        if self.is_path():
+            pts, bulges = belt_local_path(self.model)
+            segs = path_segments(pts, bulges, self.model.closed)
+            if not segs:
+                return None
+            total = path_length(segs)
+            acc = 0.0
+            x, y = segs[0].point_at(0.0)
+            for seg in segs:
+                if acc + seg.length >= total / 2:
+                    t = (total / 2 - acc) / seg.length if seg.length > 0 else 0.0
+                    x, y = seg.point_at(t)
+                    break
+                acc += seg.length
+            anchor = QPointF(x * SCALE, -y * SCALE)
+        else:
+            anchor = self.polygon().boundingRect().center()
+        return (self.model.id, anchor, "center", hmi.TEXT_DIM)
+
+    def _run_length(self) -> float:
+        m = self.model
+        if self.is_path():
+            pts, bulges = belt_local_path(m)
+            return path_length(path_segments(pts, bulges, m.closed))
+        if m.type == "curved":
+            sweep = (m.endAngle - m.startAngle) % 360.0 or 360.0
+            return m.radius * math.radians(sweep)
+        rect = self.polygon().boundingRect()
+        return max(rect.width(), rect.height()) / SCALE
+
+    def _tag_room(self, scale: float) -> float:
+        return self._run_length() * SCALE * scale - 40
+
     def _paint_path(self, painter: QPainter, option):
         painter.setPen(Qt.NoPen)
         painter.setBrush(QBrush(QColor(self.model.color)))
@@ -1189,9 +1330,7 @@ class BeltItem(PlacedItem):
                     break
                 acc += seg.length
             d += step
-        x, y = segs[0].point_at(0.0)
-        painter.setPen(QPen(Qt.white))
-        painter.drawText(QPointF(x * SCALE + 4, -y * SCALE - 4), f"{self.model.id}  speed={self.model.speed:.2f}")
+        self.tag.sync()
 
     def paint(self, painter: QPainter, option, widget=None):
         if self.is_path():
@@ -1207,7 +1346,7 @@ class BeltItem(PlacedItem):
         # Qt's local painter.rotate() is clockwise-positive too, so negate
         # to keep directionAngle CCW-positive like the rest of the model.
         painter.rotate(-self.model.directionAngle)
-        painter.setPen(QPen(QColor(255, 140, 0), 2))
+        painter.setPen(QPen(hmi.qcolor(hmi.FLOW, 170), 1.5))
         arrow_len = max(rect.width(), rect.height()) * 0.35
         painter.drawLine(QPointF(-arrow_len / 2, 0), QPointF(arrow_len / 2, 0))
         head = QPolygonF([
@@ -1215,11 +1354,9 @@ class BeltItem(PlacedItem):
             QPointF(arrow_len / 2 - 8, -5),
             QPointF(arrow_len / 2 - 8, 5),
         ])
-        painter.setBrush(QBrush(QColor(255, 140, 0)))
+        painter.setBrush(QBrush(hmi.qcolor(hmi.FLOW, 170)))
         painter.drawPolygon(head)
         painter.restore()
-        painter.setPen(QPen(Qt.white))
-        painter.drawText(rect, Qt.AlignCenter, f"{self.model.id}\nspeed={self.model.speed:.2f}")
 
 
 class SensorItem(PlacedItem):
@@ -1261,11 +1398,8 @@ class SensorItem(PlacedItem):
         # passing parcel shows up the moment MainWindow._tick() calls
         # update() after a physics step.
         triggered = self.model.sensorType == "ir" and self.model.sensor_states in ("1", 1, True)
-        self.setPen(QPen(QColor(255, 0, 0), 3) if triggered else Qt.NoPen)
+        self.setPen(QPen(hmi.qcolor(hmi.ALARM), 0) if triggered else Qt.NoPen)
         super().paint(painter, option, widget)
-        rect = self.polygon().boundingRect()
-        painter.setPen(QPen(Qt.white))
-        painter.drawText(rect, Qt.AlignCenter, f"{self.model.id}\n{self.model.label}")
         if self.model.sensorType == "laser_banner":
             laser_count = self.model.laserCount or 16
             beam_dist = (self.model.beamDistance or 0.05) * SCALE
@@ -1282,8 +1416,20 @@ class SensorItem(PlacedItem):
                 # laser_count-1 belongs - the whole row was mirrored.
                 t = -total_span / 2.0 + i * beam_dist
                 blocked = bool(state) and i < len(state) and state[i] == "1"
-                painter.setBrush(QBrush(QColor(255, 0, 0) if blocked else QColor(0, 255, 0)))
-                painter.drawEllipse(QPointF(0, -t), 2, 2)
+                painter.setBrush(QBrush(hmi.qcolor(hmi.ALARM if blocked else hmi.RUNNING)))
+                painter.drawEllipse(QPointF(0, -t), 1.5, 1.5)
+
+
+def _sensor_tag_spec(self):
+    return (_device_label(self.model), QPointF(0, self.model.height * SCALE / 2.0), "below", hmi.TEXT_DIM)
+
+
+def _sensor_tag_room(self, scale: float) -> float:
+    return 1e9 if self.model.height * SCALE * scale >= 18 else 0.0
+
+
+SensorItem._tag_spec = _sensor_tag_spec
+SensorItem._tag_room = _sensor_tag_room
 
 
 class SourceItem(PlacedItem):
@@ -1298,7 +1444,8 @@ class SourceItem(PlacedItem):
 
     def __init__(self, model: Source):
         super().__init__(model, self._local_points_for_model(model))
-        self.setBrush(QBrush(QColor(50, 100, 255, 150)))
+        self.setBrush(QBrush(hmi.qcolor(hmi.SOURCE, 90)))
+        self.setPen(QPen(hmi.qcolor(hmi.SOURCE), 0))
         self.setPen(Qt.NoPen)
 
     @staticmethod
@@ -1314,9 +1461,12 @@ class SourceItem(PlacedItem):
 
     def paint(self, painter: QPainter, option, widget=None):
         super().paint(painter, option, widget)
-        rect = self.polygon().boundingRect()
-        painter.setPen(QPen(Qt.white))
-        painter.drawText(rect, Qt.AlignCenter, f"{self.model.id}\n{self.model.label}\nevery {self.model.interval:.1f}s")
+
+    def _tag_spec(self):
+        return (_device_label(self.model), QPointF(0, self.model.maxHeight * SCALE / 2.0), "below", hmi.TEXT_DIM)
+
+    def _tag_room(self, scale: float) -> float:
+        return 1e9 if self.model.maxWidth * SCALE * scale >= 14 else 0.0
 
 
 class SinkItem(PlacedItem):
@@ -1328,8 +1478,8 @@ class SinkItem(PlacedItem):
 
     def __init__(self, model: Sink):
         super().__init__(model, self._local_points_for_model(model))
-        self.setBrush(QBrush(QColor(255, 150, 50, 150)))
-        self.setPen(Qt.NoPen)
+        self.setBrush(QBrush(hmi.qcolor(hmi.SINK, 90)))
+        self.setPen(QPen(hmi.qcolor(hmi.SINK), 0))
 
     @staticmethod
     def _local_points_for_model(model: Sink) -> list[QPointF]:
@@ -1344,9 +1494,12 @@ class SinkItem(PlacedItem):
 
     def paint(self, painter: QPainter, option, widget=None):
         super().paint(painter, option, widget)
-        rect = self.polygon().boundingRect()
-        painter.setPen(QPen(Qt.white))
-        painter.drawText(rect, Qt.AlignCenter, f"{self.model.id}\n{self.model.label}")
+
+    def _tag_spec(self):
+        return (_device_label(self.model), QPointF(0, self.model.height * SCALE / 2.0), "below", hmi.TEXT_DIM)
+
+    def _tag_room(self, scale: float) -> float:
+        return 1e9 if self.model.width * SCALE * scale >= 14 else 0.0
 
 
 # Whether the simulation is currently playing - read by ButtonItem to decide
@@ -1422,22 +1575,18 @@ class ButtonItem(PlacedItem):
         # uses - not just the mouse-driven case this prototype currently
         # exercises, but also state set any other way in the future (e.g.
         # an MQTT binding).
-        pressed = bool(self.model.sensor_states)
-        rect = self.polygon().boundingRect()
-        if pressed:
-            # Soft glow behind the button, echoing SensorItem's triggered-
-            # outline treatment, so a press reads clearly at a glance even
-            # with several buttons on screen.
-            margin = max(rect.width(), rect.height()) * 0.25
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(QBrush(QColor(255, 255, 0, 100)))
-            painter.drawRect(rect.adjusted(-margin, -margin, margin, margin))
-            self.setPen(QPen(QColor(255, 220, 0), 3))
-        else:
-            self.setPen(Qt.NoPen)
+        pressed = bool(getattr(self.model, "pressed", False)) or (
+            not getattr(self.model, "normallyClosed", False) and bool(self.model.sensor_states))
+        # Pressed: darker face and a bright rim, like a lit push button.
+        self.setPen(QPen(hmi.qcolor(hmi.TEXT), 2) if pressed else QPen(QColor(self.model.color).darker(220), 0))
         super().paint(painter, option, widget)
-        painter.setPen(QPen(Qt.white))
-        painter.drawText(rect, Qt.AlignCenter, self.model.label)
+
+    def _tag_spec(self):
+        # The legend plate beside the button: readable at any button size.
+        return (_device_label(self.model), QPointF(self.model.width * SCALE / 2.0, 0), "left", hmi.TEXT_DIM)
+
+    def _tag_room(self, scale: float) -> float:
+        return 1e9 if self.model.height * SCALE * scale >= 9 else 0.0
 
 
 class LedItem(PlacedItem):
@@ -1503,33 +1652,27 @@ class LedItem(PlacedItem):
             painter.setBrush(QBrush(glow))
             painter.drawEllipse(rect.center(), rect.width() / 2.0 + extra, rect.height() / 2.0 + extra)
         super().paint(painter, option, widget)
-        painter.setPen(QPen(Qt.white))
-        label_rect = rect.adjusted(rect.width(), 0, rect.width() * 4, 0)
-        painter.drawText(label_rect, Qt.AlignLeft | Qt.AlignVCenter, self.model.label)
+        # Bezel ring around the lamp.
+        painter.setPen(QPen(QColor(52, 57, 64), max(1.0, rect.width() * 0.12)))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawEllipse(rect.center(), rect.width() / 2.0, rect.height() / 2.0)
+
+    def _tag_spec(self):
+        color = hmi.TEXT if self.model.isOn else hmi.TEXT_DIM
+        return (_device_label(self.model), QPointF(self.model.radius * SCALE * 1.15, 0), "left", color)
+
+    def _tag_room(self, scale: float) -> float:
+        return 1e9 if self.model.radius * 2 * SCALE * scale >= 9 else 0.0
 
 
 class FreeDrawScene(QGraphicsScene):
     def __init__(self):
         super().__init__(-300, -300, 600, 600)
-        self.setBackgroundBrush(QBrush(QColor(30, 30, 30)))
+        self.setBackgroundBrush(QBrush(hmi.qcolor(hmi.BG)))
 
     def drawBackground(self, painter: QPainter, rect: QRectF):
         super().drawBackground(painter, rect)
-        painter.setPen(QPen(QColor(55, 55, 55), 0))
-        left = int(rect.left()) - (int(rect.left()) % GRID_SIZE)
-        top = int(rect.top()) - (int(rect.top()) % GRID_SIZE)
-        x = left
-        while x < rect.right():
-            painter.drawLine(x, rect.top(), x, rect.bottom())
-            x += GRID_SIZE
-        y = top
-        while y < rect.bottom():
-            painter.drawLine(rect.left(), y, rect.right(), y)
-            y += GRID_SIZE
-        painter.setPen(QPen(QColor(150, 60, 60), 0))
-        painter.drawLine(0, rect.top(), 0, rect.bottom())
-        painter.setPen(QPen(QColor(60, 150, 60), 0))
-        painter.drawLine(rect.left(), 0, rect.right(), 0)
+        _draw_grid(painter, rect)
 
 
 class ShapeDrawCanvas(QGraphicsView):
@@ -2513,6 +2656,38 @@ class PropertyEditCommand(QUndoCommand):
 
 
 class CanvasView(QGraphicsView):
+    # Which tags win when two would overlap (lower first).
+    _TAG_PRIORITY = {"sink": 1, "source": 1, "button": 2, "led": 3, "sensor": 4, "belt": 5}
+
+    def drawBackground(self, painter: QPainter, rect: QRectF):
+        super().drawBackground(painter, rect)
+        self._layout_tags()
+
+    def _layout_tags(self):
+        """Decide which canvas tags show, once per repaint: by priority
+        (the selected items first, then devices, then belts), each only if
+        it fits its item at this zoom and doesn't overlap one already
+        placed (touching is fine)."""
+        scale = math.sqrt(abs(self.transform().determinant())) or 1.0
+        items = sorted(self.items_list, key=lambda i: (not i.isSelected(), self._TAG_PRIORITY.get(i.kind, 9)))
+        placed = []
+        for item in items:
+            tag = getattr(item, "tag", None)
+            if tag is None:
+                continue
+            tag.sync()
+            show = tag._spec is not None and (item.isSelected() or item._tag_room(scale) >= tag._rect.width())
+            if show:
+                origin = self.mapFromScene(tag.scenePos())
+                rect = tag._rect.translated(origin.x(), origin.y())
+                if not item.isSelected() and any(rect.adjusted(1, 2, -1, -2).intersects(r) for r in placed):
+                    show = False
+                else:
+                    placed.append(rect)
+            if show != tag.shown:
+                tag.shown = show
+                tag.update()
+
     def __init__(self, scene: SnapGuideScene, items, on_items_changed=None, config=None):
         super().__init__(scene)
         self.items_list = items
@@ -3303,6 +3478,22 @@ class PropertiesPanel(QWidget):
             self.color_btn.setText("-")
 
 
+_KIND_ORDER = {"belt": 0, "sensor": 1, "source": 2, "sink": 3, "button": 4, "led": 5}
+_KIND_COLORS = {"belt": (156, 163, 175), "sensor": hmi.ALARM, "source": hmi.SOURCE, "sink": hmi.SINK,
+                "button": hmi.ACCENT, "led": hmi.RUNNING}
+_KIND_ICONS = {}
+
+
+def _kind_icon(kind: str) -> QIcon:
+    """A small coloured square per component kind, for the lists."""
+    icon = _KIND_ICONS.get(kind)
+    if icon is None:
+        pixmap = QPixmap(10, 10)
+        pixmap.fill(hmi.qcolor(_KIND_COLORS.get(kind, hmi.TEXT_DIM)))
+        icon = _KIND_ICONS[kind] = QIcon(pixmap)
+    return icon
+
+
 class ComponentManagerPanel(QWidget):
     """Lists every component in the scene - the "manage all placed
     components" list ask (distinct from the drag-source palette):
@@ -3340,8 +3531,11 @@ class ComponentManagerPanel(QWidget):
     def refresh(self):
         self.list_widget.blockSignals(True)
         self.list_widget.clear()
-        for item in self.items_list:
-            row = QListWidgetItem(f"{item.kind:<7}{item.model.id}")
+        for item in sorted(self.items_list, key=lambda i: (_KIND_ORDER.get(i.kind, 9), i.model.id)):
+            label = (getattr(item.model, "label", "") or "").strip()
+            text = item.model.id if not label or label == item.model.id else f"{item.model.id}    {label}"
+            row = QListWidgetItem(_kind_icon(item.kind), text)
+            row.setToolTip(item.kind)
             row.setData(Qt.UserRole, item)
             self.list_widget.addItem(row)
         self.list_widget.blockSignals(False)
@@ -3390,7 +3584,8 @@ class MainWindow(QMainWindow):
 
     def __init__(self, config=None, config_path=None, library_path=None):
         super().__init__()
-        self.resize(1300, 850)
+        self.resize(1400, 880)
+        self.setStyleSheet(hmi.qt_stylesheet())
 
         # A new layout still gets a real config, so connections/background
         # (layout_editor_cad.py) have somewhere to live.
@@ -3550,6 +3745,9 @@ class MainWindow(QMainWindow):
         check_dock = QDockWidget("Layout Check", self)
         check_dock.setWidget(self.cad.check_panel)
         self.addDockWidget(Qt.BottomDockWidgetArea, check_dock)
+        # Compact by default: the canvas is what matters; drag to enlarge.
+        self.resizeDocks([check_dock], [120], Qt.Vertical)
+        self.resizeDocks([library_dock, props_dock], [270, 260], Qt.Horizontal)
 
         self.statusBar().showMessage(
             "Drag a template from the library onto the canvas. Drag items to see snap guides. "

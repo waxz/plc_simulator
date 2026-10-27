@@ -6,6 +6,10 @@ from physics import PhysicsEngine
 from id_utils import unique_incremented_id
 
 
+TOP_BAR = 30     # px, simulator status bar
+BOTTOM_BAR = 24  # px, key hint bar
+
+
 class EditorUI:
     def __init__(self, manager: pygame_gui.UIManager, width: int, height: int, config=None):
         self.manager = manager
@@ -15,14 +19,14 @@ class EditorUI:
         
         # Save Button
         self.save_btn = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(10, 10, 100, 30),
+            relative_rect=pygame.Rect(10, TOP_BAR + 8, 120, 28),
             text='Save Layout',
             manager=self.manager
         )
         
         # Toolbar (Left)
         self.toolbar_panel = pygame_gui.elements.UIPanel(
-            relative_rect=pygame.Rect(10, 50, 120, 360),
+            relative_rect=pygame.Rect(10, TOP_BAR + 44, 120, 330),
             manager=self.manager
         )
         self.add_linear_btn = pygame_gui.elements.UIButton(
@@ -76,7 +80,7 @@ class EditorUI:
 
         # Properties Panel (Right)
         self.prop_panel = pygame_gui.elements.UIPanel(
-            relative_rect=pygame.Rect(self.width - 250, 0, 250, self.height),
+            relative_rect=pygame.Rect(self.width - 250, TOP_BAR, 250, self._panel_height()),
             manager=self.manager
         )
 
@@ -155,27 +159,27 @@ class EditorUI:
         
         # Sensor state read-only display (bottom of props panel)
         self.sensor_state_lbl = pygame_gui.elements.UILabel(
-            relative_rect=pygame.Rect(5, self.height - 85, 235, 28),
+            relative_rect=pygame.Rect(5, self._panel_height() - 85, 235, 28),
             text="State: --",
             manager=self.manager,
             container=self.prop_panel
         )
         self.sensor_state_lbl.hide()
         self.prop_error_lbl = pygame_gui.elements.UILabel(
-            relative_rect=pygame.Rect(5, self.height - 65, 235, 20),
+            relative_rect=pygame.Rect(5, self._panel_height() - 65, 235, 20),
             text="",
             manager=self.manager,
             container=self.prop_panel
         )
         self.prop_error_lbl.hide()
         self.prop_delete_btn = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(5, self.height - 45, 115, 30),
+            relative_rect=pygame.Rect(5, self._panel_height() - 45, 115, 30),
             text="Delete",
             manager=self.manager,
             container=self.prop_panel
         )
         self.prop_copy_btn = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(125, self.height - 45, 115, 30),
+            relative_rect=pygame.Rect(125, self._panel_height() - 45, 115, 30),
             text="Copy",
             manager=self.manager,
             container=self.prop_panel
@@ -566,19 +570,23 @@ class EditorUI:
                 return new_item
         return None
 
+    def _panel_height(self) -> int:
+        return max(200, self.height - TOP_BAR - BOTTOM_BAR)
+
     def handle_resize(self, width: int, height: int):
         self.width = width
         self.height = height
-        self.toolbar_panel.set_dimensions((120, height))
-        self.prop_panel.set_position((width - 250, 0))
-        self.prop_panel.set_dimensions((250, height))
+        self.prop_panel.set_position((width - 250, TOP_BAR))
+        self.prop_panel.set_dimensions((250, self._panel_height()))
         # Update delete/copy buttons to anchor to bottom
         if getattr(self, 'prop_delete_btn', None):
-            self.prop_delete_btn.set_relative_position((5, self.height - 45))
+            self.prop_delete_btn.set_relative_position((5, self._panel_height() - 45))
         if getattr(self, 'prop_copy_btn', None):
-            self.prop_copy_btn.set_relative_position((125, self.height - 45))
+            self.prop_copy_btn.set_relative_position((125, self._panel_height() - 45))
         if getattr(self, 'prop_error_lbl', None):
-            self.prop_error_lbl.set_relative_position((5, self.height - 65))
+            self.prop_error_lbl.set_relative_position((5, self._panel_height() - 65))
+        if getattr(self, 'sensor_state_lbl', None):
+            self.sensor_state_lbl.set_relative_position((5, self._panel_height() - 85))
         # Keep any floating windows from being stranded off-screen
         if self.manager_window and self.manager_window.alive():
             self._clamp_window_to_screen(self.manager_window)
