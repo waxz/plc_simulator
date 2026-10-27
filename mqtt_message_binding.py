@@ -224,74 +224,56 @@ _PACK_FORMAT_BYTE_TYPES = {
 
 def paddng_component(config: SimulatorConfig, sensor_id: Optional[Union[str, List[str]]] = None) -> List[Tuple[ByteType, str]]:
     """
-    Build a byte-aligned mapping for a list of sensor/button/led ids,
-    entirely from what each component's own config declares - no manual
-    padding or per-field type choice from the caller (CLI, web UI,
-    whatever calls this).
+    Byte layout for a list of sensor/button/LED ids, from what each
+    component's own config declares (its `packFormat`, defaulting to "bit")
+    - the same rule the PLC side's serializer uses (generate_st_serde.py in
+    the SIMATIC AX project: every BOOL first, then the other fields in
+    declaration order, no alignment):
 
-    Each id's `packFormat` (Sensor/ControlButton/LedIndicator in
-    config_parser.py, defaulting to "bit") decides its shape:
-      - "bit" (the default): one BIT entry per state bit, packed 8-to-a-
-        byte. A laser banner is deferred to the end of the bit-packed
-        group and starts on its own byte boundary (mirroring
-        sensor_state_mapping()'s _append_padding_bits behavior) - every
-        other bit-format component (IR sensors, buttons, LEDs) is a
-        single bit, added inline in the order given.
-      - "byte"/"uint16"/"uint32"/"float": one compact register holding the
-        whole value. Any bits already pending from earlier components in
-        this same call are flushed to a byte boundary first, since a
-        compact field is its own struct slot and must never silently
-        share a byte with a neighboring bit field.
+      1. Every single-bit component (IR sensor, button, LED with packFormat
+         "bit"), in the order given, 8 to a byte (bit 0 first).
+      2. Padding bits up to the next whole byte.
+      3. Then, in the order given, every multi-bit or register component:
+           - a laser banner ("bit"): its beams as bits, padded to whole
+             bytes, so two banners never share a byte (on the PLC a BYTE /
+             WORD / DWORD / LWORD, or an ARRAY OF BYTE)
+           - packFormat "byte" / "uint16" / "uint32" / "float": one register
+             holding the whole state (BYTE / WORD / DWORD / REAL)
+
+    Padding entries are named padding_<n>/bit, numbered through the mapping.
     """
-    mapping: List[Tuple[ByteType, str]] = []
-    bit_offset = 0
-    padding_index = 0
-
     if not sensor_id:
-        return mapping
-
+        return []
     sensor_ids = [sensor_id] if isinstance(sensor_id, str) else sensor_id
 
     sensors_in_config = {s.id: s for s in config.sensors}
     buttons_in_config = {b.id: b for b in config.buttons}
     leds_in_config = {b.id: b for b in config.leds}
 
-    deferred_laser_banners: List[str] = []
-
+    bits: List[Tuple[ByteType, str]] = []
+    wide: List[List[Tuple[ByteType, str]]] = []  # one chunk per multi-bit / register component
     for sid in sensor_ids:
         component = sensors_in_config.get(sid) or buttons_in_config.get(sid) or leds_in_config.get(sid)
         if component is None:
             continue
-
         pack_format = getattr(component, "packFormat", "bit") or "bit"
         is_led = sid in leds_in_config
         attribute = "isOn" if is_led else "sensor_states"
+        if pack_format != "bit":
+            wide.append([(_PACK_FORMAT_BYTE_TYPES[pack_format], f"{sid}/{attribute}")])
+        elif sid in sensors_in_config and sensors_in_config[sid].sensorType == "laser_banner":
+            count = sensor_state_bit_count(sensors_in_config[sid])
+            wide.append([(ByteType.BIT, f"{sid}/sensor_states[{i}]") for i in range(count)])
+        else:
+            # LEDs are a single isOn bit; buttons and IR sensors bit 0 of sensor_states.
+            bits.append((ByteType.BIT, f"{sid}/{attribute}" if is_led else f"{sid}/{attribute}[0]"))
 
-        if pack_format == "bit":
-            if sid in sensors_in_config and sensors_in_config[sid].sensorType == "laser_banner":
-                deferred_laser_banners.append(sid)
-                continue
-            # LEDs were never indexed here (a single isOn bit); buttons and
-            # IR sensors were - preserved exactly as before.
-            path = f"{sid}/{attribute}" if is_led else f"{sid}/{attribute}[0]"
-            mapping.append((ByteType.BIT, path))
-            bit_offset = (bit_offset + 1) % 8
-            continue
-
-        # Compact: flush whatever bits are pending to a full byte first, so
-        # this component's dedicated register always starts clean.
-        bit_offset, padding_index = _append_padding_bits(mapping, bit_offset, padding_index)
-        mapping.append((_PACK_FORMAT_BYTE_TYPES[pack_format], f"{sid}/{attribute}"))
-
-    # Laser banners (still "bit" format) each need their own byte-aligned
-    # start - flush once here, then append them in the order encountered.
-    bit_offset, padding_index = _append_padding_bits(mapping, bit_offset, padding_index)
-    for sid in deferred_laser_banners:
-        sensor_obj = sensors_in_config[sid]
-        bit_count = sensor_state_bit_count(sensor_obj)
-        for b_idx in range(bit_count):
-            mapping.append((ByteType.BIT, f"{sid}/sensor_states[{b_idx}]"))
-
+    mapping: List[Tuple[ByteType, str]] = list(bits)
+    _, padding_index = _append_padding_bits(mapping, len(bits) % 8, 0)
+    for chunk in wide:
+        mapping.extend(chunk)
+        if chunk[0][0] == ByteType.BIT:
+            _, padding_index = _append_padding_bits(mapping, len(chunk) % 8, padding_index)
     return mapping
 
 def print_mapping(mapping, filename):
@@ -447,61 +429,6 @@ def custom_component_mapping(config: SimulatorConfig, component_ids: List[str], 
     return mapping
 
 
-def paddng_component1( config: SimulatorConfig,
-    sensor_id: Optional[Union[str, List[str]]] = None):
-    # find ir and buttons at first
-    # check how many bit is used and how many padding bit
-    # add other mutiple byte sensor like laser banner bytes
-    mapping: List[Tuple[ByteType, str]] = []
-    bit_offset = 0
-    padding_index = 0
- 
-    return mapping
-
-
-def custom_component_mapping1(config: SimulatorConfig, component_ids: List[str]) -> List[Tuple[ByteType, str]]:
-    """Build a compact payload mapping for a custom list of component IDs instead of the whole config."""
-    mapping: List[Tuple[ByteType, str]] = []
-
-    sensors_in_config = {s.id: s for s in config.sensors}
-    buttons_in_config = {b.id: b for b in config.buttons}
-    leds_in_config = {l.id: l for l in config.leds}
-
-    # 1. Bit items: Sensors, Buttons, LEDs
-    custom_sensors = [cid for cid in component_ids if cid in sensors_in_config]
-    custom_sensors.sort(key=lambda sid: (
-        0 if sensors_in_config[sid].sensorType == "ir" else 1,
-        sid
-    ))
-
-
-    custom_buttons = [cid for cid in component_ids if cid in buttons_in_config]
-    custom_buttons.sort()
-    # for bid in custom_buttons:
-    #     mapping.append((ByteType.BIT, f"{bid}/sensor_states"))
-    custom_sensors += custom_buttons
-
-    mapping.extend(paddng_component(config, sensor_id=custom_sensors))
-
-    custom_leds = [cid for cid in component_ids if cid in leds_in_config]
-    custom_leds.sort()
-    for lid in custom_leds:
-        mapping.append((ByteType.BIT, f"{lid}/isOn"))
-
-    # 2. Float items: Belts
-    belts_in_config = {b.id: b for b in config.belts}
-    custom_belts = [cid for cid in component_ids if cid in belts_in_config]
-    custom_belts.sort()
-
-    for bid in custom_belts:
-        mapping.extend([
-            (ByteType.FLOAT, f"{bid}/speed"),
-            (ByteType.FLOAT, f"{bid}/directionAngle"),
-        ])
-
-    return mapping
-
-
 def create_pack_format_string(components_mapping: List[Tuple[ByteType, str]], endianness: str = ">") -> str:
     """Generate a struct format string, packing sequential BIT entries into bytes."""
     type_map = {
@@ -548,10 +475,11 @@ def _read_bit(value: Any, index: Optional[int]) -> bool:
 def _compact_int(value: Any, byte_type: Optional["ByteType"] = None) -> int:
     """Coerce a mapped value to a single integer for BYTE/UINT16/UINT32/
     UINT64 packing. A bool or a "0"/"1" bit-string (e.g. a sensor's
-    sensor_states, or an LED's isOn) is read as its base-2 value - packing
-    a whole component's state into one compact field instead of one BIT
-    row per bit. Anything else (an already-numeric field like a counter)
-    falls back to a plain int(), unchanged from before this existed.
+    sensor_states, or an LED's isOn) packs a whole component's state into
+    one compact field instead of one BIT row per bit: character i becomes
+    bit i (beam 0 = bit 0), exactly where the "bit" packFormat puts it, so
+    a banner's WORD/DWORD reads the same on the PLC either way. Anything
+    else (an already-numeric field like a counter) is a plain int().
 
     Masked to `byte_type`'s bit width (a no-op for a value that already
     fits): verify_component_list() rejects a too-narrow compact type for
@@ -562,7 +490,7 @@ def _compact_int(value: Any, byte_type: Optional["ByteType"] = None) -> int:
         result = int(value)
     elif isinstance(value, str):
         cleaned = "".join(ch for ch in value if ch in "01")
-        result = int(cleaned, 2) if cleaned else 0
+        result = int(cleaned[::-1], 2) if cleaned else 0  # character i -> bit i
     else:
         result = int(value or 0)
 
@@ -582,7 +510,7 @@ def _int_to_matching_shape(value: int, current: Any) -> Any:
         return bool(value)
     if isinstance(current, str):
         width = len(current) or 1
-        return format(value & ((1 << width) - 1), f"0{width}b")
+        return format(value & ((1 << width) - 1), f"0{width}b")[::-1]  # bit i -> character i
     return value
 
 

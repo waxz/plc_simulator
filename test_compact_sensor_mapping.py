@@ -104,11 +104,12 @@ class CompactBitFieldRoundTripTest(unittest.TestCase):
 
         banner.sensor_states = "0" * original_width
         message.deserialize(payload, config)
-        # Only the low 8 bits survive the round trip through one byte; the
-        # string is rebuilt at its original width regardless.
+        # Only the low 8 bits - beams 0..7, the first 8 characters - survive
+        # the round trip through one byte; the string is rebuilt at its
+        # original width regardless.
         self.assertEqual(len(banner.sensor_states), original_width)
-        self.assertEqual(banner.sensor_states[-8:], "11111111")
-        self.assertEqual(banner.sensor_states[:-8], "0" * (original_width - 8))
+        self.assertEqual(banner.sensor_states[:8], "11111111")
+        self.assertEqual(banner.sensor_states[8:], "0" * (original_width - 8))
 
 
 class CompactWidthValidationTest(unittest.TestCase):

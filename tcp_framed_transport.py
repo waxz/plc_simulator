@@ -30,6 +30,7 @@ class FrameType(IntEnum):
     metri_1 = 4  # added by generate_frame_type.py
     METRIC_LAYOUT_3 = 5  # added by generate_frame_type.py
     BELT_FEEDBACK = 6   # simulator -> PLC: per-belt actualSpeed (FLOAT) + encoderCount (UINT32), see drive.py
+    LAYOUT_CHECK = 7    # PLC <-> simulator: I/O layout fingerprints + sizes, see io_layout.py
 
 
 class ParsedFrame(NamedTuple):

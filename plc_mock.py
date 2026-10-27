@@ -44,6 +44,7 @@ from mqtt_data_exchange import (
     io_topics,
 )
 from plc_logic import DeliveryController
+import io_layout
 from struct_utils import print_byte_by_byte
 from tcp_framed_transport import FrameType, ParsedFrame, TcpFramedClient
 
@@ -202,6 +203,8 @@ def main():
     parser.add_argument("--jam-time", type=float, default=5.0,
                         help="Seconds a sensor may stay blocked before it is a jam (belts stop)")
     parser.add_argument("--autostart", action="store_true", help="Run the belts without pressing Start")
+    parser.add_argument("--show-layout", action="store_true",
+                        help="Print the input/output byte layouts (and the matching PLC STRUCTs)")
     parser.add_argument("--metrics-interval", type=float, default=5.0, help="Seconds between performance reports")
     parser.add_argument("--dump-bytes", action="store_true", help="Print each received payload byte")
     parser.add_argument(
@@ -247,6 +250,18 @@ def main():
     print(f"[PLC] Inputs: {', '.join(i for i in input_ids if i != 'clock')}")
     print(f"[PLC] Outputs: {', '.join(output_ids)}")
     print(f"[PLC] Roles: " + ", ".join(f"{k}={v}" for k, v in controller.roles().items() if v))
+    print(f"[PLC] Input  frame: {io_layout.describe(input_mapping)}")
+    print(f"[PLC] Output frame: {io_layout.describe(output_mapping)}")
+    if args.show_layout:
+        for title, mapping, type_name in (("input  (simulator -> PLC)", input_mapping, "Sim_Input"),
+                                          ("output (PLC -> simulator)", output_mapping, "Sim_Output")):
+            print(io_layout.format_layout(mapping, title))
+            print(io_layout.st_struct(type_name, mapping))
+    endian = _struct_endianness({}, config)
+    mine = (io_layout.layout_fingerprint(input_mapping), input_msg.payload_size,
+            io_layout.layout_fingerprint(output_mapping), output_msg.payload_size)
+    layout_verdict = None  # set when the simulator answers the LAYOUT_CHECK
+    size_warned_at = -1e9
 
     # Metrics channels - same connection as the output channel above.
     # from_layout() derives each wire format from its layout dataclass
@@ -276,8 +291,26 @@ def main():
     # most recently observed round-trip latency.
     last_latency_ms = 0.0
 
+    def handle_layout_check(payload):
+        nonlocal layout_verdict
+        reply = io_layout.unpack_layout_check(payload, endian)
+        if reply is None:
+            print("[PLC] Ignoring a malformed LAYOUT_CHECK reply.")
+            return
+        problems = io_layout.compare_layout_check(mine, reply[:4])
+        layout_verdict = not problems and reply[4] == io_layout.CHECK_MATCH
+        if layout_verdict:
+            print(f"[PLC] I/O layout check: OK - input {mine[1]} bytes {mine[0]:08X}, "
+                  f"output {mine[3]} bytes {mine[2]:08X} on both sides")
+        else:
+            print("[PLC] I/O layout MISMATCH with the simulator: " + "; ".join(problems or ["simulator says so"])
+                  + ". Use the same layout file on both sides (python io_layout.py <layout> --st).")
+
     def handle_input(raw):
-        nonlocal last_latency_ms
+        nonlocal last_latency_ms, size_warned_at
+        if isinstance(raw, ParsedFrame) and raw.frame_type == FrameType.LAYOUT_CHECK:
+            handle_layout_check(raw.payload)
+            return
         # TcpFramedClient hands back a ParsedFrame (node_id, frame_type,
         # payload) - see tcp_framed_transport.py; MQTT has no such header,
         # so mqtt.register_callback below only ever calls this with raw
@@ -302,10 +335,11 @@ def main():
             print_byte_by_byte(payload)
         if len(payload) != input_msg.payload_size:
             metrics.record_malformed()
-            print(
-                f"[<- RECV {input_topic}] Ignoring payload: "
-                f"expected {input_msg.payload_size} bytes, got {len(payload)}"
-            )
+            now = time.monotonic()
+            if now - size_warned_at >= 5.0:  # not 100 lines a second
+                size_warned_at = now
+                print(f"[<- RECV {input_topic}] Ignoring frames: expected {input_msg.payload_size} bytes, "
+                      f"got {len(payload)} - the simulator runs a different I/O layout.")
             return
 
         latency_ms = _extract_latency_ms(payload, publish_topics["input"], config)
@@ -374,6 +408,10 @@ def main():
         return
 
     print("Connected! Press Ctrl+C to exit.")
+    if tcp is not None:
+        # Ask the simulator to compare I/O layouts (answered in handle_layout_check).
+        tcp.send(io_layout.pack_layout_check(input_mapping, output_mapping, endianness=endian),
+                 frame_type=FrameType.LAYOUT_CHECK, node_id=args.node_id)
     print(f"Listening on: {input_topic}")
     print(f"Publishing to: {output_topic}")
     print(f"Reporting metrics on: {metrics_topic} (layout 1), {metric3_topic} (layout 3)")

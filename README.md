@@ -386,6 +386,39 @@ The PLC program, every `--scan` (default 50 ms):
   while running. **LEDs** by label: RUN (else the first LED) shows running,
   JAM/FAULT/ALARM (else the second) a jam. `--autostart` runs without Start.
 
+### I/O frame layout
+
+Each IO_MAPPING frame is a packed struct, no alignment, in the exchange's
+byte order (`endianness`, LE by default). The layout follows the SIMATIC AX
+serializer (`tools/generate_st_serde.py`): every single bit first, padding
+to a whole byte, then every other field in declaration order.
+
+| Field | Wire | PLC type |
+|---|---|---|
+| button, IR sensor, LED (`packFormat` "bit") | 1 bit, 8 per byte, bit 0 first | BOOL |
+| padding | unused bits up to the byte | - |
+| laser banner ("bit") | its beams, beam *i* = bit *i*, padded to whole bytes | BYTE / WORD / DWORD / LWORD, else ARRAY OF BYTE |
+| `packFormat` "byte" / "uint16" / "uint32" / "float" | 1 / 2 / 4 / 4 bytes (a banner's beam *i* = bit *i* here too) | BYTE / WORD / DWORD / REAL |
+| belt command (output) | speed, directionAngle: 2 x 4-byte float | ARRAY[0..1] OF REAL |
+| belt feedback (BELT_FEEDBACK frame) | actualSpeed float, encoderCount uint32 | REAL, DWORD |
+| clock | uint64 nanoseconds (wall clock) | LINT |
+
+```bash
+# Offset table (byte.bit, type, PLC type) of a layout's input and output frames,
+# and the matching STRUCTs for the PLC project
+python io_layout.py delivery.json --st
+```
+
+The simulator prints each channel's size and layout fingerprint (a CRC-32
+of offsets, types and names) when it starts - `main.py --show-layout`
+prints the full tables - and `plc_mock.py` prints its own
+(`--show-layout` for tables and STRUCTs). When `plc_mock.py` connects over
+TCP it sends a LAYOUT_CHECK frame (frame type 7) with its fingerprints; the
+simulator compares them with its own and both log `I/O layout check: OK` or
+a MISMATCH naming the frame (input/output) and both sizes. Frames of the
+wrong size are ignored, counted (`rx_size_errors` in the exchange stats)
+and reported every few seconds, never applied.
+
 ### Workflow: a parcel delivery line, designed to controlled
 
 1. `python layout_editor.py delivery.json` - File > Import DXF Background...

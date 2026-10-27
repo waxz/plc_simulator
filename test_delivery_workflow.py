@@ -153,6 +153,7 @@ class DeliveryWorkflowTest(unittest.TestCase):
         def stop():
             proc.terminate()
             proc.wait(timeout=10)
+            proc.stdout.close()
         self.addCleanup(stop)
         return proc
 
@@ -183,6 +184,8 @@ class DeliveryWorkflowTest(unittest.TestCase):
         self.assertTrue(wait_for(lambda: self.engine.stats().get("clients") == 1, 15),
                         "plc_mock did not connect:\n" + "\n".join(self.plc_lines))
         self.assertTrue(self.plc_said("Roles: start=button_1, stop=button_2"), "\n".join(self.plc_lines))
+        self.assertTrue(wait_for(lambda: self.plc_said("I/O layout check: OK"), 5), "\n".join(self.plc_lines))
+        self.assertTrue(self.engine.layout_match)
 
         # Before Start the PLC holds every belt at 0: nothing is delivered.
         self.assertTrue(wait_for(lambda: all(b.speed == 0 for b in sim.belts), 5))

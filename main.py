@@ -68,7 +68,7 @@ def run_pygame(config, physics_engine, mqtt, headless: bool, runner=None):
         renderer.quit()
 
 
-def build_engine(config, config_lock, metrics_store, channel_registry_path=None):
+def build_engine(config, config_lock, metrics_store, channel_registry_path=None, show_layout=False):
     """The one place that decides whether the exchange server uses the
     hardcoded PUBLISH_TOPICS/SUBSCRIBE_TOPICS/METRICS_CHANNELS or a channel
     registry file - passing channel_registry_path straight through to
@@ -77,7 +77,8 @@ def build_engine(config, config_lock, metrics_store, channel_registry_path=None)
     tagged with a frame_type the registry declares but the hardcoded dicts
     don't is silently dropped by _handle_tcp_payload, registry or no
     registry, web UI or no web UI."""
-    return MQTTSyncEngine(config, lock=config_lock, metrics_store=metrics_store, channel_registry_path=channel_registry_path)
+    return MQTTSyncEngine(config, lock=config_lock, metrics_store=metrics_store,
+                          channel_registry_path=channel_registry_path, show_layout=show_layout)
 
 
 def build_web_app(config_path, channel_registry_path, metrics_store):
@@ -112,6 +113,8 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("config", help="Path to the JSON workspace configuration")
     parser.add_argument("--exchange-config", help="Optional JSON file overriding MQTT/TCP exchange settings")
     parser.add_argument("--headless", action="store_true", help="Run in headless mode (no window)")
+    parser.add_argument("--show-layout", action="store_true",
+                        help="Print each I/O channel's byte layout (offsets, types, PLC types) at start")
     parser.add_argument(
         "--channel-registry",
         help="channels.json to load IO-mapping/metric channels from (see channel_registry.py) - "
@@ -157,7 +160,8 @@ def main():
     # mqtt_data_exchange.py) feeds it over the SAME MQTT/TCP connection as
     # the rest of the exchange - no separate server/port for metrics.
     metrics_store = MetricsStore()
-    mqtt = build_engine(config, config_lock, metrics_store, channel_registry_path=args.channel_registry)
+    mqtt = build_engine(config, config_lock, metrics_store, channel_registry_path=args.channel_registry,
+                        show_layout=args.show_layout)
 
     if args.web_ui:
         start_web_ui(args.config, args.channel_registry, metrics_store, host=args.web_host, port=args.web_port)

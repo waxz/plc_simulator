@@ -17,6 +17,7 @@ Usage in main.py:
 
 from paho.mqtt import packettypes
 import json
+import struct
 import time
 import threading
 from dataclasses import dataclass
@@ -32,8 +33,9 @@ from mqtt_message_binding import (
     belt_feedback_mapping,
     custom_component_mapping,
     known_component_ids,
-    verify_component_list,print_mapping
+    verify_component_list,
 )
+import io_layout
 from metric_layout import f32, u8, u16, u32, u64, bit, Vec2, Vec3
 from channel_registry import load_channel_registry
 from tcp_framed_transport import FrameType, ParsedFrame, TcpFramedServer
@@ -240,6 +242,7 @@ class MQTTSyncEngine:
         lock: Optional[threading.Lock] = None,
         metrics_store: Optional[MetricsStore] = None,
         channel_registry_path: Optional[str] = None,
+        show_layout: bool = False,
     ):
         self.config = config
         self._enabled = config.mqttSettings.enabled
@@ -270,6 +273,13 @@ class MQTTSyncEngine:
         # Inbound IO frames applied to config / rejected while applying.
         self.rx_frames = 0
         self.rx_errors = 0
+        # Inbound IO frames of the wrong size (the PLC's layout differs) -
+        # counted, and reported at most every few seconds.
+        self.rx_size_errors = 0
+        self._size_warned_at = -1e9
+        # Result of the last FrameType.LAYOUT_CHECK from a client: None (none
+        # yet), True (layouts match) or False.
+        self.layout_match: Optional[bool] = None
 
         if not self._enabled:
             print("[DataExchange] Exchange disabled in config. Skipping.")
@@ -314,14 +324,14 @@ class MQTTSyncEngine:
                 mapping = custom_component_mapping(config, topic_def["custom_ids"], direction="out")
             verify_component_list(mapping, config)
             message = ComponentMessage(mapping, endianness=_struct_endianness(topic_def, config))
-            print("[MQTTSync] Publish mapping: ",mapping)
-            print_mapping(mapping,f"mapping_{topic_suffix}.csv")
+            if show_layout:
+                print(io_layout.format_layout(mapping, f"[DataExchange] {full_topic} (simulator -> PLC)"))
 
             frame_type = topic_def.get("frame_type", FrameType.IO_MAPPING)
             channel = _TopicChannel(full_topic, message, interval_ms, frame_type=frame_type)
             self._pub_channels.append(channel)
             print(f"[DataExchange] Publish channel: {full_topic}  "
-                  f"({len(mapping)} entries, {message.payload_size} payload bytes, {interval_ms} ms, "
+                  f"({len(mapping)} entries, {io_layout.describe(mapping)}, {interval_ms} ms, "
                   f"frame_type={channel.frame_type})")
 
         # Belt drive feedback (actualSpeed + encoderCount per belt) as its own
@@ -347,10 +357,10 @@ class MQTTSyncEngine:
             mapping = topic_def.get("mapping")
             if mapping is None:
                 mapping = custom_component_mapping(config, topic_def["custom_ids"], direction="in")
-            print("[MQTTSync] Subscribe mapping: ",mapping)
             verify_component_list(mapping, config)
             message = ComponentMessage(mapping, endianness=_struct_endianness(topic_def, config))
-            print_mapping(mapping,f"mapping_{topic_suffix}.csv")
+            if show_layout:
+                print(io_layout.format_layout(mapping, f"[DataExchange] {full_topic} (PLC -> simulator)"))
 
             channel = _TopicChannel(full_topic, message, interval_ms)
             self._sub_channels.append(channel)
@@ -362,7 +372,7 @@ class MQTTSyncEngine:
                     self._make_recv_handler(channel),
                 )
             print(f"[DataExchange] Subscribe channel: {full_topic}  "
-                  f"({len(mapping)} entries, {message.payload_size} payload bytes, {interval_ms} ms)")
+                  f"({len(mapping)} entries, {io_layout.describe(mapping)}, {interval_ms} ms)")
 
         # Metrics channels - inbound-only, like "output" above, but target
         # self.metrics_store instead of self.config (see MetricsMessage).
@@ -470,7 +480,8 @@ class MQTTSyncEngine:
     def stats(self) -> Dict[str, int]:
         """Exchange health counters: inbound frames applied/rejected, plus
         (TCP) connected clients and frames sent/dropped by slow clients."""
-        result = {"rx_frames": self.rx_frames, "rx_errors": self.rx_errors}
+        result = {"rx_frames": self.rx_frames, "rx_errors": self.rx_errors,
+                  "rx_size_errors": self.rx_size_errors}
         if self._tcp is not None:
             result.update(self._tcp.stats())
         return result
@@ -492,10 +503,15 @@ class MQTTSyncEngine:
         def handler(raw):
             payload = raw if isinstance(raw, (bytes, bytearray)) else raw.encode()
             if len(payload) != channel.message.payload_size:
-                print(
-                    f"[MQTTSync] Ignoring {channel.topic} payload: "
-                    f"expected {channel.message.payload_size} bytes, got {len(payload)}"
-                )
+                self.rx_size_errors += 1
+                now = time.monotonic()
+                if now - self._size_warned_at >= 5.0:
+                    self._size_warned_at = now
+                    print(f"[DataExchange] Ignoring {channel.topic} frames: expected "
+                          f"{channel.message.payload_size} bytes, got {len(payload)} "
+                          f"({self.rx_size_errors} so far). The PLC's I/O layout differs from this "
+                          f"layout's ({io_layout.describe(channel.message.mapping)}) - compare with "
+                          f"`python io_layout.py <layout.json> --st`.")
                 return
 
             try:
@@ -536,6 +552,39 @@ class MQTTSyncEngine:
             channel.mark()
         return handler
 
+    def io_layout_check(self) -> Optional[tuple]:
+        """(input fingerprint, input size, output fingerprint, output size)
+        of the IO-mapping channels, or None without both."""
+        pub = next((c for c in self._pub_channels if c.frame_type == FrameType.IO_MAPPING), None)
+        sub = self._sub_channels[0] if self._sub_channels else None
+        if pub is None or sub is None:
+            return None
+        return (io_layout.layout_fingerprint(pub.message.mapping), pub.message.payload_size,
+                io_layout.layout_fingerprint(sub.message.mapping), sub.message.payload_size)
+
+    def _handle_layout_check(self, frame: ParsedFrame) -> None:
+        """A PLC sent its layout fingerprints (io_layout.pack_layout_check):
+        compare with ours, log the result, and answer with ours and the
+        verdict so the PLC can log it too."""
+        endian = _struct_endianness({}, self.config)
+        theirs = io_layout.unpack_layout_check(frame.payload, endian)
+        mine = self.io_layout_check()
+        if theirs is None or mine is None:
+            print(f"[DataExchange] Ignoring LAYOUT_CHECK from node {frame.node_id}: "
+                  f"{'bad payload' if theirs is None else 'no IO channels here'}.")
+            return
+        problems = io_layout.compare_layout_check(mine, theirs[:4])
+        self.layout_match = not problems
+        if problems:
+            print(f"[DataExchange] I/O layout MISMATCH with node {frame.node_id}: " + "; ".join(problems))
+        else:
+            print(f"[DataExchange] I/O layout check with node {frame.node_id}: OK "
+                  f"(input {mine[1]} bytes {mine[0]:08X}, output {mine[3]} bytes {mine[2]:08X})")
+        reply = struct.pack(endian + io_layout._CHECK, *mine,
+                            io_layout.CHECK_MISMATCH if problems else io_layout.CHECK_MATCH)
+        if self._tcp is not None:
+            self._tcp.send(reply, frame_type=FrameType.LAYOUT_CHECK, node_id=self._node_id)
+
     def _handle_tcp_payload(self, frame: ParsedFrame) -> None:
         """Routes by the frame's explicit FrameType byte (see
         tcp_framed_transport.py) - not by guessing from payload size, which
@@ -546,6 +595,10 @@ class MQTTSyncEngine:
         metrics_channel = self._metrics_channels.get(frame.frame_type)
         if metrics_channel is not None:
             self._make_metrics_recv_handler(metrics_channel)(frame.payload, frame.node_id)
+            return
+
+        if frame.frame_type == FrameType.LAYOUT_CHECK:
+            self._handle_layout_check(frame)
             return
 
         if frame.frame_type == FrameType.IO_MAPPING:
