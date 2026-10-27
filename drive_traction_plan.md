@@ -1,6 +1,28 @@
 # Design Plan — Belt Drive Model, Friction Traction, Fixed-Step Timing
 
-Status: **proposed** (nothing implemented yet). Owner: TBD. Date: 2026-10-27.
+Status: **Phases 0–4 implemented (simulator side), 2026-10-27.** Open items: unchecked boxes in §5.
+
+### Implementation notes (deviations from the design below)
+
+- The fixed-step loop lives in `PhysicsEngine.update()` / `step()` / `run_for()`, not a separate `stepper.py`.
+- `KinematicTraction` was not moved into `traction.py`. The legacy code stays in
+  `PhysicsEngine.apply_conveyor_kinematics()` and friction parcels skip it; this avoided
+  churn in code the 18 existing tests guard.
+- `physicsDt` defaults to 4 ms, not 2 ms. On the 48-belt `test_config.json` layout this
+  measures 2.0× real time (friction) and 2.35× (kinematic). Belt geometry is now cached
+  (`surface.py`), which is what made friction mode fast enough (it was 0.26× before caching).
+- Added after the design: `sim_runner.SimulationRunner` (`main.py --sim-thread`, always on
+  with `--headless`) runs physics + exchange on their own 2 ms tick. Exchange channels
+  were capped at the GUI frame rate before that, and at ~64 Hz on Windows by
+  `time.monotonic()`'s 15.6 ms resolution (now `perf_counter()`).
+- Belt feedback is its own frame type, `FrameType.BELT_FEEDBACK` (6), and is **opt-in**
+  (`mqttSettings.beltFeedback`). The PLC's `CommunicationProgram` (ax_dev
+  `tcp_client.st`) deserializes every received frame into its IO_MAPPING struct without
+  checking `ExtractedFrameType`, so an extra frame type would corrupt it until P4.5 is done.
+- `clock/simNanoseconds` (UINT64, simulated time) is available next to the wall-clock
+  `clock/nanoseconds`.
+- `--headless` never actually ran physics before (nothing set `playing`); fixed.
+- Tests: `test_drive.py`, `test_friction_traction.py`, `test_tcp_exchange.py` (350 total, all passing).
 
 ## 1. Goal
 
@@ -204,43 +226,43 @@ All of these are checked headlessly with `run_for()`, and are deterministic
 
 ### Phase 0 — Prep
 
-- [ ] P0.1 Commit or stash the current uncommitted changes in `python_sim` (10 modified files) so this work starts from a clean base
+- [x] P0.1 Commit or stash the current uncommitted changes in `python_sim` (10 modified files) so this work starts from a clean base
 - [ ] P0.2 Add `pytest` (dev dependency via `uv`) or keep `unittest`; decide and document in README
-- [ ] P0.3 Add a headless `run_for(seconds)` helper and a seeded RNG for sources; turn the 2026-10-27 experiment into `test_baseline_behavior.py` (it records today's numbers)
+- [x] P0.3 Add a headless `run_for(seconds)` helper and a seeded RNG for sources; turn the 2026-10-27 experiment into `test_baseline_behavior.py` (it records today's numbers)
 
 ### Phase 1 — Fixed-step timing
 
-- [ ] P1.1 `stepper.py`: accumulator, `physicsDt`, `maxStepsPerAdvance`, `dropped_time`
-- [ ] P1.2 `PhysicsEngine.update(dt)` delegates to the stepper; sensors evaluated per step
-- [ ] P1.3 IR rising-edge latch (`edgeCount`, excluded from save)
+- [x] P1.1 `stepper.py`: accumulator, `physicsDt`, `maxStepsPerAdvance`, `dropped_time`
+- [x] P1.2 `PhysicsEngine.update(dt)` delegates to the stepper; sensors evaluated per step
+- [x] P1.3 IR rising-edge latch (`edgeCount`, excluded from save)
 - [ ] P1.4 Surface `dropped_time` in both GUIs' timing overlay and in the `[TIMING]` console line
-- [ ] P1.5 Tests C1 + D1 green
+- [x] P1.5 Tests C1 + D1 green
 
 ### Phase 2 — Belt drive
 
-- [ ] P2.1 `DriveConfig` + optional `Belt.drive`; runtime `actualSpeed` / `encoderCount` fields with `exclude=True`
-- [ ] P2.2 `drive.py` `BeltDrive.update(h)` (ramp, lag, clamp, encoder wrap)
-- [ ] P2.3 Physics reads `actualSpeed` (not `speed`) for surfaces, in **both** traction models
+- [x] P2.1 `DriveConfig` + optional `Belt.drive`; runtime `actualSpeed` / `encoderCount` fields with `exclude=True`
+- [x] P2.2 `drive.py` `BeltDrive.update(h)` (ramp, lag, clamp, encoder wrap)
+- [x] P2.3 Physics reads `actualSpeed` (not `speed`) for surfaces, in **both** traction models
 - [ ] P2.4 GUIs: show setpoint vs actual on belts; edit drive params in the Qt properties panel
-- [ ] P2.5 Tests A1–A4
+- [x] P2.5 Tests A1–A4
 
 ### Phase 3 — Surfaces and friction traction
 
-- [ ] P3.1 `surface.py`: extract `contains` / `surface_velocity` for linear + curved from `physics.py`
+- [x] P3.1 `surface.py`: extract `contains` / `surface_velocity` for linear + curved from `physics.py`
 - [ ] P3.2 `traction.py`: `TractionModel` interface; move existing logic into `KinematicTraction` (no behaviour change, D1 stays green)
-- [ ] P3.3 `FrictionTraction`: carrier body, Pivot/Gear joints, created and removed with the parcel (sources/sinks/clear)
-- [ ] P3.4 9-point sampling + rigid-motion fit + floor fraction
-- [ ] P3.5 Config: `tractionModel`, `Belt.friction`, `floorFriction`, `Source.minMass/maxMass`
-- [ ] P3.6 Tests B1–B6
-- [ ] P3.7 Performance check D2; if slow, add a spatial index (pymunk `point_query` against static sensor shapes per belt) for point-on-belt lookups
+- [x] P3.3 `FrictionTraction`: carrier body, Pivot/Gear joints, created and removed with the parcel (sources/sinks/clear)
+- [x] P3.4 9-point sampling + rigid-motion fit + floor fraction
+- [x] P3.5 Config: `tractionModel`, `Belt.friction`, `floorFriction`, `Source.minMass/maxMass`
+- [x] P3.6 Tests B1–B6
+- [x] P3.7 Performance check D2; if slow, add a spatial index (pymunk `point_query` against static sensor shapes per belt) for point-on-belt lookups
 
 ### Phase 4 — PLC I/O
 
-- [ ] P4.1 Direction-aware belt mapping in `mqtt_message_binding.py` (inbound speed/directionAngle; outbound actualSpeed/encoderCount)
+- [x] P4.1 Direction-aware belt mapping in `mqtt_message_binding.py` (inbound speed/directionAngle; outbound actualSpeed/encoderCount)
 - [ ] P4.2 Channel registry + web editor: allow the new belt fields; validator updated
-- [ ] P4.3 `plc_mock.py`: send speed setpoints and read back actualSpeed/encoderCount; extend `test_plc_mock.py`
-- [ ] P4.4 Fix audit §1.3 (`TcpFramedServer.send()` blocking while holding the config lock): send outside the lock or per-client non-blocking queues
-- [ ] P4.5 **ax_dev repo:** add the belt feedback struct to `types.st`, regenerate `types-generated.st`, `apax build`
+- [x] P4.3 `plc_mock.py`: send speed setpoints and read back actualSpeed/encoderCount; extend `test_plc_mock.py`
+- [x] P4.4 Fix audit §1.3 (`TcpFramedServer.send()` blocking while holding the config lock): send outside the lock or per-client non-blocking queues
+- [ ] P4.5 **ax_dev repo:** first make `CommunicationProgram` check `tcp_praser.ExtractedFrameType = FRAME_TYPE_IO_MAPPING` before deserializing; then add the belt feedback struct to `types.st`, regenerate `types-generated.st`, `apax build`
 
 ### Phase 5 — Validation and switch-over
 

@@ -8,7 +8,10 @@ import pymunk
 import threading
 from typing import List, Tuple, Optional
 from config_parser import SimulatorConfig
-from math_utils import point_in_polygon, point_in_arc, get_rect_vertices, get_belt_polygon
+from math_utils import point_in_polygon, get_rect_vertices
+from drive import step_drive
+from surface import belt_bounds, belt_contains, belt_surface_speed, curved_direction, surface_velocity
+from traction import FrictionTraction
 
 class Parcel:
     def __init__(self, id: str, body: pymunk.Body, shape: pymunk.Poly, label: str, color: str):
@@ -18,6 +21,9 @@ class Parcel:
         self.label = label
         self.color = color
         self.max_extent = max(math.hypot(v.x, v.y) for v in shape.get_vertices()) if hasattr(shape, 'get_vertices') else 0.5
+        # FrictionTraction state (carrier body + joints), None for kinematic parcels.
+        self.traction: Optional[dict] = None
+        self.belt_id: Optional[str] = None
 
 
 def parcel_speed_info(parcel: Parcel) -> Tuple[float, Optional[float]]:
@@ -29,6 +35,12 @@ def parcel_speed_info(parcel: Parcel) -> Tuple[float, Optional[float]]:
     one place that knows how to read this off a parcel's pymunk body."""
     actual = parcel.body.velocity.length
     target = None
+    if parcel.traction is not None:
+        # Friction traction: the target is the belt motion the carrier is
+        # dragging the parcel toward (None on the floor).
+        if parcel.belt_id is not None:
+            target = parcel.traction["carrier"].velocity.length
+        return actual, target
     if getattr(parcel.body, "target_v_enable", False):
         target_v = getattr(parcel.body, "target_v", None)
         if target_v is not None:
@@ -138,6 +150,14 @@ class PhysicsEngine:
         # otherwise - see cad_editor_prototype.py's MainWindow._tick() and
         # visualizer.py's Renderer for the two indicators built on this).
         self.sim_time = 0.0
+        # Fixed-step accumulator: update(dt) runs whole physicsDt steps and
+        # carries the remainder; dropped_time counts real time skipped when a
+        # single update() would need more than maxStepsPerAdvance steps.
+        self._accumulator = 0.0
+        self.dropped_time = 0.0
+        self.step_count = 0
+
+        self.friction = FrictionTraction(self.space, config.floorFriction)
 
         # Sources timing — new sources added at runtime will be lazily initialised
         self.source_timers = {source.id: 100.0 for source in self.config.sources}
@@ -185,15 +205,7 @@ class PhysicsEngine:
 
     def _is_point_on_belt(self, px: float, py: float, belt) -> bool:
         """Returns True if the point (px, py) is physically on the given belt."""
-        min_x, min_y, max_x, max_y = self._get_belt_bounds(belt)
-        if not (min_x <= px <= max_x and min_y <= py <= max_y):
-            return False
-
-        if belt.type == "linear":
-            return point_in_polygon(px, py, get_belt_polygon(belt))
-        elif belt.type == "curved":
-            return point_in_arc(px, py, belt.x, belt.y, belt.radius, belt.beltWidth, belt.startAngle, belt.endAngle)
-        return False
+        return belt_contains(belt, px, py)
 
     def _is_angle_in_arc(self, angle: float, start_angle: float, end_angle: float, tolerance: float = 0.0) -> bool:
         angle %= 360.0
@@ -211,14 +223,7 @@ class PhysicsEngine:
         return math.radians(span)
 
     def _get_belt_bounds(self, belt) -> Tuple[float, float, float, float]:
-        if belt.type == "linear":
-            verts = get_belt_polygon(belt)
-            xs = [v[0] for v in verts]
-            ys = [v[1] for v in verts]
-            return min(xs), min(ys), max(xs), max(ys)
-
-        outer_r = belt.radius + belt.beltWidth / 2.0
-        return belt.x - outer_r, belt.y - outer_r, belt.x + outer_r, belt.y + outer_r
+        return belt_bounds(belt)
 
     def _get_belts_signature(self):
         return tuple(
@@ -284,25 +289,11 @@ class PhysicsEngine:
         for belt in self.config.belts:
             if self._is_point_on_belt(px, py, belt):
                 hit = True
-                if belt.type == "linear":
-                    rad = math.radians(belt.rotation + belt.directionAngle)
-                    vs.append((belt.speed * math.cos(rad), belt.speed * math.sin(rad), 0.0))
+                sv = surface_velocity(belt, px, py)
+                if sv is not None:
+                    vs.append(sv)
 
-                elif belt.type == "curved":
-                    dx = px - belt.x
-                    dy = py - belt.y
-                    dist = math.hypot(dx, dy)
-                    if dist < 1e-6:
-                        continue
-                    # Tangent velocity proportional to radius (v = w * r)
-                    direction = 1 if getattr(belt, 'directionAngle', 0) > 0 else -1
-                    w = direction * belt.speed / belt.radius if belt.radius > 0 else 0
-                    speed_at_dist = w * dist
-                    tx = -dy / dist 
-                    ty =  dx / dist
-                    vs.append((speed_at_dist * tx, speed_at_dist * ty, w))
-
-        if hit:
+        if hit and vs:
             vx = sum(v[0] for v in vs) / len(vs)
             vy = sum(v[1] for v in vs) / len(vs)
             vw = sum(v[2] for v in vs) / len(vs)
@@ -341,13 +332,14 @@ class PhysicsEngine:
                         
                 if not conflict:
                     # Spawn
-                    mass = 1.0
+                    friction_mode = self.config.tractionModel == "friction"
+                    mass = random.uniform(source.minMass, source.maxMass) if friction_mode else 1.0
                     moment = pymunk.moment_for_box(mass, (w, h))
                     body = pymunk.Body(mass, moment)
                     body.position = (sx, sy)
                     body.angle = math.radians(source.rotation)
-                    
-                    if getattr(self.config, 'useSurfaceVelocity', False):
+
+                    if not friction_mode and getattr(self.config, 'useSurfaceVelocity', False):
                         body.velocity_func = dynamic_velocity_modifier
 
                     shape = pymunk.Poly.create_box(body, (w, h))
@@ -368,8 +360,42 @@ class PhysicsEngine:
                         label=getattr(source, 'label', 'PKG'),
                         color="#ffaa00"
                     )
+                    if friction_mode:
+                        parcel.traction = self.friction.attach(body, w / 2.0, h / 2.0)
                     self.parcels.append(parcel)
                     self.source_timers[source.id] = 0.0 # reset timer only if spawned
+
+    def add_parcel(self, x: float, y: float, width: float, height: float,
+                   angle_deg: float = 0.0, mass: float = 1.0) -> Parcel:
+        """Place one parcel directly (tests, scripted scenarios), using the
+        same body/shape/traction setup as a source spawn."""
+        friction_mode = self.config.tractionModel == "friction"
+        body = pymunk.Body(mass, pymunk.moment_for_box(mass, (width, height)))
+        body.position = (x, y)
+        body.angle = math.radians(angle_deg)
+        if not friction_mode and self.config.useSurfaceVelocity:
+            body.velocity_func = dynamic_velocity_modifier
+        shape = pymunk.Poly.create_box(body, (width, height))
+        shape.friction = 0.3
+        shape.elasticity = 0.0
+        shape.collision_type = self.COLLISION_TYPE_PARCEL
+        shape.filter = pymunk.ShapeFilter(
+            categories=self.CATEGORY_PARCEL,
+            mask=self.CATEGORY_WALL | self.CATEGORY_PARCEL,
+        )
+        self.space.add(body, shape)
+        self.parcel_id_counter += 1
+        parcel = Parcel(id=f"p_{self.parcel_id_counter}", body=body, shape=shape, label="PKG", color="#ffaa00")
+        if friction_mode:
+            parcel.traction = self.friction.attach(body, width / 2.0, height / 2.0)
+        self.parcels.append(parcel)
+        return parcel
+
+    def _remove_parcel(self, parcel: Parcel) -> None:
+        if parcel.traction is not None:
+            self.friction.detach(parcel.traction)
+            parcel.traction = None
+        self.space.remove(parcel.body, parcel.shape)
 
     def _play_area_bounds(self) -> Optional[Tuple[float, float, float, float]]:
         """Bounding box covering every belt/source/sink, padded generously -
@@ -421,17 +447,24 @@ class PhysicsEngine:
                     to_remove.append(parcel)
 
         for p in to_remove:
-            self.space.remove(p.body, p.shape)
+            self._remove_parcel(p)
             self.parcels.remove(p)
 
     def clear_all_parcels(self):
         for p in self.parcels:
-            self.space.remove(p.body, p.shape)
+            self._remove_parcel(p)
         self.parcels.clear()
+
+    def apply_friction_traction(self):
+        for parcel in self.parcels:
+            if parcel.traction is not None:
+                parcel.belt_id = self.friction.pre_step(parcel.body, parcel.traction, self.config.belts)
 
     def apply_conveyor_kinematics(self):
         """Drive each parcel using the belt velocity sampled at its center + 4 corners."""
         for parcel in self.parcels:
+            if parcel.traction is not None:
+                continue  # friction-traction parcel (see apply_friction_traction)
             pos = parcel.body.position
             sample_pts = [(pos.x, pos.y)]
             # for v in parcel.shape.get_vertices():
@@ -462,25 +495,26 @@ class PhysicsEngine:
                     best_idx = 0
                     
                     for belt in touching_belts.values():
+                        belt_speed = belt_surface_speed(belt)
                         if belt.type == "linear":
                             rad = math.radians(belt.rotation + belt.directionAngle)
-                            cvx = belt.speed * math.cos(rad)
-                            cvy = belt.speed * math.sin(rad)
+                            cvx = belt_speed * math.cos(rad)
+                            cvy = belt_speed * math.sin(rad)
                             cw = 0.0
                         elif belt.type == "curved":
                             dx = pos.x - belt.x
                             dy = pos.y - belt.y
                             dist = math.hypot(dx, dy)
-                            direction = 1 if getattr(belt, 'directionAngle', 0) > 0 else -1
-                            cw = direction * belt.speed / belt.radius if belt.radius > 0 else 0
+                            direction = curved_direction(belt)
+                            cw = direction * belt_speed / belt.radius if belt.radius > 0 else 0
                             speed_at_dist = cw * dist
                             if dist > 1e-6:
                                 cvx = speed_at_dist * (-dy / dist)
                                 cvy = speed_at_dist * (dx / dist)
 
                                 radial_error = belt.radius - dist
-                                radial_gain = abs(belt.speed) / max(belt.beltWidth * 0.5, 1e-6)
-                                max_radial_speed = abs(belt.speed) * 0.75
+                                radial_gain = abs(belt_speed) / max(belt.beltWidth * 0.5, 1e-6)
+                                max_radial_speed = abs(belt_speed) * 0.75
                                 radial_speed = max(
                                     -max_radial_speed,
                                     min(max_radial_speed, radial_error * radial_gain),
@@ -488,8 +522,7 @@ class PhysicsEngine:
                                 # cvx += radial_speed * dx / dist
                                 # cvy += radial_speed * dy / dist
                             else:
-                                pass
-                                # cvx, cvy = 0.0, 0.0
+                                cvx, cvy = 0.0, 0.0
                             # cvx, cvy = 0.0, 0.0
                         else:
                             continue
@@ -729,6 +762,12 @@ class PhysicsEngine:
                 return True
         return False
 
+    @staticmethod
+    def _set_ir_state(sensor, state: str) -> None:
+        if state == "1" and sensor.sensor_states != "1":
+            sensor.risingEdges += 1
+        sensor.sensor_states = state
+
     def evaluate_sensors(self):
         """Compute sensor states from parcel geometry only."""
         import math
@@ -747,7 +786,7 @@ class PhysicsEngine:
                         close_parcels.append(p)
                 
                 if not close_parcels:
-                    sensor.sensor_states = "0"
+                    self._set_ir_state(sensor, "0")
                     continue
                 
                 sensor_vertices = get_rect_vertices(
@@ -762,7 +801,7 @@ class PhysicsEngine:
                     if self._polygons_overlap(sensor_vertices, self._parcel_vertices(parcel)):
                         triggered = "1"
                         break
-                sensor.sensor_states = triggered
+                self._set_ir_state(sensor, triggered)
 
             elif sensor.sensorType == "laser_banner":
                 laser_count_val = getattr(sensor, 'laserCount', 16)
@@ -813,26 +852,56 @@ class PhysicsEngine:
                     bits.append("1" if blocked else "0")
                 sensor.sensor_states = "".join(bits)
 
+    def step(self, h: float):
+        """One fixed physics step: drives, sources, traction, solver, sinks,
+        sensors. Sensors run every step so a parcel crossing a narrow sensor
+        between two GUI frames is still seen (and counted in risingEdges)."""
+        for belt in self.config.belts:
+            step_drive(belt, h)
+        self.handle_sources(h)
+        if self.config.tractionModel == "friction":
+            # Velocities persist between steps; friction alone slows parcels.
+            self.space.damping = 1.0
+            self.apply_friction_traction()
+        else:
+            self.space.damping = 0.1
+        self.apply_conveyor_kinematics()
+        self.space.step(h)
+        self.handle_sinks()
+        self.evaluate_sensors()
+        self.sim_time += h
+        self.step_count += 1
+        self.config.simTimeNs = int(round(self.sim_time * 1e9))
+
     def update(self, dt: float):
-        # Held for the whole step (all sub-steps + sensor evaluation), not
-        # just the outermost bookkeeping - kinematics/sensor evaluation
-        # read config.belts/config.sensors throughout, and a partial lock
-        # would still let a concurrent deserialize() interleave mid-step.
-        # This is pure CPU-bound simulation work with no I/O inside it, so
-        # holding the lock for its duration doesn't risk the kind of stall
-        # blocking network sends would (see MQTTSyncEngine.sync()).
+        """Advance by `dt` seconds of real time in whole `physicsDt` steps,
+        carrying the remainder to the next call - physics, drives, and
+        sensors always see the same step size no matter how irregular the
+        caller's frame rate is.
+
+        The lock is held for the whole advance (CPU-only work, no I/O), so a
+        concurrent deserialize() can't interleave mid-step."""
         with self._lock:
-            sub_steps = getattr(self.config, 'simulationSteps', 4)
-            if sub_steps <= 0: sub_steps = 1
+            h = self.config.physicsDt
+            if h <= 0.0:
+                raise ValueError(f"physicsDt must be > 0, got {h}")
+            self._accumulator += max(0.0, dt)
+            steps = int(self._accumulator / h + 1e-9)
+            max_steps = max(1, self.config.maxStepsPerAdvance)
+            if steps > max_steps:
+                # Can't keep up (or the caller paused): drop the backlog
+                # instead of spiraling, and report it.
+                self.dropped_time += (steps - max_steps) * h
+                steps = max_steps
+                self._accumulator = steps * h
+            for _ in range(steps):
+                self.step(h)
+            self._accumulator -= steps * h
 
-            sub_dt = dt / sub_steps
-
-            for _ in range(sub_steps):
-                self.handle_sources(sub_dt)
-                self.apply_conveyor_kinematics()
-                self.space.step(sub_dt)
-                self.handle_sinks()
-
-            # Sensor evaluation once per frame (not per sub-step)
-            self.evaluate_sensors()
-            self.sim_time += dt
+    def run_for(self, seconds: float):
+        """Deterministic headless stepping (tests, scripted scenarios):
+        exactly round(seconds / physicsDt) steps, no step cap."""
+        h = self.config.physicsDt
+        with self._lock:
+            for _ in range(int(round(seconds / h))):
+                self.step(h)

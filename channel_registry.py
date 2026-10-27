@@ -103,6 +103,13 @@ def load_channel_registry(
             topic_def["endianness"] = entry["endianness"]
 
         if kind == "io_mapping":
+            if entry.get("frame_type"):
+                try:
+                    topic_def["frame_type"] = int(FrameType[entry["frame_type"]])
+                except KeyError:
+                    raise ChannelRegistryError(
+                        f"{registry_path}: channel '{name}': unknown frame_type '{entry['frame_type']}'"
+                    ) from None
             if direction == "out":
                 publish_topics[topic] = topic_def
             elif direction == "in":
@@ -196,7 +203,7 @@ def validate_entries(entries: List[Dict[str, Any]], config) -> List[Dict[str, An
             if unknown:
                 errors.append(f"unknown component id(s): {', '.join(unknown)}")
             else:
-                mapping = custom_component_mapping(config, component_ids)
+                mapping = custom_component_mapping(config, component_ids, direction=direction if direction in ("in", "out") else "in")
         else:
             rows = entry.get("rows") or []
             try:

@@ -1,6 +1,18 @@
 import json
 from typing import List, Optional, Literal, Dict, Any, Union
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
+
+
+class DriveConfig(BaseModel):
+    """Motor/VFD model for one belt (see drive.py). A belt without one is an
+    ideal drive: its surface speed equals the commanded `Belt.speed` instantly,
+    exactly the pre-drive behavior."""
+    accel: float = 2.0        # m/s^2, ramp-up limit
+    decel: float = 2.0        # m/s^2, ramp-down limit
+    tau: float = 0.05         # s, first-order lag after the ramp (0 = none)
+    speedMax: float = 5.0     # m/s, |actual speed| clamp
+    countsPerM: float = 10000.0  # encoder resolution
+
 
 class Belt(BaseModel):
     id: str
@@ -23,7 +35,18 @@ class Belt(BaseModel):
     directionAngleBinding: Optional[str] = None
     directionBinding: Optional[str] = None
     transition_momentum_duration: float = 0.6
-    
+    # `speed` is the commanded setpoint (written by the PLC). The drive model
+    # turns it into `actualSpeed`, which is what physics uses.
+    drive: Optional[DriveConfig] = None
+    friction: float = 0.5     # belt/parcel friction coefficient (friction traction)
+    # Runtime outputs (drive.py) - mappable as belt_N/actualSpeed (FLOAT) and
+    # belt_N/encoderCount (UINT32), never saved into layout files.
+    actualSpeed: float = Field(default=0.0, exclude=True)
+    encoderCount: int = Field(default=0, exclude=True)
+    _drive_ref: float = PrivateAttr(default=0.0)
+    _encoder_frac: float = PrivateAttr(default=0.0)
+    _geom: Optional[tuple] = PrivateAttr(default=None)  # surface.py geometry cache
+
 
 # How a component's on/off (or multi-bit) state is packed onto the wire by
 # the auto-generating mapping builders (paddng_component/
@@ -58,6 +81,9 @@ class Sensor(BaseModel):
     detectedWord: Optional[int] = 0
     sensor_states: Optional[Union[bool, int, str]] = None
     packFormat: PackFormat = "bit"
+    # Runtime: rising edges seen since start (wraps when packed), so the PLC can
+    # detect a pulse shorter than the exchange interval. Never saved.
+    risingEdges: int = Field(default=0, exclude=True)
 
 class Source(BaseModel):
     id: str
@@ -73,6 +99,8 @@ class Source(BaseModel):
     colorScheme: Optional[List[str]] = None
     triggerBinding: Optional[str] = None
     intervalBinding: Optional[str] = None
+    minMass: float = 1.0      # kg, parcel mass range (friction traction)
+    maxMass: float = 1.0
 
 class Sink(BaseModel):
     id: str
@@ -135,6 +163,11 @@ class MqttSettings(BaseModel):
     # every frame the simulator itself sends. A connecting client (e.g.
     # plc_mock.py) has its own separate node id, not this one.
     nodeId: int = 0
+    # Publish belt actualSpeed/encoderCount as a BELT_FEEDBACK frame. Off by
+    # default: a PLC that doesn't check the frame type byte would deserialize
+    # this frame into its IO_MAPPING input struct.
+    beltFeedback: bool = False
+    beltFeedbackIntervalMs: int = 10
 
 class SimulatorConfig(BaseModel):
     version: str = "1.0.0"
@@ -153,6 +186,15 @@ class SimulatorConfig(BaseModel):
     gridSnap: bool = True
     gridSize: float = 0.5
     useSurfaceVelocity: bool = False
+    # "kinematic": legacy velocity override (useSurfaceVelocity) / impulse model.
+    # "friction": parcels dragged by force-limited joints (traction.py).
+    tractionModel: Literal["kinematic", "friction"] = "kinematic"
+    floorFriction: float = 0.6
+    # Fixed physics step (s). Sensors and drives are evaluated every step.
+    physicsDt: float = 0.004
+    maxStepsPerAdvance: int = 50
+    # Runtime: simulated time in ns, mappable as clock/simNanoseconds. Never saved.
+    simTimeNs: int = Field(default=0, exclude=True)
 
 def load_config(file_path: str) -> SimulatorConfig:
     with open(file_path, "r", encoding="utf-8") as f:

@@ -29,6 +29,7 @@ class FrameType(IntEnum):
     METRIC_LAYOUT_2 = 3  # MetricsMessage-based metrics, layout 2 (see METRICS_MAPPING_2)
     metri_1 = 4  # added by generate_frame_type.py
     METRIC_LAYOUT_3 = 5  # added by generate_frame_type.py
+    BELT_FEEDBACK = 6   # simulator -> PLC: per-belt actualSpeed (FLOAT) + encoderCount (UINT32), see drive.py
 
 
 class ParsedFrame(NamedTuple):
@@ -270,13 +271,77 @@ class TcpFrameCodec:
 
 
 
+class _ClientWriter:
+    """One connected client's outbound side: a background thread that owns
+    every sendall() on the socket, fed through a "latest frame wins" slot per
+    (frame_type, node_id).
+
+    Every frame this server sends is cyclic state (the current I/O image,
+    the current belt feedback), so when a client falls behind, the right
+    thing to drop is a stale frame of the same kind - not to block the
+    caller, and not to queue an unbounded backlog the client then has to
+    chew through before it sees current data. A frame overwritten before it
+    was sent is counted in `dropped`."""
+
+    def __init__(self, sock: socket.socket, on_error: Callable[[], None]):
+        self._sock = sock
+        self._on_error = on_error
+        self._cond = threading.Condition()
+        self._pending: "dict[tuple[int, int], bytes]" = {}
+        self._stopped = False
+        self.sent = 0
+        self.dropped = 0
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def enqueue(self, key: "tuple[int, int]", packet: bytes) -> None:
+        with self._cond:
+            if self._stopped:
+                return
+            if key in self._pending:
+                self.dropped += 1
+                # Re-insert so the replacement keeps arrival order.
+                del self._pending[key]
+            self._pending[key] = packet
+            self._cond.notify()
+
+    def stop(self) -> None:
+        with self._cond:
+            self._stopped = True
+            self._pending.clear()
+            self._cond.notify()
+
+    def _run(self) -> None:
+        while True:
+            with self._cond:
+                while not self._pending and not self._stopped:
+                    self._cond.wait()
+                if self._stopped:
+                    return
+                batch = list(self._pending.values())
+                self._pending.clear()
+            try:
+                for packet in batch:
+                    self._sock.sendall(packet)
+                    self.sent += 1
+            except OSError as exc:
+                with self._cond:
+                    stopped = self._stopped
+                if not stopped:
+                    print(f"[TCP] Send failed: {exc}")
+                    self._on_error()
+                return
+
+
 class TcpFramedServer:
     """Multi-client TCP server used by the simulator exchange side. Runs its
     accept loop on a background daemon thread (started by `start()`) and
     spawns one additional background daemon thread per connected client to
     receive its frames, so any number of PLC mocks/monitoring tools can
     stay connected at once. `send()` broadcasts a payload to every
-    currently-connected client.
+    currently-connected client without blocking: each client has its own
+    writer thread (_ClientWriter), so one stalled client can never delay
+    the caller (the simulation loop) or any other client.
 
     Every connected client's recv thread - and the caller's own thread
     calling `send()` - eventually reach into the SAME shared
@@ -314,6 +379,10 @@ class TcpFramedServer:
         # other clients from being registered/removed concurrently.
         self._clients_lock = threading.Lock()
         self._clients: dict[socket.socket, threading.Thread] = {}
+        self._writers: dict[socket.socket, _ClientWriter] = {}
+        # Totals over clients that have since disconnected (see stats()).
+        self._retired_sent = 0
+        self._retired_dropped = 0
 
     def start(self) -> None:
         if self.is_running:
@@ -323,20 +392,29 @@ class TcpFramedServer:
         self._accept_thread.start()
 
     def send(self, payload: bytes, frame_type: int, node_id: int = TcpFrameCodec.DEFAULT_NODE_ID) -> bool:
-        """Broadcast to every connected client. Returns True if at least
-        one client received it (False if there were none, or all failed)."""
+        """Queue a frame for every connected client and return immediately.
+        Returns True if at least one client is connected to receive it.
+        Delivery happens on each client's writer thread; a newer frame of
+        the same (frame_type, node_id) replaces one still waiting."""
         framed_packet = TcpFrameCodec.pack(payload, frame_type=frame_type, node_id=node_id, length_endianness=self.length_endianness)
         with self._clients_lock:
-            clients = list(self._clients.keys())
-        sent_to_any = False
-        for client in clients:
-            try:
-                client.sendall(framed_packet)
-                sent_to_any = True
-            except OSError as exc:
-                print(f"[TCP] Send failed: {exc}")
-                self._remove_client(client)
-        return sent_to_any
+            writers = list(self._writers.values())
+        for writer in writers:
+            writer.enqueue((frame_type, node_id), framed_packet)
+        return bool(writers)
+
+    def stats(self) -> "dict[str, int]":
+        """Frames written to sockets and frames replaced before sending
+        (client too slow), summed over all clients ever connected."""
+        with self._clients_lock:
+            writers = list(self._writers.values())
+            sent = self._retired_sent
+            dropped = self._retired_dropped
+        return {
+            "clients": len(writers),
+            "sent": sent + sum(w.sent for w in writers),
+            "dropped": dropped + sum(w.dropped for w in writers),
+        }
 
     def stop(self) -> None:
         self.is_running = False
@@ -405,8 +483,10 @@ class TcpFramedServer:
                     thread = threading.Thread(
                         target=self._recv_loop, args=(client, address), daemon=True
                     )
+                    writer = _ClientWriter(client, on_error=lambda c=client: self._remove_client(c))
                     with self._clients_lock:
                         self._clients[client] = thread
+                        self._writers[client] = writer
                     thread.start()
         except OSError as exc:
             if self.is_running:
@@ -437,6 +517,12 @@ class TcpFramedServer:
     def _remove_client(self, client: socket.socket) -> None:
         with self._clients_lock:
             self._clients.pop(client, None)
+            writer = self._writers.pop(client, None)
+            if writer is not None:
+                self._retired_sent += writer.sent
+                self._retired_dropped += writer.dropped
+        if writer is not None:
+            writer.stop()
         try:
             client.shutdown(socket.SHUT_RDWR)
         except OSError:

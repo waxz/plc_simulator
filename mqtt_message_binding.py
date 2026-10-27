@@ -77,8 +77,11 @@ def verify_component_list(components_mapping: List[Tuple[ByteType, str]], config
         if component_name.startswith("padding"):
             continue
         if component_name == "clock":
-            if byte_type != ByteType.UINT64 or variable != "nanoseconds":
-                raise ValueError("Virtual clock must be mapped as ByteType.UINT64, 'clock/nanoseconds'.")
+            if byte_type != ByteType.UINT64 or variable not in ("nanoseconds", "simNanoseconds"):
+                raise ValueError(
+                    "Virtual clock must be mapped as ByteType.UINT64, 'clock/nanoseconds' (wall clock) "
+                    "or 'clock/simNanoseconds' (simulated time)."
+                )
             continue
 
         component = find_component_by_id(component_name, config)
@@ -392,8 +395,29 @@ def known_component_ids(config: SimulatorConfig) -> "set[str]":
     return ids
 
 
-def custom_component_mapping(config: SimulatorConfig, component_ids: List[str]) -> List[Tuple[ByteType, str]]:
-    """Build a compact payload mapping for a custom list of component IDs instead of the whole config."""
+# Belt fields per channel direction (channel_registry's convention: "in" =
+# client -> simulator, "out" = simulator -> client). Inbound carries the PLC's
+# commands; outbound carries the drive model's feedback (drive.py).
+BELT_COMMAND_FIELDS: List[Tuple[ByteType, str]] = [(ByteType.FLOAT, "speed"), (ByteType.FLOAT, "directionAngle")]
+BELT_FEEDBACK_FIELDS: List[Tuple[ByteType, str]] = [(ByteType.FLOAT, "actualSpeed"), (ByteType.UINT32, "encoderCount")]
+
+
+def belt_feedback_mapping(config: SimulatorConfig, belt_ids: Optional[List[str]] = None) -> List[Tuple[ByteType, str]]:
+    """actualSpeed (FLOAT) + encoderCount (UINT32) per belt, in config order
+    (or `belt_ids` order) - the BELT_FEEDBACK frame's payload layout."""
+    ids = belt_ids if belt_ids is not None else [b.id for b in config.belts]
+    return [(bt, f"{bid}/{field}") for bid in ids for bt, field in BELT_FEEDBACK_FIELDS]
+
+
+def custom_component_mapping(config: SimulatorConfig, component_ids: List[str], direction: str = "in") -> List[Tuple[ByteType, str]]:
+    """Build a compact payload mapping for a custom list of component IDs instead of the whole config.
+
+    `direction` decides what a belt contributes: "in" (client -> simulator,
+    the default) maps the speed/directionAngle commands, "out" (simulator ->
+    client) maps the drive feedback actualSpeed/encoderCount."""
+    if direction not in ("in", "out"):
+        raise ValueError(f"direction must be 'in' or 'out', got '{direction}'")
+    belt_fields = BELT_FEEDBACK_FIELDS if direction == "out" else BELT_COMMAND_FIELDS
     mapping: List[Tuple[ByteType, str]] = []
 
     belts_in_config = {b.id: b for b in config.belts}
@@ -415,10 +439,7 @@ def custom_component_mapping(config: SimulatorConfig, component_ids: List[str]) 
     custom_belts = [cid for cid in component_ids if cid in belts_in_config]
 
     for bid in custom_belts:
-        mapping.extend([
-            (ByteType.FLOAT, f"{bid}/speed"),
-            (ByteType.FLOAT, f"{bid}/directionAngle"),
-        ])
+        mapping.extend((bt, f"{bid}/{field}") for bt, field in belt_fields)
 
     if "clock" in component_ids:
         mapping.append((ByteType.UINT64, "clock/nanoseconds"))
@@ -601,6 +622,8 @@ class ComponentMessage:
             value = 0
             if component_name == "clock" and variable == "nanoseconds":
                 value = time.time_ns()
+            elif component_name == "clock" and variable == "simNanoseconds":
+                value = config.simTimeNs
             elif not component_name.startswith("padding"):
                 component = find_component_by_id(component_name, config)
                 if component and component is not True:

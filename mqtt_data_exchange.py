@@ -29,6 +29,7 @@ from mqtt_message_binding import (
     ByteType,
     ComponentMessage,
     MetricsMessage,
+    belt_feedback_mapping,
     custom_component_mapping,
     verify_component_list,print_mapping
 )
@@ -169,20 +170,37 @@ def apply_exchange_config(config: SimulatorConfig, file_path: str) -> None:
 
 
 class _TopicChannel:
-    """Internal helper: one publish or subscribe channel with rate limiting."""
+    """Internal helper: one publish or subscribe channel with rate limiting.
+    `frame_type` is what a publish channel's frames are tagged with on TCP.
 
-    def __init__(self, topic: str, message: ComponentMessage, interval_ms: int):
+    Scheduled with perf_counter(), not monotonic(): on Windows monotonic()
+    only advances every ~15.6 ms, which capped a 10 ms channel at ~64 Hz."""
+
+    def __init__(self, topic: str, message: ComponentMessage, interval_ms: int,
+                 frame_type: int = FrameType.IO_MAPPING):
         self.topic = topic
         self.message = message
         self.interval_s = interval_ms / 1000.0
         self.last_time = 0.0
+        self.frame_type = int(frame_type)
 
     def is_due(self) -> bool:
         """Return True if enough time has elapsed since the last send/recv."""
-        return (time.monotonic() - self.last_time) >= self.interval_s
+        return (time.perf_counter() - self.last_time) >= self.interval_s
 
     def mark(self) -> None:
-        self.last_time = time.monotonic()
+        self.last_time = time.perf_counter()
+
+    def mark_periodic(self) -> None:
+        """Advance the schedule by exactly one interval, so publishing keeps
+        the configured rate on average instead of drifting late by up to one
+        caller tick each period. Resets to now if more than one interval
+        behind (first send, or the caller stalled)."""
+        now = time.perf_counter()
+        if now - self.last_time < 2.0 * self.interval_s:
+            self.last_time += self.interval_s
+        else:
+            self.last_time = now
 
 
 class MQTTSyncEngine:
@@ -227,6 +245,9 @@ class MQTTSyncEngine:
         # Falls back to a private lock if none is given, so this class still
         # works correctly standalone (just without that extra guarantee).
         self._lock = lock if lock is not None else threading.Lock()
+        # Inbound IO frames applied to config / rejected while applying.
+        self.rx_frames = 0
+        self.rx_errors = 0
 
         if not self._enabled:
             print("[DataExchange] Exchange disabled in config. Skipping.")
@@ -267,16 +288,33 @@ class MQTTSyncEngine:
             # custom_component_mapping() exactly as before.
             mapping = topic_def.get("mapping")
             if mapping is None:
-                mapping = custom_component_mapping(config, topic_def["custom_ids"])
+                mapping = custom_component_mapping(config, topic_def["custom_ids"], direction="out")
             verify_component_list(mapping, config)
             message = ComponentMessage(mapping, endianness=_struct_endianness(topic_def, config))
             print("[MQTTSync] Publish mapping: ",mapping)
             print_mapping(mapping,f"mapping_{topic_suffix}.csv")
 
-            channel = _TopicChannel(full_topic, message, interval_ms)
+            frame_type = topic_def.get("frame_type", FrameType.IO_MAPPING)
+            channel = _TopicChannel(full_topic, message, interval_ms, frame_type=frame_type)
             self._pub_channels.append(channel)
             print(f"[DataExchange] Publish channel: {full_topic}  "
-                  f"({len(mapping)} entries, {message.payload_size} payload bytes, {interval_ms} ms)")
+                  f"({len(mapping)} entries, {message.payload_size} payload bytes, {interval_ms} ms, "
+                  f"frame_type={channel.frame_type})")
+
+        # Belt drive feedback (actualSpeed + encoderCount per belt) as its own
+        # frame type. Opt-in: a PLC that deserializes every frame into its
+        # IO_MAPPING struct without checking the frame type byte would be
+        # corrupted by it.
+        if config.mqttSettings.beltFeedback and config.belts:
+            mapping = belt_feedback_mapping(config)
+            message = ComponentMessage(mapping, endianness=_struct_endianness({}, config))
+            full_topic = f"{prefix}belt_feedback".replace("//", "/")
+            channel = _TopicChannel(full_topic, message, config.mqttSettings.beltFeedbackIntervalMs,
+                                    frame_type=FrameType.BELT_FEEDBACK)
+            self._pub_channels.append(channel)
+            print(f"[DataExchange] Belt feedback channel: {full_topic}  "
+                  f"({len(config.belts)} belts, {message.payload_size} payload bytes, "
+                  f"{config.mqttSettings.beltFeedbackIntervalMs} ms, frame_type={channel.frame_type})")
 
         # Build subscribe channels and register callbacks
         for topic_suffix, topic_def in subscribe_topics.items():
@@ -285,7 +323,7 @@ class MQTTSyncEngine:
 
             mapping = topic_def.get("mapping")
             if mapping is None:
-                mapping = custom_component_mapping(config, topic_def["custom_ids"])
+                mapping = custom_component_mapping(config, topic_def["custom_ids"], direction="in")
             print("[MQTTSync] Subscribe mapping: ",mapping)
             verify_component_list(mapping, config)
             message = ComponentMessage(mapping, endianness=_struct_endianness(topic_def, config))
@@ -393,8 +431,9 @@ class MQTTSyncEngine:
             if self._mqtt is not None:
                 self._mqtt.publish(ch.topic, payload)
             elif self._tcp is not None:
-                self._tcp.send(payload, frame_type=FrameType.IO_MAPPING, node_id=self._node_id)
-            ch.mark()
+                # Non-blocking: queued for each client's writer thread.
+                self._tcp.send(payload, frame_type=ch.frame_type, node_id=self._node_id)
+            ch.mark_periodic()
 
     def stop(self) -> None:
         """Cleanly disconnect from the broker."""
@@ -404,6 +443,14 @@ class MQTTSyncEngine:
         if self._tcp is not None:
             self._tcp.stop()
             print("[TCPSync] Stopped.")
+
+    def stats(self) -> Dict[str, int]:
+        """Exchange health counters: inbound frames applied/rejected, plus
+        (TCP) connected clients and frames sent/dropped by slow clients."""
+        result = {"rx_frames": self.rx_frames, "rx_errors": self.rx_errors}
+        if self._tcp is not None:
+            result.update(self._tcp.stats())
+        return result
 
     @property
     def connected(self) -> bool:
@@ -428,8 +475,17 @@ class MQTTSyncEngine:
                 )
                 return
 
-            with self._lock:
-                channel.message.deserialize(payload, self.config)
+            try:
+                with self._lock:
+                    channel.message.deserialize(payload, self.config)
+            except Exception as exc:
+                # e.g. a mapped component deleted in the editor at runtime.
+                # Drop this one frame; letting it propagate would kill the
+                # client's whole TCP connection (its recv loop's handler).
+                self.rx_errors += 1
+                print(f"[MQTTSync] Error applying {channel.topic} payload: {exc}")
+                return
+            self.rx_frames += 1
             channel.mark()
         return handler
 

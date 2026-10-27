@@ -22,7 +22,7 @@ import threading
 from dataclasses import dataclass
 from config_parser import load_config
 from mqtt_manager import FlexibleProtocolMQTTManager
-from mqtt_message_binding import ComponentMessage, MetricsMessage, custom_component_mapping
+from mqtt_message_binding import ComponentMessage, MetricsMessage, belt_feedback_mapping, custom_component_mapping
 from mqtt_data_exchange import (
     METRICS_CHANNELS,
     MetricLayout1,
@@ -192,6 +192,8 @@ def main():
         "--node-id", type=int, default=0,
         help="This client's identity in the TCP frame header's Node ID byte (0-255, TCP transport only)",
     )
+    parser.add_argument("--print-feedback", action="store_true",
+                        help="Print every received belt feedback frame (needs mqttSettings.beltFeedback on the simulator)")
     args = parser.parse_args()
     if not (0 <= args.node_id <= 0xFF):
         parser.error("--node-id must be between 0 and 255")
@@ -211,13 +213,13 @@ def main():
     # Simulator publishes to /plcsim/input (from PLC's perspective, this is input)
     input_topic = f"{prefix}input".replace("//", "/")
     input_ids = PUBLISH_TOPICS["input"]["custom_ids"]
-    input_mapping = custom_component_mapping(config, input_ids)
+    input_mapping = custom_component_mapping(config, input_ids, direction="out")
     input_msg = ComponentMessage(input_mapping, endianness=_struct_endianness(PUBLISH_TOPICS["input"], config))
 
     # Simulator subscribes to /plcsim/output (from PLC's perspective, this is output)
     output_topic = f"{prefix}output".replace("//", "/")
     output_ids = SUBSCRIBE_TOPICS["output"]["custom_ids"]
-    output_mapping = custom_component_mapping(config, output_ids)
+    output_mapping = custom_component_mapping(config, output_ids, direction="in")
     output_msg = ComponentMessage(output_mapping, endianness=_struct_endianness(SUBSCRIBE_TOPICS["output"], config))
 
     # Metrics channels - same connection as the output channel above.
@@ -234,6 +236,11 @@ def main():
     metric3_topic_suffix = METRICS_CHANNELS[FrameType.METRIC_LAYOUT_3]["topic_suffix"]
     metric3_topic = f"{prefix}{metric3_topic_suffix}".replace("//", "/")
     metric3_msg = MetricsMessage.from_layout(MetricLayout3, endianness=_struct_endianness({}, config))
+
+    # Belt drive feedback (actualSpeed + encoderCount per belt) - only sent
+    # by a simulator running with mqttSettings.beltFeedback enabled.
+    feedback_topic = f"{prefix}belt_feedback".replace("//", "/")
+    feedback_msg = ComponentMessage(belt_feedback_mapping(config), endianness=_struct_endianness({}, config))
 
     mqtt = None
     tcp = None
@@ -253,6 +260,9 @@ def main():
         # differently-typed TCP frame here would mean something is
         # misconfigured (e.g. pointed at the wrong port), so it's dropped
         # rather than fed to input_msg.deserialize() as if it matched.
+        if isinstance(raw, ParsedFrame) and raw.frame_type == FrameType.BELT_FEEDBACK:
+            handle_belt_feedback(raw.payload)
+            return
         if isinstance(raw, ParsedFrame):
             if raw.frame_type != FrameType.IO_MAPPING:
                 print(f"[<- RECV {input_topic}] Ignoring frame_type={raw.frame_type} from node {raw.node_id} "
@@ -299,10 +309,26 @@ def main():
 
             print(f"[<- RECV {input_topic}] S: {sensor_text} | BTN: {button_text} | B1 Spd: {b1_text}")
 
+    def handle_belt_feedback(raw):
+        payload = raw if isinstance(raw, (bytes, bytearray)) else raw.encode()
+        if len(payload) != feedback_msg.payload_size:
+            metrics.record_malformed()
+            print(f"[<- RECV {feedback_topic}] Ignoring payload: "
+                  f"expected {feedback_msg.payload_size} bytes, got {len(payload)}")
+            return
+        metrics.record_rx(len(payload))
+        with lock:
+            feedback_msg.deserialize(payload, config)
+            belt_1 = next((b for b in config.belts if b.id == 'belt_1_1_1'), None)
+            if belt_1 is not None and args.print_feedback:
+                print(f"[<- RECV {feedback_topic}] belt_1_1_1 actual {belt_1.actualSpeed:.3f} m/s "
+                      f"(cmd {belt_1.speed:.2f}) encoder {belt_1.encoderCount}")
+
     print(f"Starting Mock PLC Client...")
     if transport == "mqtt":
         mqtt = FlexibleProtocolMQTTManager(broker_url=broker_url, port=broker_port)
         mqtt.register_callback(input_topic, handle_input)
+        mqtt.register_callback(feedback_topic, handle_belt_feedback)
         print(f"Connecting to MQTT {broker_url}:{broker_port}")
         mqtt.start()
     elif transport == "tcp":

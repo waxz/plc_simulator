@@ -127,7 +127,7 @@ def create_app(
             if config is not None:
                 for entry in channels:
                     if entry["kind"] == "io_mapping":
-                        mapping = custom_component_mapping(config, entry["component_ids"])
+                        mapping = custom_component_mapping(config, entry["component_ids"], direction=entry.get("direction", "in"))
                         entry["rows"] = [{"byte_type": bt.name, "path": p} for bt, p in mapping]
             return jsonify({
                 "path": mqtt_data_exchange_codegen.default_target_file(),
@@ -147,7 +147,7 @@ def create_app(
                     # The mapping is entirely computed from config (each
                     # component's own packFormat) - never read back from
                     # the CSV, which is just this computation's last output.
-                    rows = [(bt.name, p) for bt, p in custom_component_mapping(config, component_ids)]
+                    rows = [(bt.name, p) for bt, p in custom_component_mapping(config, component_ids, direction=entry.get("direction", "in"))]
                 else:
                     csv_path = entry.get("mapping_csv", "")
                     if csv_path:
@@ -212,7 +212,7 @@ def create_app(
                 # Regenerated from config, not from whatever rows the
                 # client happened to send - component_ids is the only
                 # thing a component_ids-driven channel actually authors.
-                mapping = custom_component_mapping(config, component_ids)
+                mapping = custom_component_mapping(config, component_ids, direction=entry.get("direction", "in"))
                 print_mapping(mapping, _resolve(base_dir, csv_path))
             else:
                 rows = [(row.get("byte_type", ""), row.get("path", "")) for row in entry.get("rows", [])]

@@ -3039,7 +3039,7 @@ class MainWindow(QMainWindow):
     main.py's pygame loop (`physics_engine.update(dt)` / `renderer.render`
     / `mqtt.sync()` each frame)."""
 
-    def __init__(self, config=None, physics_engine=None, mqtt=None, metrics_store=None):
+    def __init__(self, config=None, physics_engine=None, mqtt=None, metrics_store=None, runner=None):
         super().__init__()
         self.setWindowTitle("CAD Editor Prototype (PySide6) - evaluation build")
         self.resize(1300, 850)
@@ -3047,6 +3047,8 @@ class MainWindow(QMainWindow):
         self.config = config
         self.physics_engine = physics_engine
         self.mqtt = mqtt
+        # sim_runner.SimulationRunner when physics runs on its own thread (main.py --sim-thread).
+        self.runner = runner
         # Always a real store, even in the standalone demo (no config) -
         # DataVisualizationPanel below needs one to construct regardless of
         # whether anything is actually feeding it (main.py only starts the
@@ -3342,12 +3344,18 @@ class MainWindow(QMainWindow):
         real_dt = self._tick_elapsed_timer.restart() / 1000.0
         real_dt = min(real_dt, 0.1)  # guard against pathological spikes/pauses
 
-        if self.playing and self.physics_engine is not None:
+        if self.runner is not None:
+            # Physics + exchange run on sim_runner.py's thread; this tick
+            # only forwards play state and renders.
+            self.runner.playing = self.playing
+            if self.playing:
+                self._refresh_sensor_visuals()
+        elif self.playing and self.physics_engine is not None:
             self.physics_engine.update(real_dt)
             self._refresh_sensor_visuals()
         if self.physics_engine is not None:
             self._sync_parcels()
-        if self.mqtt is not None:
+        if self.mqtt is not None and self.runner is None:
             self.mqtt.sync()
         # Throttled to ~2x/sec - cheap either way, but no need to hit the
         # window manager with a title update on every 16ms tick.
@@ -3396,7 +3404,8 @@ class MainWindow(QMainWindow):
 
     def _sync_parcels(self):
         live_ids = set()
-        for parcel in self.physics_engine.parcels:
+        # Snapshot: with --sim-thread the runner thread adds/removes parcels concurrently.
+        for parcel in list(self.physics_engine.parcels):
             live_ids.add(parcel.id)
             item = self._parcel_items.get(parcel.id)
             if item is None:
@@ -3412,13 +3421,13 @@ class MainWindow(QMainWindow):
                 del self._parcel_items[parcel_id]
 
 
-def run(config, physics_engine, mqtt, metrics_store=None):
+def run(config, physics_engine, mqtt, metrics_store=None, runner=None):
     """Entry point for `main.py --gui qt`: runs the Qt editor driven by a
     real loaded config and the same PhysicsEngine/MQTTSyncEngine instances
     the pygame backend would use, instead of the standalone demo's seed
     data. Blocks until the window is closed (owns the Qt event loop)."""
     app = QApplication.instance() or QApplication(sys.argv)
-    window = MainWindow(config=config, physics_engine=physics_engine, mqtt=mqtt, metrics_store=metrics_store)
+    window = MainWindow(config=config, physics_engine=physics_engine, mqtt=mqtt, metrics_store=metrics_store, runner=runner)
     window.show()
     app.exec()
 

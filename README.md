@@ -153,6 +153,33 @@ python main.py test_config.json --headless
 Add `--exchange-config <file.json>` to override the MQTT/TCP settings baked into
 the workspace config (see `tcp_exchange_config.json` for the shape).
 
+Add `--sim-thread` when a PLC is connected: physics and the exchange then run on
+their own 2 ms tick (`sim_runner.py`) instead of once per GUI frame, so a 10 ms
+channel really goes out every 10 ms. `--headless` always runs this way.
+
+### Belt drives, traction, and timing
+
+See [drive_traction_plan.md](drive_traction_plan.md) for the design.
+
+- **Fixed step.** Physics, drives and sensors advance in fixed `physicsDt` steps
+  (default 4 ms) regardless of frame rate. IR sensors count `risingEdges`, so the
+  PLC can see a pulse shorter than the exchange interval.
+- **Belt drive** (`drive.py`). `Belt.speed` is the PLC's setpoint. An optional
+  `"drive": {"accel", "decel", "tau", "speedMax", "countsPerM"}` turns it into
+  `actualSpeed` (ramp + first-order lag) and a UINT32 `encoderCount` that wraps.
+  A belt without `drive` changes speed instantly, as before.
+- **Traction** (`traction.py`). With `"tractionModel": "friction"`, parcels are
+  dragged by friction capped at `Belt.friction` × m × g (`floorFriction` off belts),
+  so starts, stops, slip and pushing come from physics. The default `"kinematic"`
+  model is the original velocity-override behavior.
+- **Belt feedback to the PLC.** Set `mqttSettings.beltFeedback: true` to publish
+  `actualSpeed` (FLOAT) + `encoderCount` (UINT32) for every belt, in config order,
+  as a `FrameType.BELT_FEEDBACK` (6) frame every `beltFeedbackIntervalMs`.
+  It is off by default: the PLC must check the frame type byte before
+  deserializing, or this frame overwrites its IO_MAPPING input struct.
+  In channel registry files, a belt in an `"out"` (simulator → client) channel
+  maps to these feedback fields, and `clock/simNanoseconds` gives simulated time.
+
 To also start the channel registry editor + live metrics dashboard alongside the
 simulator, add `--web-ui` (see [Channel Registry Web UI](#channel-registry-web-ui)):
 

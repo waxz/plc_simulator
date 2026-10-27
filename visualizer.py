@@ -711,7 +711,8 @@ class Renderer:
 
     def draw_parcels(self, physics_engine):
         if not physics_engine: return
-        for parcel in physics_engine.parcels:
+        # Snapshot: with --sim-thread the runner thread adds/removes parcels concurrently.
+        for parcel in list(physics_engine.parcels):
             color = self._hex_to_rgb(parcel.color)
             
             # pymunk Poly vertices

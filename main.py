@@ -7,11 +7,15 @@ from visualizer import Renderer
 from physics import PhysicsEngine
 from mqtt_data_exchange import MQTTSyncEngine, apply_exchange_config
 from metrics_store import MetricsStore
+from sim_runner import SimulationRunner
 
 
-def run_pygame(config, physics_engine, mqtt, headless: bool):
+def run_pygame(config, physics_engine, mqtt, headless: bool, runner=None):
     print(f"Initializing visualizer (Headless: {headless})...")
     renderer = Renderer(config, headless=headless)
+    if headless:
+        # There's no Play button to press without a window.
+        renderer.playing = True
     print("Starting simulation loop. Press Ctrl+C to exit.")
     running = True
     clock = pygame.time.Clock()
@@ -37,35 +41,40 @@ def run_pygame(config, physics_engine, mqtt, headless: bool):
             elif cmd == 'CLEAR':
                 print("Simulation Cleared (TODO)")
 
-            if renderer.playing:
-                physics_engine.update(dt)
+            if runner is not None:
+                # Physics + exchange run on the runner's own thread; this
+                # loop only renders and forwards play/pause.
+                runner.playing = renderer.playing
+            else:
+                if renderer.playing:
+                    physics_engine.update(dt)
+                mqtt.sync()
 
             renderer.render(physics_engine)
-            mqtt.sync()
+            if headless:
+                # No display: nothing else paces this loop.
+                time.sleep(1 / 60.0)
 
             now = time.perf_counter()
             if now - last_timing_report >= 5.0:
                 real_elapsed = now - real_start
                 ratio = physics_engine.sim_time / real_elapsed if real_elapsed > 0 else 0.0
-                print(f"[TIMING] sim={physics_engine.sim_time:.1f}s real={real_elapsed:.1f}s ratio={ratio:.3f}x")
+                print(f"[TIMING] sim={physics_engine.sim_time:.1f}s real={real_elapsed:.1f}s ratio={ratio:.3f}x "
+                      f"dropped={physics_engine.dropped_time:.2f}s exchange={mqtt.stats()}")
                 last_timing_report = now
-
-            if headless:
-                # In headless, we should throttle logic manually since pygame.clock.tick is skipped
-                time.sleep(1 / 60.0)
     except KeyboardInterrupt:
         print("Simulation stopped by user.")
     finally:
         renderer.quit()
 
 
-def run_qt(config, physics_engine, mqtt, metrics_store):
+def run_qt(config, physics_engine, mqtt, metrics_store, runner=None):
     # Imported lazily so the pygame backend (the default) never pays the
     # cost of importing PySide6, and so `--gui pygame` still works on a
     # machine where PySide6 isn't installed.
     import cad_editor_prototype as qt_backend
     print("Starting Qt simulation loop. Close the window to exit.")
-    qt_backend.run(config, physics_engine, mqtt, metrics_store=metrics_store)
+    qt_backend.run(config, physics_engine, mqtt, metrics_store=metrics_store, runner=runner)
 
 
 def build_engine(config, config_lock, metrics_store, channel_registry_path=None):
@@ -130,6 +139,13 @@ def build_argparser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--web-host", default="127.0.0.1", help="Host for --web-ui (default 127.0.0.1)")
     parser.add_argument("--web-port", type=int, default=5050, help="Port for --web-ui (default 5050)")
+    parser.add_argument(
+        "--sim-thread", action="store_true",
+        help="Run physics and the PLC exchange on a dedicated thread (see sim_runner.py) instead of once "
+             "per GUI frame, so exchange channels keep their configured interval (e.g. 10 ms). "
+             "Always on with --headless.",
+    )
+    parser.add_argument("--sim-tick-ms", type=float, default=2.0, help="Tick period for --sim-thread (default 2 ms)")
     return parser
 
 
@@ -173,12 +189,21 @@ def main():
                 "(or any other already-running one) to pick up the change."
             )
 
+    runner = None
+    if args.sim_thread or args.headless:
+        runner = SimulationRunner(physics_engine, mqtt, tick_s=args.sim_tick_ms / 1000.0)
+        runner.playing = False  # the GUI's play state is forwarded every frame
+        runner.start()
+        print(f"[main] Physics + exchange on a dedicated thread, tick {args.sim_tick_ms:g} ms.")
+
     try:
         if args.gui == "qt":
-            run_qt(config, physics_engine, mqtt, metrics_store)
+            run_qt(config, physics_engine, mqtt, metrics_store, runner=runner)
         else:
-            run_pygame(config, physics_engine, mqtt, args.headless)
+            run_pygame(config, physics_engine, mqtt, args.headless, runner=runner)
     finally:
+        if runner is not None:
+            runner.stop()
         mqtt.stop()
 
 
