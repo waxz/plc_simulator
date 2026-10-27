@@ -4,8 +4,8 @@ client-reported metrics (performance counters, cycle times, function
 elapsed times, function results, vector values).
 
 Ingestion (metrics_ingest.py) runs on a background network thread and
-calls add_sample()/add_samples(); the Qt data-visualization panel reads
-from the main/GUI thread via groups()/names()/series()/table_rows(). Every
+calls add_sample()/add_samples(); the web UI's Live Data tab (web_app.py) reads
+from the web server thread via groups()/names()/series()/table_rows(). Every
 method takes the same lock, and reads return copies, so a caller never
 holds a reference into state that could mutate underneath it.
 """

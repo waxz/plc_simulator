@@ -7,7 +7,7 @@ has its own mapping, topic, and rate-limited interval.
 
 Usage in main.py:
     config_lock = threading.Lock()  # shared with PhysicsEngine(config, lock=config_lock)
-    metrics_store = MetricsStore()  # fed to the Qt data-visualization panel
+    metrics_store = MetricsStore()  # read by the web UI's Live Data tab
     mqtt = MQTTSyncEngine(config, lock=config_lock, metrics_store=metrics_store)
     # in game loop:
     mqtt.sync()

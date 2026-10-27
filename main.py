@@ -68,15 +68,6 @@ def run_pygame(config, physics_engine, mqtt, headless: bool, runner=None):
         renderer.quit()
 
 
-def run_qt(config, physics_engine, mqtt, metrics_store, runner=None):
-    # Imported lazily so the pygame backend (the default) never pays the
-    # cost of importing PySide6, and so `--gui pygame` still works on a
-    # machine where PySide6 isn't installed.
-    import cad_editor_prototype as qt_backend
-    print("Starting Qt simulation loop. Close the window to exit.")
-    qt_backend.run(config, physics_engine, mqtt, metrics_store=metrics_store, runner=runner)
-
-
 def build_engine(config, config_lock, metrics_store, channel_registry_path=None):
     """The one place that decides whether the exchange server uses the
     hardcoded PUBLISH_TOPICS/SUBSCRIBE_TOPICS/METRICS_CHANNELS or a channel
@@ -120,12 +111,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Python Conveyor Flow Simulator")
     parser.add_argument("config", help="Path to the JSON workspace configuration")
     parser.add_argument("--exchange-config", help="Optional JSON file overriding MQTT/TCP exchange settings")
-    parser.add_argument("--headless", action="store_true", help="Run in headless mode (no UI, pygame backend only)")
-    parser.add_argument(
-        "--gui", choices=["pygame", "qt"], default="pygame",
-        help="GUI backend to run: 'pygame' (default, the original editor/visualizer) "
-             "or 'qt' (the PySide6 CAD-style editor prototype).",
-    )
+    parser.add_argument("--headless", action="store_true", help="Run in headless mode (no window)")
     parser.add_argument(
         "--channel-registry",
         help="channels.json to load IO-mapping/metric channels from (see channel_registry.py) - "
@@ -152,10 +138,6 @@ def build_argparser() -> argparse.ArgumentParser:
 def main():
     args = build_argparser().parse_args()
 
-    if args.headless and args.gui == "qt":
-        print("[main] --headless is not yet supported with --gui qt; ignoring --headless.")
-        args.headless = False
-
     print(f"Loading configuration from {args.config}...")
     config = load_config(args.config)
     if args.exchange_config:
@@ -170,8 +152,7 @@ def main():
     # no lock of its own at all).
     config_lock = threading.Lock()
     physics_engine = PhysicsEngine(config, lock=config_lock)
-    # Data-visualization panel storage - always created (cheap, and the Qt
-    # panel needs one to construct even with nothing feeding it yet).
+    # Client-reported metrics storage, read by the web UI's Live Data tab.
     # MQTTSyncEngine's own metrics channel (see METRICS_MAPPING in
     # mqtt_data_exchange.py) feeds it over the SAME MQTT/TCP connection as
     # the rest of the exchange - no separate server/port for metrics.
@@ -197,10 +178,7 @@ def main():
         print(f"[main] Physics + exchange on a dedicated thread, tick {args.sim_tick_ms:g} ms.")
 
     try:
-        if args.gui == "qt":
-            run_qt(config, physics_engine, mqtt, metrics_store, runner=runner)
-        else:
-            run_pygame(config, physics_engine, mqtt, args.headless, runner=runner)
+        run_pygame(config, physics_engine, mqtt, args.headless, runner=runner)
     finally:
         if runner is not None:
             runner.stop()

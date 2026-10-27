@@ -147,8 +147,8 @@ class PhysicsEngine:
         # GUI feeding update() a fixed nominal dt instead of the real
         # elapsed time between frames/ticks will silently fall behind
         # real-time under any load, without this ever being visible
-        # otherwise - see cad_editor_prototype.py's MainWindow._tick() and
-        # visualizer.py's Renderer for the two indicators built on this).
+        # otherwise - see visualizer.py's Renderer for the indicator built on
+        # this, and main.py's [TIMING] line).
         self.sim_time = 0.0
         # Fixed-step accumulator: update(dt) runs whole physicsDt steps and
         # carries the remainder; dropped_time counts real time skipped when a

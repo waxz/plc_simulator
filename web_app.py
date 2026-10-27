@@ -4,8 +4,7 @@
    hand-edited JSON/CSV + a separate CLI validate step with immediate,
    per-row feedback as you type.
 2. (Only when wired to a running simulator's live MetricsStore) a metrics
-   dashboard - browse groups/metrics and watch live charts, the web
-   counterpart to data_visualization_panel.py's Qt dock.
+   dashboard - browse groups/metrics and watch live charts.
 
 Every check the registry editor reports comes from the SAME functions the
 CLI tools and MQTTSyncEngine itself use (verify_component_list,
