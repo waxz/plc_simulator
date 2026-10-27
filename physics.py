@@ -1,12 +1,14 @@
 from config_parser import Belt
 from typing import Dict
 from pymunk.vec2d import Vec2d
+from contextlib import nullcontext
 import math
 import random
 import pymunk
+import threading
 from typing import List, Tuple, Optional
 from config_parser import SimulatorConfig
-from math_utils import point_in_polygon, point_in_arc, get_rect_vertices, rotate_point
+from math_utils import point_in_polygon, point_in_arc, get_rect_vertices, get_belt_polygon
 
 class Parcel:
     def __init__(self, id: str, body: pymunk.Body, shape: pymunk.Poly, label: str, color: str):
@@ -17,19 +19,66 @@ class Parcel:
         self.color = color
         self.max_extent = max(math.hypot(v.x, v.y) for v in shape.get_vertices()) if hasattr(shape, 'get_vertices') else 0.5
 
+
+def parcel_speed_info(parcel: Parcel) -> Tuple[float, Optional[float]]:
+    """Returns (actual_speed, target_speed) for a parcel, in the same units
+    as Belt.speed. `target_speed` is None when useSurfaceVelocity is off or
+    the parcel isn't currently riding a belt (no single "setting" to
+    compare against in that case). Shared by both GUI backends' "is the
+    parcel actually moving at the configured speed" indicators, so there's
+    one place that knows how to read this off a parcel's pymunk body."""
+    actual = parcel.body.velocity.length
+    target = None
+    if getattr(parcel.body, "target_v_enable", False):
+        target_v = getattr(parcel.body, "target_v", None)
+        if target_v is not None:
+            target = math.hypot(target_v[0], target_v[1])
+    return actual, target
+
+
+def _smootherstep(t: float) -> float:
+    """Ken Perlin's smootherstep: a monotonic S-curve on t in [0, 1] with
+    zero first *and* second derivative at both endpoints. Used below to
+    ease a belt-to-belt velocity transition instead of blending at one
+    constant rate for the whole window and then snapping dead onto the
+    target the instant the timer expires - a smoother, more natural
+    "settling into the new belt's speed" feel, closer to how friction
+    actually brings a sliding object's speed in line with a surface than a
+    straight linear ramp is."""
+    t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
+    return t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
+
+
 def dynamic_velocity_modifier(body, gravity, damping, dt):
+    """Pymunk per-body velocity callback (assigned to `body.velocity_func`
+    when `useSurfaceVelocity` is enabled). Drives a parcel toward
+    `target_v`/`target_w` - the belt it's currently on, set each tick by
+    `PhysicsEngine.apply_conveyor_kinematics` - easing between belts with
+    different speeds instead of snapping instantly, the "like friction"
+    transition on a belt handoff.
+
+    `transition_momentum_v` is the velocity captured at the instant of a
+    handoff; `transition_momentum_time` counts down from
+    `transition_momentum_duration` (the belt's configured transition
+    time, `Belt.transition_momentum_duration`) to 0 across the window.
+    `t = momentum_time / momentum_duration` is therefore the fraction of
+    the transition *remaining* (1 -> just handed off, 0 -> complete);
+    `_smootherstep(t)` eases that fraction instead of using it as a raw
+    linear blend weight, while still finishing exactly at
+    `momentum_duration` either way.
+    """
     pymunk.Body.update_velocity(body, gravity, damping, dt)
-    
-    target_v_enable = getattr(body, "target_v_enable", False) 
+
+    target_v_enable = getattr(body, "target_v_enable", False)
     if not target_v_enable:
         return
     target_v = Vec2d(*getattr(body, "target_v", body.velocity))
     momentum_v = getattr(body, "transition_momentum_v", None)
     momentum_time = getattr(body, "transition_momentum_time", 0.0)
     momentum_duration = getattr(body, "transition_momentum_duration", 0.2)
-    # print(f"dynamic_velocity_modifier target_v: {target_v}, momentum_v: {momentum_v}, momentum_time: {momentum_time}, momentum_duration: {momentum_duration}")
+
     if momentum_v is not None and momentum_time > 0.0 and momentum_duration > 0.01:
-        alpha = max(0.0, min(1.0, momentum_time / momentum_duration))
+        alpha = _smootherstep(momentum_time / momentum_duration)
         original_v = Vec2d(*momentum_v)
         body.velocity = original_v * alpha + target_v * (1.0 - alpha)
         body.transition_momentum_time = max(0.0, momentum_time - dt)
@@ -38,12 +87,8 @@ def dynamic_velocity_modifier(body, gravity, damping, dt):
         body.transition_momentum_v = None
         body.transition_momentum_time = 0.0
 
-    # body.velocity = target_v
-
     target_w = getattr(body, "target_w", body.angular_velocity)
     remaining_w = getattr(body, "target_w_remaining", None)
-    
-    # body.angular_velocity = target_w
 
     if remaining_w is not None and remaining_w > 0.0 and dt > 0.0 and abs(target_w) > 1e-9:
         clamped_w = min(abs(target_w), remaining_w / dt)
@@ -51,27 +96,6 @@ def dynamic_velocity_modifier(body, gravity, damping, dt):
         body.target_w_remaining = max(0.0, remaining_w - clamped_w * dt)
     else:
         body.angular_velocity = target_w
-
-    # print(f"dynamic_velocity_modifier body.velocity: {body.velocity}, body.angular_velocity: {body.angular_velocity}")
-
-# def constant_velocity(body, gravity, damping, dt):
-#     body.velocity = (1.95, 0)  # Set your target velocity here
-#     pymunk.Body.update_velocity(body, gravity, damping, dt) # Apply space physics
-# 1. Define the custom velocity function
-# def dynamic_velocity_modifier(body, gravity, damping, dt):
-#     """
-#     Pymunk calls this every frame automatically.
-#     It reads the dynamic target speeds stored directly on the body.
-#     """
-#     # Fallback to current velocity if custom attributes aren't set yet
-#     target_v_enable = getattr(body, "target_v_enable", False) 
-#     if not target_v_enable:
-#         return
-
-#     target_v = getattr(body, "target_v", body.velocity) 
-
-#     # Assign the exact desired velocity
-#     body.velocity =  target_v
 
 class PhysicsEngine:
     # ShapeFilter category bitmasks
@@ -81,17 +105,40 @@ class PhysicsEngine:
     COLLISION_TYPE_WALL   = 1
     COLLISION_TYPE_PARCEL = 2
 
-    def __init__(self, config: SimulatorConfig):
+    def __init__(self, config: SimulatorConfig, lock: Optional[threading.Lock] = None):
         self.config = config
+        # Shared with MQTTSyncEngine (see main.py, which constructs both and
+        # passes the same lock into each) so that update()'s reads/writes of
+        # config.belts[i].speed, config.sensors[i].sensor_states, etc. can't
+        # race against a background TCP recv thread's deserialize() writing
+        # those same fields, or against sync()'s serialize() reading them.
+        # Previously the lock only serialized the MQTT-side accesses against
+        # each other, never against this engine's own main-thread mutation
+        # of the identical fields - a real data race, just narrow enough to
+        # rarely produce visibly-corrupted output. Defaults to a no-op
+        # context manager so PhysicsEngine keeps working standalone (tests,
+        # or any caller that never wires up MQTT) without needing a lock at
+        # all.
+        self._lock = lock if lock is not None else nullcontext()
         self.space = pymunk.Space()
         self.space.gravity = (0, 0)
         self.space.damping = 0.1 # High damping for top-down
-        
+
         self.parcels: List[Parcel] = []
         self.static_walls: List[pymunk.Shape] = []
         self.parcel_id_counter = 0
         self.sensor_states = {}  # {sensor.id: bool | str}
-        
+
+        # Cumulative simulated seconds - the sum of every dt ever passed to
+        # update(). Compare against a wall-clock measurement in the caller
+        # to verify the sim is actually keeping pace with real time (a
+        # GUI feeding update() a fixed nominal dt instead of the real
+        # elapsed time between frames/ticks will silently fall behind
+        # real-time under any load, without this ever being visible
+        # otherwise - see cad_editor_prototype.py's MainWindow._tick() and
+        # visualizer.py's Renderer for the two indicators built on this).
+        self.sim_time = 0.0
+
         # Sources timing — new sources added at runtime will be lazily initialised
         self.source_timers = {source.id: 100.0 for source in self.config.sources}
         
@@ -143,19 +190,7 @@ class PhysicsEngine:
             return False
 
         if belt.type == "linear":
-            if getattr(belt, 'shape', 'rectangle') == 'quadrilateral':
-                pts = belt.vertexs
-                if not pts:
-                    hw = belt.length / 2.0
-                    hh = belt.beltWidth / 2.0
-                    pts = [{'x': -hw, 'y': -hh}, {'x': hw, 'y': -hh}, {'x': hw, 'y': hh}, {'x': -hw, 'y': hh}]
-                verts = []
-                for pt in pts:
-                    rx, ry = rotate_point(0, 0, belt.rotation, pt['x'], pt['y'])
-                    verts.append((belt.x + rx, belt.y + ry))
-            else:
-                verts = get_rect_vertices(belt.x, belt.y, belt.length, belt.beltWidth, belt.rotation)
-            return point_in_polygon(px, py, verts)
+            return point_in_polygon(px, py, get_belt_polygon(belt))
         elif belt.type == "curved":
             return point_in_arc(px, py, belt.x, belt.y, belt.radius, belt.beltWidth, belt.startAngle, belt.endAngle)
         return False
@@ -177,18 +212,7 @@ class PhysicsEngine:
 
     def _get_belt_bounds(self, belt) -> Tuple[float, float, float, float]:
         if belt.type == "linear":
-            if getattr(belt, 'shape', 'rectangle') == 'quadrilateral':
-                pts = belt.vertexs
-                if not pts:
-                    hw = belt.length / 2.0
-                    hh = belt.beltWidth / 2.0
-                    pts = [{'x': -hw, 'y': -hh}, {'x': hw, 'y': -hh}, {'x': hw, 'y': hh}, {'x': -hw, 'y': hh}]
-                verts = []
-                for pt in pts:
-                    rx, ry = rotate_point(0, 0, belt.rotation, pt['x'], pt['y'])
-                    verts.append((belt.x + rx, belt.y + ry))
-            else:
-                verts = get_rect_vertices(belt.x, belt.y, belt.length, belt.beltWidth, belt.rotation)
+            verts = get_belt_polygon(belt)
             xs = [v[0] for v in verts]
             ys = [v[1] for v in verts]
             return min(xs), min(ys), max(xs), max(ys)
@@ -347,16 +371,55 @@ class PhysicsEngine:
                     self.parcels.append(parcel)
                     self.source_timers[source.id] = 0.0 # reset timer only if spawned
 
+    def _play_area_bounds(self) -> Optional[Tuple[float, float, float, float]]:
+        """Bounding box covering every belt/source/sink, padded generously -
+        a safety net for handle_sinks(). Walls are currently disabled
+        (build_walls() is a no-op), so nothing physically stops a parcel
+        from drifting away from every belt without ever crossing a sink
+        polygon - pushed off an edge by a collision, a layout where a belt
+        dead-ends with no sink, or simply "tunneling" past a thin sink
+        polygon in one sub-step. Without this, such a parcel stays in
+        self.parcels forever, and since apply_conveyor_kinematics,
+        evaluate_sensors, and handle_sinks itself all iterate the full
+        parcel list every sub-step, per-tick cost grows without bound the
+        longer the sim runs - eventually looking like the whole app has
+        frozen, even though it's really just doing more and more work on
+        parcels nobody can see anymore."""
+        xs, ys = [], []
+        for belt in self.config.belts:
+            min_x, min_y, max_x, max_y = self._get_belt_bounds(belt)
+            xs.extend([min_x, max_x])
+            ys.extend([min_y, max_y])
+        for source in self.config.sources:
+            xs.append(source.x)
+            ys.append(source.y)
+        for sink in self.config.sinks:
+            xs.extend([sink.x - sink.width / 2.0, sink.x + sink.width / 2.0])
+            ys.extend([sink.y - sink.height / 2.0, sink.y + sink.height / 2.0])
+        if not xs or not ys:
+            return None
+        margin = 20.0  # meters - generous, well beyond any legitimate belt-edge overshoot
+        return (min(xs) - margin, min(ys) - margin, max(xs) + margin, max(ys) + margin)
+
     def handle_sinks(self):
         to_remove = []
+        bounds = self._play_area_bounds()
         for parcel in self.parcels:
             px, py = parcel.body.position
+            in_a_sink = False
             for sink in self.config.sinks:
                 verts = get_rect_vertices(sink.x, sink.y, sink.width, sink.height, 0)
                 if point_in_polygon(px, py, verts):
-                    to_remove.append(parcel)
+                    in_a_sink = True
                     break
-                    
+            if in_a_sink:
+                to_remove.append(parcel)
+                continue
+            if bounds is not None:
+                min_x, min_y, max_x, max_y = bounds
+                if not (min_x <= px <= max_x and min_y <= py <= max_y):
+                    to_remove.append(parcel)
+
         for p in to_remove:
             self.space.remove(p.body, p.shape)
             self.parcels.remove(p)
@@ -374,8 +437,6 @@ class PhysicsEngine:
             # for v in parcel.shape.get_vertices():
             #     wv = pos + v.rotated(parcel.body.angle)
             #     sample_pts.append((wv.x, wv.y))
-
-            belt_vels = [ self._get_belt_velocity_at(sp[0], sp[1]) for sp in sample_pts ]
 
             if getattr(self.config, 'useSurfaceVelocity', False):
                 touching_belts:Dict[str, Belt] = {}
@@ -494,15 +555,25 @@ class PhysicsEngine:
                             parcel.body.momentum_intersection_ids = set()
 
                         previous_belt_id = getattr(parcel.body, "current_belt_id", None)
-                        # print(f"Parcel {parcel.id} is on belt {previous_belt_id} and switching to belt {selected_belt.id}")
                         if previous_belt_id and previous_belt_id != selected_belt.id:
-
+                            # Start a fresh momentum-blend window using the
+                            # *new* belt's own configured transition time.
+                            # This used to set transition_momentum_time to a
+                            # hardcoded 0.9s (or 0.01s for curved belts)
+                            # before overwriting transition_momentum_duration
+                            # with the belt's real value - since
+                            # dynamic_velocity_modifier computes
+                            # alpha = momentum_time / momentum_duration, that
+                            # mismatch meant a belt's configured
+                            # transition_momentum_duration never actually
+                            # controlled the transition's timing (e.g. the
+                            # 0.6s default produced 0.3s of zero blending
+                            # followed by 0.6s of blending - 0.9s total,
+                            # ignoring the configured value entirely).
                             current_v = parcel.body.velocity
                             parcel.body.transition_momentum_v = (current_v.x, current_v.y)
-                            parcel.body.transition_momentum_duration = 0.01 if selected_belt.type == "curved" else 0.9
-                            parcel.body.transition_momentum_time = parcel.body.transition_momentum_duration
                             parcel.body.transition_momentum_duration = selected_belt.transition_momentum_duration
-                            # print(f"Parcel {parcel.id} switched from belt {previous_belt_id} to belt {selected_belt.id}")
+                            parcel.body.transition_momentum_time = parcel.body.transition_momentum_duration
                         parcel.body.current_belt_id = selected_belt.id
                         parcel.body.target_v_enable = True
                         parcel.body.target_v = (best_belt[0], best_belt[1])
@@ -522,6 +593,11 @@ class PhysicsEngine:
                 parcel.body.target_v_enable = False
 
             # --- ORIGINAL MANUAL IMPULSE LOGIC ---
+            # Only computed here, not up front - the useSurfaceVelocity
+            # branch above `continue`s without ever touching belt_vels, so
+            # sampling it unconditionally for every parcel/tick was pure
+            # waste whenever that mode is on.
+            belt_vels = [ self._get_belt_velocity_at(sp[0], sp[1]) for sp in sample_pts ]
             any_hit = False
             for idx, belt_vel in enumerate(belt_vels):
                 sp = sample_pts[idx]
@@ -738,16 +814,25 @@ class PhysicsEngine:
                 sensor.sensor_states = "".join(bits)
 
     def update(self, dt: float):
-        sub_steps = getattr(self.config, 'simulationSteps', 4)
-        if sub_steps <= 0: sub_steps = 1
-        
-        sub_dt = dt / sub_steps
-        
-        for _ in range(sub_steps):
-            self.handle_sources(sub_dt)
-            self.apply_conveyor_kinematics()
-            self.space.step(sub_dt)
-            self.handle_sinks()
-            
-        # Sensor evaluation once per frame (not per sub-step)
-        self.evaluate_sensors()
+        # Held for the whole step (all sub-steps + sensor evaluation), not
+        # just the outermost bookkeeping - kinematics/sensor evaluation
+        # read config.belts/config.sensors throughout, and a partial lock
+        # would still let a concurrent deserialize() interleave mid-step.
+        # This is pure CPU-bound simulation work with no I/O inside it, so
+        # holding the lock for its duration doesn't risk the kind of stall
+        # blocking network sends would (see MQTTSyncEngine.sync()).
+        with self._lock:
+            sub_steps = getattr(self.config, 'simulationSteps', 4)
+            if sub_steps <= 0: sub_steps = 1
+
+            sub_dt = dt / sub_steps
+
+            for _ in range(sub_steps):
+                self.handle_sources(sub_dt)
+                self.apply_conveyor_kinematics()
+                self.space.step(sub_dt)
+                self.handle_sinks()
+
+            # Sensor evaluation once per frame (not per sub-step)
+            self.evaluate_sensors()
+            self.sim_time += dt

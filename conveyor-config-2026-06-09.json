@@ -1,0 +1,470 @@
+{
+  "version": "1.0",
+  "savedAt": 1780980215917,
+  "belts": [
+    {
+      "id": "L-BELT-A",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 2.989370634,
+      "y": 4.003543122,
+      "length": 4,
+      "beltWidth": 0.4,
+      "rotation": 0,
+      "radius": 0,
+      "startAngle": 0,
+      "endAngle": 0,
+      "speed": 1,
+      "directionVector": {
+        "x": 1,
+        "y": 0
+      },
+      "direction": 1,
+      "color": "#1e293b",
+      "vertexs": [
+        {
+          "x": -2,
+          "y": -0.2
+        },
+        {
+          "x": 2,
+          "y": -0.2
+        },
+        {
+          "x": 2,
+          "y": 0.2
+        },
+        {
+          "x": -2,
+          "y": 0.2
+        }
+      ]
+    },
+    {
+      "id": "C-BELT-B",
+      "type": "curved",
+      "shape": "arc",
+      "x": 5,
+      "y": 4.4,
+      "length": 0,
+      "beltWidth": 0.4,
+      "rotation": 0,
+      "radius": 0.4,
+      "startAngle": 270,
+      "endAngle": 360,
+      "speed": 1,
+      "directionVector": {
+        "x": 1,
+        "y": 0
+      },
+      "direction": 1,
+      "color": "#1e293b"
+    },
+    {
+      "id": "L-BELT-C",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 5.4,
+      "y": 6.4,
+      "length": 4,
+      "beltWidth": 0.4,
+      "rotation": 90,
+      "radius": 0,
+      "startAngle": 0,
+      "endAngle": 0,
+      "speed": 1,
+      "directionVector": {
+        "x": 0,
+        "y": 1
+      },
+      "direction": 1,
+      "color": "#1e293b",
+      "vertexs": [
+        {
+          "x": -2,
+          "y": -0.2
+        },
+        {
+          "x": 2,
+          "y": -0.2
+        },
+        {
+          "x": 2,
+          "y": 0.2
+        },
+        {
+          "x": -2,
+          "y": 0.2
+        }
+      ],
+      "directionAngle": 90
+    },
+    {
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 5.425583580087131,
+      "y": 8.619393879162823,
+      "length": 0.4,
+      "beltWidth": 0.4,
+      "rotation": 0,
+      "radius": 0,
+      "startAngle": 0,
+      "endAngle": 0,
+      "speed": 1.2000000476837158,
+      "directionVector": {
+        "x": 1,
+        "y": 0
+      },
+      "direction": 1,
+      "color": "#1e293b",
+      "id": "belt-4u",
+      "vertexs": [
+        {
+          "x": -0.2,
+          "y": -0.2
+        },
+        {
+          "x": 0.2,
+          "y": -0.2
+        },
+        {
+          "x": 0.2,
+          "y": 0.2
+        },
+        {
+          "x": -0.2,
+          "y": 0.2
+        }
+      ],
+      "directionAngle": 90
+    },
+    {
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 6.622220897245346,
+      "y": 8.6120358224749,
+      "length": 2,
+      "beltWidth": 0.4,
+      "rotation": 0,
+      "radius": 0,
+      "startAngle": 0,
+      "endAngle": 0,
+      "speed": 1,
+      "directionVector": {
+        "x": 1,
+        "y": 0
+      },
+      "direction": 1,
+      "color": "#1e293b",
+      "id": "belt-4z",
+      "vertexs": [
+        {
+          "x": -1,
+          "y": -0.2
+        },
+        {
+          "x": 1,
+          "y": 1.8
+        },
+        {
+          "x": 1,
+          "y": 2.2
+        },
+        {
+          "x": -1,
+          "y": 0.2
+        }
+      ],
+      "directionAngle": 45
+    },
+    {
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 4.2157492426756935,
+      "y": 8.61389849497124,
+      "length": 2,
+      "beltWidth": 0.4,
+      "rotation": 0,
+      "radius": 0,
+      "startAngle": 0,
+      "endAngle": 0,
+      "speed": 1,
+      "directionVector": {
+        "x": 1,
+        "y": 0
+      },
+      "direction": 1,
+      "color": "#1e293b",
+      "id": "belt-x3",
+      "vertexs": [
+        {
+          "x": -1,
+          "y": 1.8
+        },
+        {
+          "x": 1,
+          "y": -0.2
+        },
+        {
+          "x": 1,
+          "y": 0.2
+        },
+        {
+          "x": -1,
+          "y": 2.2
+        }
+      ],
+      "directionAngle": 135
+    },
+    {
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 5.405540318321478,
+      "y": 9.825922392654258,
+      "length": 2,
+      "beltWidth": 0.4,
+      "rotation": 90,
+      "radius": 0,
+      "startAngle": 0,
+      "endAngle": 0,
+      "speed": 1,
+      "directionVector": {
+        "x": 0,
+        "y": 1
+      },
+      "direction": 1,
+      "color": "#1e293b",
+      "id": "belt-ll",
+      "directionAngle": 90
+    }
+  ],
+  "sensors": [
+    {
+      "id": "ir-sensor-1",
+      "x": 2.5,
+      "y": 4,
+      "width": 0.02,
+      "height": 0.8,
+      "rotation": 0,
+      "isActive": false,
+      "label": "Detection_Line_1",
+      "color": "#334155",
+      "detectedWord": 0
+    },
+    {
+      "id": "ir-sensor-2",
+      "x": 4.2,
+      "y": 4,
+      "width": 0.02,
+      "height": 0.8,
+      "rotation": 0,
+      "isActive": false,
+      "label": "Detection_Line_2",
+      "color": "#334155",
+      "detectedWord": 0
+    },
+    {
+      "x": 5.452352912471665,
+      "y": 8.60144333095916,
+      "width": 0.02,
+      "height": 0.4,
+      "rotation": 45,
+      "isActive": true,
+      "label": "SENSOR",
+      "color": "#334155",
+      "id": "sensor-p177",
+      "detectedWord": 0
+    },
+    {
+      "x": 5.479772074545346,
+      "y": 8.317920226090871,
+      "width": 0.02,
+      "height": 0.4,
+      "rotation": 90,
+      "isActive": false,
+      "label": "SENSOR",
+      "color": "#334155",
+      "id": "sensor-y87r",
+      "detectedWord": 0
+    },
+    {
+      "x": 5.396425839739569,
+      "y": 8.87303624714662,
+      "width": 0.02,
+      "height": 0.3,
+      "rotation": 90,
+      "isActive": true,
+      "label": "SENSOR",
+      "color": "#334155",
+      "id": "sensor-r24m",
+      "detectedWord": 0
+    },
+    {
+      "x": 5.403990210526185,
+      "y": 8.599901614454465,
+      "width": 0.02,
+      "height": 0.4,
+      "rotation": 135,
+      "isActive": true,
+      "label": "SENSOR",
+      "color": "#334155",
+      "id": "sensor-1b2x",
+      "detectedWord": 0
+    },
+    {
+      "x": 2.884923403924298,
+      "y": 4.001334750338623,
+      "width": 0.1,
+      "height": 0.8,
+      "rotation": 0,
+      "isActive": false,
+      "label": "LASER_BANNER",
+      "color": "#4f46e5",
+      "sensorType": "laser_banner",
+      "laserCount": 16,
+      "beamDistance": 0.05,
+      "detectedWord": 0,
+      "id": "sensor-t5av"
+    },
+    {
+      "x": 4.6425109947560035,
+      "y": 3.9874943190138366,
+      "width": 0.1,
+      "height": 0.8,
+      "rotation": 0,
+      "isActive": false,
+      "label": "LASER_BANNER",
+      "color": "#4f46e5",
+      "sensorType": "laser_banner",
+      "laserCount": 16,
+      "beamDistance": 0.05,
+      "detectedWord": 0,
+      "id": "sensor-z16z"
+    },
+    {
+      "x": 3.6438457450946258,
+      "y": 4.010924466678265,
+      "width": 0.1,
+      "height": 0.8,
+      "rotation": 0,
+      "isActive": false,
+      "label": "LASER_BANNER",
+      "color": "#4f46e5",
+      "sensorType": "laser_banner",
+      "laserCount": 16,
+      "beamDistance": 0.05,
+      "detectedWord": 0,
+      "id": "sensor-cecf"
+    }
+  ],
+  "sources": [
+    {
+      "x": 1.1314162274098163,
+      "y": 4.055206614920621,
+      "interval": 1,
+      "minWidth": 0.2,
+      "maxWidth": 0.4,
+      "minHeight": 0.2,
+      "maxHeight": 0.3,
+      "label": "SOURCE",
+      "id": "source-9b3f"
+    }
+  ],
+  "sinks": [
+    {
+      "x": 3.0604846626432276,
+      "y": 10.695768147659434,
+      "width": 1,
+      "height": 1,
+      "label": "SINK",
+      "id": "sink-6grb"
+    },
+    {
+      "x": 7.81792022609087,
+      "y": 10.619928796227715,
+      "width": 1,
+      "height": 1,
+      "label": "SINK",
+      "id": "sink-vfc3"
+    },
+    {
+      "x": 5.447211953651432,
+      "y": 10.989814925229554,
+      "width": 1,
+      "height": 1,
+      "label": "SINK",
+      "id": "sink-a0et"
+    }
+  ],
+  "mqttSettings": {
+    "enabled": true,
+    "brokerUrl": "ws://localhost:5000/mqtt",
+    "topicPrefix": "/plcsim/",
+    "topics": [
+      {
+        "id": "topic-fruu",
+        "topic": "input",
+        "interval": 100,
+        "direction": "out",
+        "format": "binary_struct",
+        "endianness": "LE",
+        "components": [
+          {
+            "id": "sensor-y87r",
+            "type": "sensor"
+          },
+          {
+            "id": "sensor-1b2x",
+            "type": "sensor"
+          },
+          {
+            "id": "sensor-p177",
+            "type": "sensor"
+          },
+          {
+            "id": "belt-4u",
+            "type": "belt"
+          },
+          {
+            "id": "sensor-z16z",
+            "type": "sensor"
+          }
+        ]
+      },
+      {
+        "id": "topic-i5cg",
+        "topic": "output",
+        "interval": 100,
+        "direction": "in",
+        "format": "binary_struct",
+        "endianness": "LE",
+        "components": [
+          {
+            "id": "belt-4u",
+            "type": "belt"
+          }
+        ]
+      },
+      {
+        "id": "topic-x0gz",
+        "topic": "new_topic",
+        "interval": 90,
+        "direction": "out",
+        "format": "json",
+        "endianness": "LE",
+        "components": [
+          {
+            "id": "sensor-z16z",
+            "type": "sensor"
+          }
+        ]
+      }
+    ]
+  },
+  "simulatorBackend": "matter",
+  "simulationSteps": 4,
+  "kineticFriction": true,
+  "collisionEnabled": true,
+  "gridSnap": true,
+  "gridSize": 0.5
+}

@@ -1,0 +1,8 @@
+{
+  "transport": "tcp",
+  "enabled": true,
+  "tcpBindHost": "0.0.0.0",
+  "tcpServerHost": "127.0.0.1",
+  "tcpPort": 5001,
+  "endianness": "LE"
+}

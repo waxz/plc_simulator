@@ -1,16 +1,41 @@
+"""
+plc_mock.py - Mock PLC client for testing the simulator's MQTT/TCP data
+exchange. Exercises the structured input/output ComponentMessage channels
+and two of the data-visualization metrics layouts (MetricLayout1 and
+MetricLayout3 in mqtt_data_exchange.py) on the SAME connection - the
+values sent are this client's own measured values (the send-loop period,
+the last output-send duration, the round-trip latency computed from the
+simulator's clock field, the accumulated send count, the belt speed and
+LED states just set), not synthetic demo data. See _build_layout1_sample()
+and _build_layout3_sample() below.
+
+Over TCP, every frame this client sends carries its own --node-id and an
+explicit FrameType (IO_MAPPING for the output channel, METRIC_LAYOUT_1 /
+METRIC_LAYOUT_3 for the two metrics layouts, see METRICS_CHANNELS) in the
+header - see FrameType/ParsedFrame in tcp_framed_transport.py. Over MQTT
+there is no such header, so each layout is disambiguated by its own topic
+(metrics vs metric3); node id / frame type only apply to the TCP path.
+"""
 import time
 import argparse
 import threading
 from dataclasses import dataclass
 from config_parser import load_config
 from mqtt_manager import FlexibleProtocolMQTTManager
-from mqtt_message_binding import ComponentMessage, custom_component_mapping
-from mqtt_data_exchange import PUBLISH_TOPICS, SUBSCRIBE_TOPICS, apply_exchange_config
+from mqtt_message_binding import ComponentMessage, MetricsMessage, custom_component_mapping
+from mqtt_data_exchange import (
+    METRICS_CHANNELS,
+    MetricLayout1,
+    MetricLayout1Perf,
+    MetricLayout1Results,
+    MetricLayout3,
+    MetricLayout3Test123,
+    PUBLISH_TOPICS,
+    SUBSCRIBE_TOPICS,
+    apply_exchange_config,
+)
 from struct_utils import print_byte_by_byte
-from tcp_framed_transport import TcpFramedClient
-
-from multiprocessing import Process, Lock
-from multiprocessing.sharedctypes import Value, Array
+from tcp_framed_transport import FrameType, ParsedFrame, TcpFramedClient
 
 def _struct_endianness(topic_def, config=None):
     default_endianness = config.mqttSettings.endianness if config is not None else "LE"
@@ -113,6 +138,49 @@ def _extract_latency_ms(payload: bytes, topic_def, config=None) -> float | None:
         return None
     return (time.time_ns() - sent_ns) / 1_000_000.0
 
+
+def _build_layout1_sample(
+    loop_period_ms: float,
+    rtt_latency_ms: float,
+    send_elapsed_us: float,
+    tx_count: int,
+    sent_ok: bool,
+    belt_speed: float,
+) -> MetricLayout1:
+    """This client's own measured values as a MetricLayout1 instance (see
+    metric_layout.py / mqtt_data_exchange.py) - MetricsMessage.serialize()
+    packs it straight to the wire, no hand-keyed (group, name) dict. Field
+    names say what each number actually is: loop_period_ms is the interval
+    between send-loop iterations (~= --send-interval), rtt_latency_ms is
+    the round-trip latency computed in handle_input(), send_elapsed_us is
+    how long building + sending the last output payload took."""
+    return MetricLayout1(
+        perf=MetricLayout1Perf(
+            scan_time_ms=loop_period_ms,
+            cycle_time_ms=rtt_latency_ms,
+            fn_elapsed_us=send_elapsed_us,
+            sample_count=tx_count,
+        ),
+        results=MetricLayout1Results(
+            last_result_code=0 if sent_ok else 1,
+            # Only the first component is meaningful (the belt's scalar
+            # speed); this client doesn't track a separate Y component.
+            belt_1_velocity=(belt_speed, 0.0),
+        ),
+    )
+
+
+def _build_layout3_sample(led_on: bool, led2_on: bool, value: float) -> MetricLayout3:
+    """A second metric layout (frame_type METRIC_LAYOUT_3, topic
+    /plcsim/metric3) this client also reports, to exercise a node sending
+    more than one layout over the same connection. serialize() takes the
+    top-level MetricLayout3 instance - not the MetricLayout3Test123 group
+    on its own."""
+    return MetricLayout3(
+        test123=MetricLayout3Test123(led=led_on, led2=led2_on, v=value),
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Mock PLC Client for testing MQTT data exchange")
     parser.add_argument("config", help="Path to the JSON workspace configuration")
@@ -120,7 +188,13 @@ def main():
     parser.add_argument("--send-interval", type=float, default=2.0, help="Seconds between output command publishes")
     parser.add_argument("--metrics-interval", type=float, default=5.0, help="Seconds between performance reports")
     parser.add_argument("--dump-bytes", action="store_true", help="Print each received payload byte")
+    parser.add_argument(
+        "--node-id", type=int, default=0,
+        help="This client's identity in the TCP frame header's Node ID byte (0-255, TCP transport only)",
+    )
     args = parser.parse_args()
+    if not (0 <= args.node_id <= 0xFF):
+        parser.error("--node-id must be between 0 and 255")
 
     # Load configuration to get MQTT settings and use as a state container
     config = load_config(args.config)
@@ -146,24 +220,47 @@ def main():
     output_mapping = custom_component_mapping(config, output_ids)
     output_msg = ComponentMessage(output_mapping, endianness=_struct_endianness(SUBSCRIBE_TOPICS["output"], config))
 
+    # Metrics channels - same connection as the output channel above.
+    # from_layout() derives each wire format from its layout dataclass
+    # (mqtt_data_exchange.py). This client reports its OWN measured values
+    # through them (see _build_layout1_sample() / _build_layout3_sample()
+    # and the send loop below), not synthetic demo data.
+    metrics_topic_suffix = METRICS_CHANNELS[FrameType.METRIC_LAYOUT_1]["topic_suffix"]
+    metrics_topic = f"{prefix}{metrics_topic_suffix}".replace("//", "/")
+    metrics_msg = MetricsMessage.from_layout(MetricLayout1, endianness=_struct_endianness({}, config))
+
+    # A second layout this client also reports (METRIC_LAYOUT_3) - its own
+    # frame_type over TCP, its own topic over MQTT (metric3, not metrics).
+    metric3_topic_suffix = METRICS_CHANNELS[FrameType.METRIC_LAYOUT_3]["topic_suffix"]
+    metric3_topic = f"{prefix}{metric3_topic_suffix}".replace("//", "/")
+    metric3_msg = MetricsMessage.from_layout(MetricLayout3, endianness=_struct_endianness({}, config))
+
     mqtt = None
     tcp = None
     lock = threading.Lock()
-    lock2 = Lock()
-    botton_array = Array("c",[0 for i in range(9)],lock=lock2)
+    # Written by handle_input() (nonlocal) whenever a received frame
+    # carries a valid clock timestamp; read by the send loop below as the
+    # most recently observed round-trip latency.
+    last_latency_ms = 0.0
 
     def handle_input(raw):
-        payload = raw if isinstance(raw, (bytes, bytearray)) else raw.encode()
-        # if tcp:
-            # remove first 8 bytes (magic + payload length)
-            # if len(payload) < 8:
-                # metrics.record_malformed()
-                # print(
-                    # f"[<- RECV {input_topic}] Ignoring payload: "
-                    # f"expected at least 4 bytes, got {len(payload)}"
-                # )
-                # return
-            # payload = payload[8:]
+        nonlocal last_latency_ms
+        # TcpFramedClient hands back a ParsedFrame (node_id, frame_type,
+        # payload) - see tcp_framed_transport.py; MQTT has no such header,
+        # so mqtt.register_callback below only ever calls this with raw
+        # payload bytes (or str) instead. Either way this only ever
+        # processes the "input" topic, which is always IO_MAPPING - a
+        # differently-typed TCP frame here would mean something is
+        # misconfigured (e.g. pointed at the wrong port), so it's dropped
+        # rather than fed to input_msg.deserialize() as if it matched.
+        if isinstance(raw, ParsedFrame):
+            if raw.frame_type != FrameType.IO_MAPPING:
+                print(f"[<- RECV {input_topic}] Ignoring frame_type={raw.frame_type} from node {raw.node_id} "
+                      f"(expected IO_MAPPING={FrameType.IO_MAPPING}).")
+                return
+            payload = raw.payload
+        else:
+            payload = raw if isinstance(raw, (bytes, bytearray)) else raw.encode()
 
         if args.dump_bytes:
             print_byte_by_byte(payload)
@@ -175,41 +272,32 @@ def main():
             )
             return
 
-        metrics.record_rx(len(payload), _extract_latency_ms(payload, PUBLISH_TOPICS["input"], config))
+        latency_ms = _extract_latency_ms(payload, PUBLISH_TOPICS["input"], config)
+        if latency_ms is not None:
+            last_latency_ms = latency_ms
+        metrics.record_rx(len(payload), latency_ms)
         with lock:
             input_msg.deserialize(payload, config)
-            
-            # Print state of some interesting components
-            sensor_1 = next((s for s in config.sensors if s.id == 'sensor_1_2_1'), None)
-            sensor_2 = next((s for s in config.sensors if s.id == 'sensor_1_3_1'), None)
-            button_0 = next((b for b in config.buttons if b.id == 'button_1_1_1'), None)
-            button_1 = next((b for b in config.buttons if b.id == 'button_1_1_2'), None)
-            button_2 = next((b for b in config.buttons if b.id == 'button_1_1_3'), None)
-            button_3 = next((b for b in config.buttons if b.id == 'button_1_2_1'), None)
-            button_4 = next((b for b in config.buttons if b.id == 'button_1_2_2'), None)
-            button_5 = next((b for b in config.buttons if b.id == 'button_1_2_3'), None)
-            button_6 = next((b for b in config.buttons if b.id == 'button_1_3_1'), None)
-            button_7 = next((b for b in config.buttons if b.id == 'button_1_3_2'), None)
-            button_8 = next((b for b in config.buttons if b.id == 'button_1_3_3'), None)
+
+            # Print state of some interesting components.
+            def _state(collection, comp_id):
+                comp = next((c for c in collection if c.id == comp_id), None)
+                return comp.sensor_states if comp else 'N/A'
+
+            sensor_ids = ['sensor_1_2_1', 'sensor_1_3_1']
+            button_ids = [
+                'button_1_1_1', 'button_1_1_2', 'button_1_1_3',
+                'button_1_2_1', 'button_1_2_2', 'button_1_2_3',
+                'button_1_3_1', 'button_1_3_2', 'button_1_3_3',
+            ]
+            sensor_text = " | ".join(_state(config.sensors, sid) for sid in sensor_ids)
+            button_text = " | ".join(str(_state(config.buttons, bid)) for bid in button_ids)
+
             belt_1 = next((b for b in config.belts if b.id == 'belt_1_1_1'), None)
-            belt_2 = next((b for b in config.belts if b.id == 'belt_1_2_1'), None)
-            belt_3 = next((b for b in config.belts if b.id == 'belt_1_3_1'), None)
-            
-            s1_state = sensor_1.sensor_states if sensor_1 else 'N/A'
-            s2_state = sensor_2.sensor_states if sensor_2 else 'N/A'
-            btn_0_state = button_0.sensor_states if button_0 else 'N/A'
-            btn_1_state = button_1.sensor_states if button_1 else 'N/A'
-            btn_2_state = button_2.sensor_states if button_2 else 'N/A'
-            btn_3_state = button_3.sensor_states if button_3 else 'N/A'
-            btn_4_state = button_4.sensor_states if button_4 else 'N/A'
-            btn_5_state = button_5.sensor_states if button_5 else 'N/A'
-            btn_6_state = button_6.sensor_states if button_6 else 'N/A'
-            btn_7_state = button_7.sensor_states if button_7 else 'N/A'
-            btn_8_state = button_8.sensor_states if button_8 else 'N/A'
             b1_speed = belt_1.speed if belt_1 else 'N/A'
             b1_text = f"{b1_speed:.2f}" if isinstance(b1_speed, (int, float)) else str(b1_speed)
-            
-            print(f"[<- RECV {input_topic}] S1: {s1_state} | S2: {s2_state} | BTN:  {btn_0_state} | {btn_1_state} | {btn_2_state} | {btn_3_state} | {btn_4_state} | {btn_5_state} | {btn_6_state} | {btn_7_state} | {btn_8_state} | B1 Spd: {b1_text}")
+
+            print(f"[<- RECV {input_topic}] S: {sensor_text} | BTN: {button_text} | B1 Spd: {b1_text}")
 
     print(f"Starting Mock PLC Client...")
     if transport == "mqtt":
@@ -255,16 +343,23 @@ def main():
     print("Connected! Press Ctrl+C to exit.")
     print(f"Listening on: {input_topic}")
     print(f"Publishing to: {output_topic}")
+    print(f"Reporting metrics on: {metrics_topic} (layout 1), {metric3_topic} (layout 3)")
 
     try:
         counter = 0
+        last_loop_start = time.perf_counter()
         while True:
+            loop_start = time.perf_counter()
+            loop_period_ms = (loop_start - last_loop_start) * 1000.0
+            last_loop_start = loop_start
+
             # Every ~2 seconds, toggle belt 1_1_1 speed and publish it back
+            send_start = time.perf_counter()
             with lock:
                 belt_1_1_1 = next((b for b in config.belts if b.id == 'belt_1_1_1'), None)
                 if belt_1_1_1:
-                    
-                    belt_1_1_1.speed = 2.0 if (counter % 2 == 0) else False
+
+                    belt_1_1_1.speed = 2.0 if (counter % 2 == 0) else 0.0
                     speed_val = belt_1_1_1.speed
                 else:
                     speed_val = 0.0
@@ -274,30 +369,60 @@ def main():
                     led_1_1_1.isOn = True if (counter % 2 == 0) else False
                 if led_1_1_2:
                     led_1_1_2.isOn = False if (counter % 2 == 0) else True
+                # Captured under the lock - the send loop reads these below,
+                # off-lock, while the sim mutates config from another thread.
+                led_1_on = bool(led_1_1_1.isOn) if led_1_1_1 else False
+                led_2_on = bool(led_1_1_2.isOn) if led_1_1_2 else False
                 payload = output_msg.serialize(config)
 
             if mqtt is not None:
                 mqtt.publish(output_topic, payload)
                 sent = mqtt.client.is_connected()
             elif tcp is not None:
-                # add payload length in first word
-                # MAGIC_MARKER = (0x12345678).to_bytes(4, byteorder="big")
-                # length_bytes = len(payload).to_bytes(4, byteorder="big")
-
-                # payload = MAGIC_MARKER + length_bytes + payload
-                # print(f"[TCPSync] Payload length: {length_bytes}")
-
-                sent = tcp.send(payload)
+                # TcpFramedClient.send() wraps the payload with the
+                # magic-marker header/node-id/frame-type/length/trailer
+                # itself (see TcpFrameCodec.pack() in
+                # tcp_framed_transport.py) - no manual framing needed here.
+                sent = tcp.send(payload, frame_type=FrameType.IO_MAPPING, node_id=args.node_id)
             else:
                 sent = False
+            send_elapsed_us = (time.perf_counter() - send_start) * 1_000_000.0
 
             metrics.record_tx(len(payload), sent)
             print(f"[-> SEND {output_topic}] Sent command -> B1 Spd: {speed_val:.2f}" if sent else f"[-> SEND {output_topic}] Dropped command: not connected")
-            
+
+            # Report this client's own measured values through the metrics
+            # channel, over the SAME connection as the output payload above.
+            # serialize() takes the MetricLayout1 instance directly.
+            metrics_payload = metrics_msg.serialize(
+                _build_layout1_sample(
+                    loop_period_ms=loop_period_ms,
+                    rtt_latency_ms=last_latency_ms,
+                    send_elapsed_us=send_elapsed_us,
+                    tx_count=metrics.tx_count,
+                    sent_ok=sent,
+                    belt_speed=speed_val,
+                )
+            )
+            if mqtt is not None:
+                mqtt.publish(metrics_topic, metrics_payload)
+            elif tcp is not None:
+                tcp.send(metrics_payload, frame_type=FrameType.METRIC_LAYOUT_1, node_id=args.node_id)
+
+            # The second layout (METRIC_LAYOUT_3) - its own topic over MQTT,
+            # its own frame_type over TCP.
+            metric3_payload = metric3_msg.serialize(
+                _build_layout3_sample(led_on=led_1_on, led2_on=led_2_on, value=speed_val)
+            )
+            if mqtt is not None:
+                mqtt.publish(metric3_topic, metric3_payload)
+            elif tcp is not None:
+                tcp.send(metric3_payload, frame_type=FrameType.METRIC_LAYOUT_3, node_id=args.node_id)
+
             counter += 1
             metrics.maybe_report()
             time.sleep(args.send_interval)
-            
+
     except KeyboardInterrupt:
         print("\nStopping Mock PLC...")
     finally:

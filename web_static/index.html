@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Channel Registry</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">Channel Registry</div>
+  <nav class="tabs">
+    <button class="tab-btn active" data-tab="channels">Channels</button>
+    <button class="tab-btn" data-tab="live">Live Data</button>
+  </nav>
+  <div class="topbar-status">
+    <span id="registry-path"></span>
+    <span id="dirty-badge" class="dirty-badge hidden">unsaved changes</span>
+  </div>
+</header>
+<div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+<main>
+  <!-- ================= CHANNELS TAB ================= -->
+  <section id="tab-channels" class="tab-panel active">
+    <aside class="channel-list">
+      <div class="channel-list-head">
+        <span>Channels</span>
+        <button id="new-channel-btn" class="btn-small" title="Add a new channel">+ New</button>
+      </div>
+      <ul id="channel-list"></ul>
+    </aside>
+
+    <div class="channel-editor" id="channel-editor">
+      <div class="empty-state" id="editor-empty">Select a channel, or create a new one.</div>
+
+      <div id="editor-body" class="hidden">
+        <div class="field-row">
+          <label>Name<input type="text" id="f-name"></label>
+          <label>Kind
+            <select id="f-kind">
+              <option value="io_mapping">io_mapping</option>
+              <option value="metric">metric</option>
+            </select>
+          </label>
+          <label>Direction
+            <select id="f-direction">
+              <option value="in">in (client &rarr; simulator)</option>
+              <option value="out">out (simulator &rarr; client)</option>
+            </select>
+          </label>
+        </div>
+        <div class="field-row">
+          <label>Topic<input type="text" id="f-topic"></label>
+          <label>Frame type<input type="text" id="f-frame-type" placeholder="e.g. METRIC_LAYOUT_1"></label>
+          <label>Interval (ms)<input type="number" id="f-interval" min="1" value="100"></label>
+          <label>Mapping CSV<input type="text" id="f-csv" placeholder="channels/name.csv"></label>
+        </div>
+
+        <div class="channel-status" id="channel-status"></div>
+
+        <!-- io_mapping: pick components, the server decides everything else -->
+        <div class="component-picker" id="component-picker">
+          <div class="quick-add">
+            <span class="quick-add-label">Add component:</span>
+            <select id="qa-component"></select>
+            <button id="qa-add-btn" class="btn-small">+ Add</button>
+          </div>
+          <div class="quick-add-hint">
+            How each component packs onto the wire - one BIT per index, or a compact BYTE/UINT16/UINT32/FLOAT
+            register - comes from its own <code>packFormat</code> in the config, not a choice made here.
+            Padding between components is inserted automatically, the same way the CLI tools build it.
+          </div>
+          <ul class="chip-list" id="component-chip-list"></ul>
+        </div>
+
+        <!-- metric: no config-backed component to pick from - authored by hand -->
+        <div class="metric-row-add" id="metric-row-add">
+          <button id="add-row-btn" class="btn-small">+ Add row</button>
+          <button id="qa-pad-btn" class="btn-small" title="Insert a PAD row - auto-pads to the next byte boundary">+ PAD row</button>
+        </div>
+        <div class="quick-add-hint" id="metric-hint">
+          <b>Group</b> is what the Live Data tree branches on (same pattern as node0/perf, node0/results in the
+          Qt panel this replaces) - reuse a group across rows to collect them under one branch. <b>Type</b> is
+          the PLC-style register width the field packs as on the wire.
+        </div>
+
+        <div class="rows-table-wrap">
+          <table class="rows-table">
+            <thead id="rows-thead"></thead>
+            <tbody id="rows-tbody"></tbody>
+          </table>
+        </div>
+
+        <div class="editor-actions">
+          <button id="save-btn" class="btn-primary">Save registry</button>
+          <button id="delete-btn" class="btn-danger">Delete channel</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= LIVE DATA TAB ================= -->
+  <section id="tab-live" class="tab-panel">
+    <aside class="metrics-tree-pane">
+      <div class="channel-list-head"><span>Metrics</span></div>
+      <div class="tree-filter">
+        <input type="text" id="metrics-filter" placeholder="Filter by group or name...">
+      </div>
+      <div id="metrics-tree"></div>
+    </aside>
+
+    <div class="live-main">
+      <div id="live-disconnected" class="empty-state hidden">
+        No live simulator connected. Run this server embedded in main.py
+        (with a live MetricsStore) to see data here.
+      </div>
+      <div id="live-body">
+        <div class="time-range-bar">
+          <label>From <input type="datetime-local" id="range-from" step="1"></label>
+          <label>To <input type="datetime-local" id="range-to" step="1"></label>
+          <label class="follow-latest"><input type="checkbox" id="range-follow" checked> Follow latest</label>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="chart" height="320"></canvas>
+        </div>
+        <div class="table-wrap">
+          <table class="rows-table" id="latest-table">
+            <thead><tr><th>Group</th><th>Name</th><th>Kind</th><th>Value</th><th>Time</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script src="/static/vendor/chart.umd.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

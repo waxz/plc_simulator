@@ -1,16 +1,9 @@
 import pygame
 import pygame_gui
-import json
-import socket
-import struct
-import threading
-import time
 from copy import deepcopy
-from urllib.parse import urlparse
-from config_parser import Belt, Sensor, Source, Sink, ControlButton, LedIndicator, TopicComponent, TopicConfig
+from config_parser import Belt, Sensor, Source, Sink, ControlButton, LedIndicator
 from physics import PhysicsEngine
-
-import paho.mqtt.client as mqtt
+from id_utils import unique_incremented_id
 
 
 class EditorUI:
@@ -29,7 +22,7 @@ class EditorUI:
         
         # Toolbar (Left)
         self.toolbar_panel = pygame_gui.elements.UIPanel(
-            relative_rect=pygame.Rect(10, 50, 120, 400),
+            relative_rect=pygame.Rect(10, 50, 120, 360),
             manager=self.manager
         )
         self.add_linear_btn = pygame_gui.elements.UIButton(
@@ -80,13 +73,7 @@ class EditorUI:
             manager=self.manager,
             container=self.toolbar_panel
         )
-        self.mqtt_btn = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(10, 330, 100, 30),
-            text='MQTT',
-            manager=self.manager,
-            container=self.toolbar_panel
-        )
-        
+
         # Properties Panel (Right)
         self.prop_panel = pygame_gui.elements.UIPanel(
             relative_rect=pygame.Rect(self.width - 250, 0, 250, self.height),
@@ -174,6 +161,13 @@ class EditorUI:
             container=self.prop_panel
         )
         self.sensor_state_lbl.hide()
+        self.prop_error_lbl = pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(5, self.height - 65, 235, 20),
+            text="",
+            manager=self.manager,
+            container=self.prop_panel
+        )
+        self.prop_error_lbl.hide()
         self.prop_delete_btn = pygame_gui.elements.UIButton(
             relative_rect=pygame.Rect(5, self.height - 45, 115, 30),
             text="Delete",
@@ -216,51 +210,6 @@ class EditorUI:
         self.manager_selected_key = None
         self.manager_clear = False
 
-        self.mqtt_window = None
-        self.mqtt_enabled_checkbox = None
-        self.mqtt_broker_entry = None
-        self.mqtt_prefix_entry = None
-        self.mqtt_status_lbl = None
-        self.mqtt_topic_list = None
-        self.mqtt_topic_id_entry = None
-        self.mqtt_topic_entry = None
-        self.mqtt_interval_entry = None
-        self.mqtt_direction_dd = None
-        self.mqtt_format_dd = None
-        self.mqtt_endianness_dd = None
-        self.mqtt_topic_add_btn = None
-        self.mqtt_topic_save_btn = None
-        self.mqtt_topic_delete_btn = None
-        self.mqtt_component_dd = None
-        self.mqtt_component_add_btn = None
-        self.mqtt_component_remove_btn = None
-        self.mqtt_binding_component_dd = None
-        self.mqtt_binding_variable_dd = None
-        self.mqtt_binding_entry = None
-        self.mqtt_binding_apply_btn = None
-        self.mqtt_validate_btn = None
-        self.mqtt_debug_topic_entry = None
-        self.mqtt_debug_payload_entry = None
-        self.mqtt_publish_btn = None
-        self.mqtt_subscribe_btn = None
-        self.mqtt_disconnect_btn = None
-        self.mqtt_composer_table = None
-        self.mqtt_composer_preview = None
-        self.mqtt_refresh_composer_btn = None
-        self.mqtt_decode_btn = None
-        self.mqtt_log_box = None
-        self.mqtt_topic_items = {}
-        self.mqtt_component_options = []
-        self.mqtt_selected_topic_id = None
-        self.mqtt_debug_client = None
-        self.mqtt_debug_connected = False
-        self.mqtt_logs = []
-        self.mqtt_pending_logs = []
-        self.mqtt_pending_decodes = []
-        self.ui_thread_id = threading.get_ident()
-        self.mqtt_last_payload = None
-        self.last_sensor_states = {}
-
         self.placement_window = None
         self.placement_x_input = None
         self.placement_y_input = None
@@ -283,13 +232,27 @@ class EditorUI:
         copy_btn = getattr(self, 'prop_copy_btn', None)
         if copy_btn:
             copy_btn.hide()
-        
+        self._clear_prop_error()
+
         for lbl in getattr(self, 'vertex_labels', []):
             lbl.hide()
         for ix in getattr(self, 'vertex_x_inputs', []):
             ix.hide()
         for iy in getattr(self, 'vertex_y_inputs', []):
             iy.hide()
+
+    def _show_prop_error(self, message: str):
+        lbl = getattr(self, 'prop_error_lbl', None)
+        if not lbl:
+            return
+        lbl.set_text(message)
+        lbl.show()
+
+    def _clear_prop_error(self):
+        lbl = getattr(self, 'prop_error_lbl', None)
+        if lbl:
+            lbl.set_text("")
+            lbl.hide()
 
     def show_props_for(self, item):
         self.selected_item = item
@@ -411,7 +374,7 @@ class EditorUI:
         for panel in panels:
             if panel and panel.rect.collidepoint(pos):
                 return True
-        for window in [self.manager_window, self.mqtt_window]:
+        for window in [self.manager_window]:
             if window and window.alive() and window.rect.collidepoint(pos):
                 return True
         return False
@@ -532,21 +495,7 @@ class EditorUI:
             for collection in [self.config.belts, self.config.sensors, self.config.sources, self.config.sinks, self.config.buttons, self.config.leds]
             for item in collection
         }
-        import re
-        m = re.search(r'(\d+)$', base_id)
-        if m:
-            num_str = m.group(1)
-            prefix = base_id[:-len(num_str)]
-            idx = int(num_str) + 1
-        else:
-            prefix = f"{base_id}_"
-            idx = 2
-            
-        candidate = f"{prefix}{idx}"
-        while candidate in existing:
-            idx += 1
-            candidate = f"{prefix}{idx}"
-        return candidate
+        return unique_incremented_id(existing, base_id)
 
     def _duplicate_manager_selection(self):
         if not self.manager_selected_key or self.manager_selected_key not in self.manager_items:
@@ -592,7 +541,6 @@ class EditorUI:
                 self.selected_item = None
                 self.show_props_for(None)
                 self.refresh_manager_panel()
-                self._refresh_composer_table()
                 return item
         return None
 
@@ -613,693 +561,8 @@ class EditorUI:
                 self.selected_item = new_item
                 self.show_props_for(new_item)
                 self.refresh_manager_panel()
-                self._refresh_composer_table()
                 return new_item
         return None
-
-    def open_mqtt_panel(self):
-        if not self.config:
-            return
-        if self.mqtt_window and self.mqtt_window.alive():
-            self.mqtt_window.focus()
-            self.refresh_mqtt_panel()
-            return
-
-        self.mqtt_window = pygame_gui.elements.UIWindow(
-            rect=pygame.Rect(430, 45, 740, 720),
-            manager=self.manager,
-            window_display_title="MQTT Settings",
-            resizable=False
-        )
-        container = self.mqtt_window.get_container()
-        settings = self.config.mqttSettings
-
-        self.mqtt_enabled_checkbox = pygame_gui.elements.UICheckBox(
-            relative_rect=pygame.Rect(10, 10, 110, 28),
-            text="Enabled",
-            manager=self.manager,
-            container=container,
-            initial_state=settings.enabled
-        )
-        pygame_gui.elements.UILabel(pygame.Rect(130, 10, 80, 28), "Broker:", self.manager, container=container)
-        self.mqtt_broker_entry = pygame_gui.elements.UITextEntryLine(
-            relative_rect=pygame.Rect(210, 10, 335, 28),
-            manager=self.manager,
-            container=container,
-            initial_text=settings.brokerUrl
-        )
-        self.mqtt_validate_btn = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(555, 10, 80, 28),
-            text="Validate",
-            manager=self.manager,
-            container=container
-        )
-        pygame_gui.elements.UILabel(pygame.Rect(10, 45, 80, 28), "Prefix:", self.manager, container=container)
-        self.mqtt_prefix_entry = pygame_gui.elements.UITextEntryLine(
-            relative_rect=pygame.Rect(90, 45, 210, 28),
-            manager=self.manager,
-            container=container,
-            initial_text=settings.topicPrefix
-        )
-        self.mqtt_status_lbl = pygame_gui.elements.UILabel(
-            relative_rect=pygame.Rect(310, 45, 325, 28),
-            text="Status: not checked",
-            manager=self.manager,
-            container=container
-        )
-        pygame_gui.elements.UILabel(pygame.Rect(10, 82, 120, 28), "Topics", self.manager, container=container)
-        self.mqtt_topic_list = pygame_gui.elements.UISelectionList(
-            relative_rect=pygame.Rect(10, 112, 210, 165),
-            item_list=[],
-            manager=self.manager,
-            container=container
-        )
-        self.mqtt_topic_add_btn = pygame_gui.elements.UIButton(pygame.Rect(10, 285, 65, 30), "New", self.manager, container=container)
-        self.mqtt_topic_save_btn = pygame_gui.elements.UIButton(pygame.Rect(82, 285, 65, 30), "Save", self.manager, container=container)
-        self.mqtt_topic_delete_btn = pygame_gui.elements.UIButton(pygame.Rect(154, 285, 66, 30), "Delete", self.manager, container=container)
-
-        labels = [("Id:", 235, 112), ("Topic:", 235, 147), ("Interval:", 235, 182)]
-        for text, x, y in labels:
-            pygame_gui.elements.UILabel(pygame.Rect(x, y, 75, 28), text, self.manager, container=container)
-        self.mqtt_topic_id_entry = pygame_gui.elements.UITextEntryLine(pygame.Rect(310, 112, 325, 28), self.manager, container=container)
-        self.mqtt_topic_entry = pygame_gui.elements.UITextEntryLine(pygame.Rect(310, 147, 325, 28), self.manager, container=container)
-        self.mqtt_interval_entry = pygame_gui.elements.UITextEntryLine(pygame.Rect(310, 182, 80, 28), self.manager, container=container)
-        self.mqtt_direction_dd = pygame_gui.elements.UIDropDownMenu(["in", "out"], "out", pygame.Rect(400, 182, 75, 28), self.manager, container=container)
-        self.mqtt_format_dd = pygame_gui.elements.UIDropDownMenu(["json", "string", "binary_struct"], "json", pygame.Rect(310, 217, 130, 28), self.manager, container=container)
-        self.mqtt_endianness_dd = pygame_gui.elements.UIDropDownMenu(["LE", "BE"], "LE", pygame.Rect(450, 217, 75, 28), self.manager, container=container)
-
-        pygame_gui.elements.UILabel(pygame.Rect(235, 260, 150, 28), "Topic components:", self.manager, container=container)
-        self.mqtt_component_dd = pygame_gui.elements.UIDropDownMenu(["none"], "none", pygame.Rect(235, 290, 220, 28), self.manager, container=container)
-        self.mqtt_component_add_btn = pygame_gui.elements.UIButton(pygame.Rect(465, 290, 65, 28), "Add", self.manager, container=container)
-        self.mqtt_component_remove_btn = pygame_gui.elements.UIButton(pygame.Rect(540, 290, 95, 28), "Remove", self.manager, container=container)
-
-        pygame_gui.elements.UILabel(pygame.Rect(10, 330, 170, 28), "Component binding", self.manager, container=container)
-        self.mqtt_binding_component_dd = pygame_gui.elements.UIDropDownMenu(["none"], "none", pygame.Rect(10, 365, 210, 28), self.manager, container=container)
-        self.mqtt_binding_variable_dd = pygame_gui.elements.UIDropDownMenu(["stateBinding"], "stateBinding", pygame.Rect(230, 365, 155, 28), self.manager, container=container)
-        self.mqtt_binding_entry = pygame_gui.elements.UITextEntryLine(
-            pygame.Rect(395, 365, 235, 28),
-            self.manager,
-            container=container,
-            placeholder_text="MQTT variable or PLC tag"
-        )
-        self.mqtt_binding_apply_btn = pygame_gui.elements.UIButton(pygame.Rect(640, 365, 65, 28), "Apply", self.manager, container=container)
-
-        pygame_gui.elements.UILabel(pygame.Rect(10, 405, 160, 28), "Debug topic:", self.manager, container=container)
-        self.mqtt_debug_topic_entry = pygame_gui.elements.UITextEntryLine(
-            pygame.Rect(105, 405, 290, 28),
-            self.manager,
-            container=container,
-            initial_text=self._full_topic(self._selected_topic()) or "sim/test_topic"
-        )
-        self.mqtt_publish_btn = pygame_gui.elements.UIButton(pygame.Rect(405, 405, 80, 28), "Publish", self.manager, container=container)
-        self.mqtt_subscribe_btn = pygame_gui.elements.UIButton(pygame.Rect(493, 405, 90, 28), "Subscribe", self.manager, container=container)
-        self.mqtt_disconnect_btn = pygame_gui.elements.UIButton(pygame.Rect(590, 405, 90, 28), "Stop Sub", self.manager, container=container)
-        self.mqtt_debug_payload_entry = pygame_gui.elements.UITextEntryLine(
-            pygame.Rect(105, 438, 575, 28),
-            self.manager,
-            container=container,
-            placeholder_text="Optional debug payload; blank uses composer output"
-        )
-
-        pygame_gui.elements.UILabel(pygame.Rect(10, 475, 160, 28), "Composer table", self.manager, container=container)
-        self.mqtt_refresh_composer_btn = pygame_gui.elements.UIButton(pygame.Rect(580, 475, 100, 28), "Refresh", self.manager, container=container)
-        self.mqtt_composer_table = pygame_gui.elements.UISelectionList(
-            relative_rect=pygame.Rect(10, 508, 380, 120),
-            item_list=[],
-            manager=self.manager,
-            container=container,
-            allow_multi_select=False
-        )
-        self.mqtt_composer_preview = pygame_gui.elements.UITextBox(
-            html_text="Payload preview",
-            relative_rect=pygame.Rect(400, 508, 280, 120),
-            manager=self.manager,
-            container=container
-        )
-        self.mqtt_decode_btn = pygame_gui.elements.UIButton(pygame.Rect(400, 475, 170, 28), "Decode Last Rx", self.manager, container=container)
-        self.mqtt_log_box = pygame_gui.elements.UITextBox(
-            html_text="MQTT log",
-            relative_rect=pygame.Rect(10, 635, 670, 50),
-            manager=self.manager,
-            container=container
-        )
-
-        self.refresh_mqtt_panel()
-
-    def _component_options(self):
-        options = []
-        for kind, items in [
-            ("belt", self.config.belts),
-            ("sensor", self.config.sensors),
-            ("source", self.config.sources),
-            ("sink", self.config.sinks),
-            ("button", self.config.buttons),
-            ("led", self.config.leds),
-        ]:
-            for item in items:
-                options.append(f"{kind}:{item.id}")
-        return options or ["none"]
-
-    def _topic_component_options(self):
-        options = []
-        for kind, items in [
-            ("belt", self.config.belts),
-            ("sensor", self.config.sensors),
-            ("button", self.config.buttons),
-            ("led", self.config.leds),
-        ]:
-            for item in items:
-                options.append(f"{kind}:{item.id}")
-        return options or ["none"]
-
-    def _selected_option_value(self, dropdown):
-        option = dropdown.selected_option if dropdown else ""
-        return option[0] if isinstance(option, tuple) else option
-
-    def _mqtt_log(self, message: str):
-        if threading.get_ident() != self.ui_thread_id:
-            self.mqtt_pending_logs.append(message)
-            return
-        stamp = time.strftime("%H:%M:%S")
-        self.mqtt_logs.append(f"[{stamp}] {message}")
-        self.mqtt_logs = self.mqtt_logs[-6:]
-        if self.mqtt_log_box:
-            safe_lines = [line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;") for line in self.mqtt_logs]
-            self.mqtt_log_box.set_text("<br>".join(safe_lines) or "MQTT log")
-
-    def _flush_mqtt_logs(self):
-        pending = self.mqtt_pending_logs
-        self.mqtt_pending_logs = []
-        for message in pending:
-            self._mqtt_log(message)
-
-    def _flush_mqtt_decodes(self):
-        pending = self.mqtt_pending_decodes
-        self.mqtt_pending_decodes = []
-        for decoded in pending:
-            self._apply_decoded_values(decoded)
-            self._mqtt_log(f"Decoded: {decoded}")
-        if pending:
-            self.refresh_manager_panel()
-            self._refresh_composer_table()
-
-    def _full_topic(self, topic):
-        if topic is None:
-            return ""
-        prefix = self.config.mqttSettings.topicPrefix.strip("/")
-        name = topic.topic.strip("/")
-        if prefix and name:
-            return f"{prefix}/{name}"
-        return prefix or name
-
-    def _parse_broker_url(self):
-        self._apply_mqtt_settings()
-        url = urlparse(self.config.mqttSettings.brokerUrl)
-        scheme = url.scheme.lower()
-        if scheme == "tcp":
-            scheme = "mqtt"
-        if scheme not in {"mqtt", "mqtts", "ws", "wss"} or not url.hostname:
-            raise ValueError("Use mqtt://host:1883 or ws://host:9001/mqtt")
-        default_port = 8883 if scheme in {"mqtts", "wss"} else 1883
-        if scheme in {"ws", "wss"} and not url.port:
-            default_port = 443 if scheme == "wss" else 9001
-        return url, scheme, url.hostname, url.port or default_port
-
-    def _create_mqtt_client(self, on_message=None):
-        if mqtt is None:
-            raise RuntimeError("paho-mqtt is not installed")
-        url, scheme, host, port = self._parse_broker_url()
-        transport = "websockets" if scheme in {"ws", "wss"} else "tcp"
-        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, transport=transport)
-        if scheme in {"mqtts", "wss"}:
-            client.tls_set()
-        if transport == "websockets":
-            client.ws_set_options(path=url.path or "/mqtt")
-        if on_message:
-            client.on_message = on_message
-        return client, host, port
-
-    def _component_kind_and_item(self, comp):
-        kind = "sensor" if comp.type in {"sensor", "laser_banner"} else comp.type
-        collection = self._collection_for_kind(kind)
-        if collection is None:
-            return None, None
-        for item in collection:
-            if item.id == comp.id:
-                return kind, item
-        return None, None
-
-    def _composer_rows(self, topic=None):
-        topic = topic or self._selected_topic()
-        if not topic:
-            return []
-        rows = []
-        for comp in topic.components:
-            kind, item = self._component_kind_and_item(comp)
-            if not item:
-                rows.append({"component": comp.id, "type": comp.type, "field": "missing", "binding": "", "value": None})
-                continue
-            if kind == "sensor":
-                state = self.last_sensor_states.get(item.id, getattr(item, "isActive", False))
-                rows.append({"component": item.id, "type": comp.type, "field": "state", "binding": getattr(item, "stateBinding", "") or "", "value": state})
-                if getattr(item, "sensorType", "") == "laser_banner":
-                    rows.append({"component": item.id, "type": comp.type, "field": "word", "binding": getattr(item, "wordBinding", "") or "", "value": getattr(item, "detectedWord", 0)})
-            elif kind == "belt":
-                rows.append({"component": item.id, "type": comp.type, "field": "speed", "binding": getattr(item, "speedBinding", "") or "", "value": getattr(item, "speed", 0.0)})
-                rows.append({"component": item.id, "type": comp.type, "field": "directionAngle", "binding": getattr(item, "directionAngleBinding", "") or "", "value": getattr(item, "directionAngle", 0.0)})
-                rows.append({"component": item.id, "type": comp.type, "field": "direction", "binding": getattr(item, "directionBinding", "") or "", "value": getattr(item, "direction", 1)})
-            elif kind == "button":
-                rows.append({"component": item.id, "type": comp.type, "field": "state", "binding": getattr(item, "stateBinding", "") or "", "value": getattr(item, "sensor_states", False)})
-            elif kind == "led":
-                rows.append({"component": item.id, "type": comp.type, "field": "state", "binding": getattr(item, "stateBinding", "") or "", "value": getattr(item, "isOn", False)})
-        return rows
-
-    def _composer_values(self, topic=None):
-        data = {}
-        for row in self._composer_rows(topic):
-            component_data = data.setdefault(row["component"], {})
-            key = row["binding"] or row["field"]
-            component_data[key] = row["value"]
-        return data
-
-    def _encode_topic_payload(self, topic=None):
-        topic = topic or self._selected_topic()
-        if not topic:
-            return b""
-        values = self._composer_values(topic)
-        fmt = topic.format
-        if fmt == "json":
-            return json.dumps(values, separators=(",", ":")).encode("utf-8")
-        if fmt in {"raw", "string"}:
-            parts = []
-            for component, fields in values.items():
-                for field, value in fields.items():
-                    parts.append(f"{component}.{field}={value}")
-            return ";".join(parts).encode("utf-8")
-        endian = "<" if topic.endianness == "LE" else ">"
-        payload = bytearray()
-        for row in self._composer_rows(topic):
-            value = row["value"]
-            if isinstance(value, bool):
-                payload.extend(struct.pack(endian + "?", value))
-            elif isinstance(value, int):
-                payload.extend(struct.pack(endian + "i", value))
-            elif isinstance(value, float):
-                payload.extend(struct.pack(endian + "f", value))
-            else:
-                encoded = str(value).encode("utf-8")[:32]
-                payload.extend(struct.pack(endian + "H", len(encoded)))
-                payload.extend(encoded)
-        return bytes(payload)
-
-    def _estimate_topic_bandwidth(self, topic=None):
-        topic = topic or self._selected_topic()
-        if not topic:
-            return {"payload_bytes": 0, "estimated_packet_bytes": 0, "messages_per_second": 0.0, "bytes_per_second": 0.0}
-        payload = self._encode_topic_payload(topic)
-        topic_bytes = len(self._full_topic(topic).encode("utf-8"))
-        # MQTT QoS 0 publish framing is roughly fixed header + topic length + topic + payload.
-        estimated_packet_bytes = 4 + topic_bytes + len(payload)
-        messages_per_second = 1000.0 / max(1, topic.interval)
-        return {
-            "payload_bytes": len(payload),
-            "estimated_packet_bytes": estimated_packet_bytes,
-            "messages_per_second": messages_per_second,
-            "bytes_per_second": estimated_packet_bytes * messages_per_second,
-        }
-
-    def _decode_topic_payload(self, payload, topic=None):
-        topic = topic or self._selected_topic()
-        if not topic:
-            return None
-        if isinstance(payload, str):
-            payload_bytes = payload.encode("utf-8")
-        else:
-            payload_bytes = payload
-        if topic.format == "json":
-            return json.loads(payload_bytes.decode("utf-8"))
-        if topic.format in {"raw", "string"}:
-            text = payload_bytes.decode("utf-8", errors="replace")
-            decoded = {}
-            for part in text.split(";"):
-                if "=" not in part:
-                    continue
-                left, value = part.split("=", 1)
-                component, field = left.split(".", 1) if "." in left else ("message", left)
-                decoded.setdefault(component, {})[field] = value
-            return decoded or {"message": text}
-        endian = "<" if topic.endianness == "LE" else ">"
-        offset = 0
-        decoded = {}
-        for row in self._composer_rows(topic):
-            current = row["value"]
-            try:
-                if isinstance(current, bool):
-                    size = struct.calcsize("?")
-                    value = struct.unpack_from(endian + "?", payload_bytes, offset)[0]
-                elif isinstance(current, int):
-                    size = struct.calcsize("i")
-                    value = struct.unpack_from(endian + "i", payload_bytes, offset)[0]
-                elif isinstance(current, float):
-                    size = struct.calcsize("f")
-                    value = struct.unpack_from(endian + "f", payload_bytes, offset)[0]
-                else:
-                    str_len = struct.unpack_from(endian + "H", payload_bytes, offset)[0]
-                    offset += struct.calcsize("H")
-                    value = payload_bytes[offset:offset + str_len].decode("utf-8", errors="replace")
-                    size = str_len
-                offset += size
-            except (struct.error, UnicodeDecodeError):
-                value = None
-            decoded.setdefault(row["component"], {})[row["binding"] or row["field"]] = value
-        return decoded
-
-    def _apply_decoded_values(self, decoded):
-        if not isinstance(decoded, dict):
-            return
-        for component_id, fields in decoded.items():
-            if not isinstance(fields, dict):
-                continue
-            item = None
-            for collection in [self.config.belts, self.config.sensors, self.config.sources, self.config.sinks, self.config.buttons, self.config.leds]:
-                item = next((candidate for candidate in collection if candidate.id == component_id), None)
-                if item:
-                    break
-            if not item:
-                continue
-            for key, value in fields.items():
-                binding_attrs = ["speedBinding", "directionAngleBinding", "directionBinding", "stateBinding", "wordBinding", "triggerBinding", "intervalBinding"]
-                attr = next((name[:-7] for name in binding_attrs if getattr(item, name, None) == key), key)
-                if isinstance(item, Sensor) and attr == "state":
-                    attr = "isActive"
-                elif isinstance(item, Sensor) and attr == "word":
-                    attr = "detectedWord"
-                elif isinstance(item, ControlButton) and attr == "state":
-                    attr = "sensor_states"
-                elif isinstance(item, LedIndicator) and attr == "state":
-                    attr = "isOn"
-                if hasattr(item, attr):
-                    current = getattr(item, attr)
-                    try:
-                        if isinstance(current, bool):
-                            value = str(value).lower() in {"1", "true", "yes", "on"}
-                        elif isinstance(current, int):
-                            value = int(float(value))
-                        elif isinstance(current, float):
-                            value = float(value)
-                    except (TypeError, ValueError):
-                        continue
-                    setattr(item, attr, value)
-
-    def _refresh_composer_table(self):
-        if not self.mqtt_composer_table:
-            return
-        rows = self._composer_rows()
-        labels = ["Component        Field              Binding           Value"]
-        for row in rows:
-            value = str(row["value"])
-            labels.append(f"{row['component'][:15]:<16} {row['field'][:17]:<18} {(row['binding'] or '-')[:16]:<17} {value[:24]}")
-        self.mqtt_composer_table.set_item_list(labels)
-        try:
-            payload = self._encode_topic_payload()
-            bandwidth = self._estimate_topic_bandwidth()
-            preview = payload.decode("utf-8") if self._selected_topic() and self._selected_topic().format != "binary_struct" else payload.hex(" ")
-        except Exception as exc:
-            preview = f"Encode error: {exc}"
-            bandwidth = None
-        safe = preview.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        if self.mqtt_composer_preview:
-            if bandwidth:
-                bw_text = f"<br><br>{bandwidth['payload_bytes']} payload bytes; {bandwidth['bytes_per_second']:.1f} B/s est."
-            else:
-                bw_text = ""
-            self.mqtt_composer_preview.set_text(f"<b>Payload preview</b><br>{safe}{bw_text}")
-
-    def _debug_publish(self):
-        topic_name = self.mqtt_debug_topic_entry.get_text().strip()
-        if not topic_name:
-            self._mqtt_log("Publish skipped: empty topic")
-            return
-        payload_text = self.mqtt_debug_payload_entry.get_text()
-        payload = payload_text.encode("utf-8") if payload_text else self._encode_topic_payload()
-        try:
-            client, host, port = self._create_mqtt_client()
-            client.connect(host, port, 30)
-            client.loop_start()
-            result = client.publish(topic_name, payload)
-            result.wait_for_publish(timeout=3)
-            client.loop_stop()
-            client.disconnect()
-            shown = payload.hex(" ") if isinstance(payload, bytes) and b"\x00" in payload else payload.decode("utf-8", errors="replace")
-            self._mqtt_log(f"Published {len(payload)} bytes to {topic_name}: {shown[:80]}")
-        except Exception as exc:
-            self._mqtt_log(f"Publish failed: {exc}")
-
-    def _debug_subscribe(self):
-        topic_name = self.mqtt_debug_topic_entry.get_text().strip()
-        if not topic_name:
-            self._mqtt_log("Subscribe skipped: empty topic")
-            return
-        self._debug_disconnect()
-
-        def on_connect(client, userdata, flags, reason_code, properties=None):
-            self.mqtt_debug_connected = True
-            client.subscribe(topic_name)
-            self._mqtt_log(f"Subscribed to {topic_name} ({reason_code})")
-
-        def on_message(client, userdata, msg):
-            self.mqtt_last_payload = msg.payload
-            text = msg.payload.decode("utf-8", errors="replace")
-            self._mqtt_log(f"RX {msg.topic}: {text[:100]}")
-            topic = self._selected_topic()
-            if topic and msg.topic == self._full_topic(topic):
-                try:
-                    decoded = self._decode_topic_payload(msg.payload, topic)
-                    self.mqtt_pending_decodes.append(decoded)
-                except Exception as exc:
-                    self._mqtt_log(f"Decode failed: {exc}")
-
-        try:
-            client, host, port = self._create_mqtt_client(on_message=on_message)
-            client.on_connect = on_connect
-            client.connect(host, port, 30)
-            client.loop_start()
-            self.mqtt_debug_client = client
-            self._mqtt_log(f"Connecting subscriber to {host}:{port}")
-        except Exception as exc:
-            self.mqtt_debug_client = None
-            self._mqtt_log(f"Subscribe failed: {exc}")
-
-    def _debug_disconnect(self):
-        if not self.mqtt_debug_client:
-            return
-        try:
-            self.mqtt_debug_client.loop_stop()
-            self.mqtt_debug_client.disconnect()
-            self._mqtt_log("Subscriber stopped")
-        except Exception as exc:
-            self._mqtt_log(f"Disconnect failed: {exc}")
-        self.mqtt_debug_client = None
-        self.mqtt_debug_connected = False
-
-    def _decode_last_rx(self):
-        if not self.mqtt_last_payload:
-            self._mqtt_log("No received payload to decode")
-            return
-        try:
-            decoded = self._decode_topic_payload(self.mqtt_last_payload)
-            self._apply_decoded_values(decoded)
-            self._mqtt_log(f"Decoded last RX: {decoded}")
-            self.refresh_manager_panel()
-            self._refresh_composer_table()
-        except Exception as exc:
-            self._mqtt_log(f"Decode failed: {exc}")
-
-    def refresh_mqtt_panel(self):
-        if not self.mqtt_window or not self.mqtt_window.alive() or not self.config:
-            return
-        settings = self.config.mqttSettings
-        self.mqtt_topic_items = {}
-        rows = []
-        for topic in settings.topics:
-            label = f"{topic.id}  {topic.direction}  {topic.topic}"
-            rows.append(label)
-            self.mqtt_topic_items[label] = topic
-        self.mqtt_topic_list.set_item_list(rows)
-
-        options = self._component_options()
-        topic_options = self._topic_component_options()
-        self.mqtt_component_options = topic_options
-        self._replace_dropdown("mqtt_component_dd", topic_options, topic_options[0], pygame.Rect(235, 290, 220, 28))
-        self._replace_dropdown("mqtt_binding_component_dd", options, options[0], pygame.Rect(10, 365, 210, 28))
-        self._refresh_binding_variable_dropdown()
-
-        selected = self._selected_topic()
-        self._show_topic(selected)
-        if self.mqtt_debug_topic_entry:
-            self.mqtt_debug_topic_entry.set_text(self._full_topic(selected) or self.mqtt_debug_topic_entry.get_text() or "sim/test_topic")
-        self._refresh_composer_table()
-
-    def _replace_dropdown(self, attr_name, options, selected, rect):
-        old = getattr(self, attr_name)
-        container = self.mqtt_window.get_container()
-        if old:
-            old.kill()
-        setattr(
-            self,
-            attr_name,
-            pygame_gui.elements.UIDropDownMenu(options, selected, rect, self.manager, container=container)
-        )
-
-    def _selected_topic(self):
-        if not self.mqtt_selected_topic_id:
-            return None
-        for topic in self.config.mqttSettings.topics:
-            if topic.id == self.mqtt_selected_topic_id:
-                return topic
-        return None
-
-    def _show_topic(self, topic):
-        if not self.mqtt_topic_id_entry:
-            return
-        if not topic:
-            self.mqtt_topic_id_entry.set_text("")
-            self.mqtt_topic_entry.set_text("")
-            self.mqtt_interval_entry.set_text("1000")
-            return
-        self.mqtt_topic_id_entry.set_text(topic.id)
-        self.mqtt_topic_entry.set_text(topic.topic)
-        self.mqtt_interval_entry.set_text(str(topic.interval))
-        fmt = "string" if topic.format == "raw" else topic.format
-        self._replace_dropdown("mqtt_direction_dd", ["in", "out"], topic.direction, pygame.Rect(400, 182, 75, 28))
-        self._replace_dropdown("mqtt_format_dd", ["json", "string", "binary_struct"], fmt, pygame.Rect(310, 217, 130, 28))
-        self._replace_dropdown("mqtt_endianness_dd", ["LE", "BE"], topic.endianness, pygame.Rect(450, 217, 75, 28))
-
-    def _new_topic_id(self):
-        existing = {topic.id for topic in self.config.mqttSettings.topics}
-        idx = len(existing) + 1
-        candidate = f"topic_{idx}"
-        while candidate in existing:
-            idx += 1
-            candidate = f"topic_{idx}"
-        return candidate
-
-    def _save_topic_from_form(self):
-        settings = self.config.mqttSettings
-        topic_id = self.mqtt_topic_id_entry.get_text().strip() or self._new_topic_id()
-        topic_name = self.mqtt_topic_entry.get_text().strip() or topic_id
-        try:
-            interval = max(1, int(float(self.mqtt_interval_entry.get_text())))
-        except ValueError:
-            interval = 1000
-        topic = self._selected_topic()
-        if topic is None:
-            topic = TopicConfig(id=topic_id, topic=topic_name, interval=interval, direction="out", format="json", endianness="LE")
-            settings.topics.append(topic)
-        topic.id = topic_id
-        topic.topic = topic_name
-        topic.interval = interval
-        topic.direction = self.mqtt_direction_dd.selected_option[0] if isinstance(self.mqtt_direction_dd.selected_option, tuple) else self.mqtt_direction_dd.selected_option
-        topic.format = self.mqtt_format_dd.selected_option[0] if isinstance(self.mqtt_format_dd.selected_option, tuple) else self.mqtt_format_dd.selected_option
-        topic.endianness = self.mqtt_endianness_dd.selected_option[0] if isinstance(self.mqtt_endianness_dd.selected_option, tuple) else self.mqtt_endianness_dd.selected_option
-        self.mqtt_selected_topic_id = topic.id
-        self.refresh_mqtt_panel()
-
-    def _find_component_from_option(self, option):
-        if not option or option == "none" or ":" not in option:
-            return None, None
-        kind, item_id = option.split(":", 1)
-        collection = self._collection_for_kind(kind)
-        if collection is None:
-            return None, None
-        for item in collection:
-            if item.id == item_id:
-                return kind, item
-        return None, None
-
-    def _refresh_binding_variable_dropdown(self):
-        option = self.mqtt_binding_component_dd.selected_option if self.mqtt_binding_component_dd else "none"
-        if isinstance(option, tuple):
-            option = option[0]
-        kind, _ = self._find_component_from_option(option)
-        if kind == "belt":
-            vars_ = ["speedBinding", "directionAngleBinding", "directionBinding"]
-        elif kind == "sensor":
-            vars_ = ["stateBinding", "wordBinding"]
-        elif kind == "source":
-            vars_ = ["triggerBinding", "intervalBinding"]
-        elif kind in {"button", "led"}:
-            vars_ = ["stateBinding"]
-        else:
-            vars_ = ["id"]
-        self._replace_dropdown("mqtt_binding_variable_dd", vars_, vars_[0], pygame.Rect(230, 365, 155, 28))
-
-    def _apply_mqtt_settings(self):
-        if not self.mqtt_broker_entry or not self.mqtt_prefix_entry:
-            return
-        settings = self.config.mqttSettings
-        settings.brokerUrl = self.mqtt_broker_entry.get_text().strip() or settings.brokerUrl
-        settings.topicPrefix = self.mqtt_prefix_entry.get_text().strip()
-
-    def _validate_mqtt_connection(self):
-        self._apply_mqtt_settings()
-        url = urlparse(self.config.mqttSettings.brokerUrl)
-        scheme = url.scheme.lower()
-        if scheme not in {"mqtt", "mqtts", "ws", "wss", "tcp"} or not url.hostname:
-            self.mqtt_status_lbl.set_text("Status: invalid URL")
-            return
-        default_port = 8883 if scheme in {"mqtts", "wss"} else 1883
-        if scheme == "ws":
-            default_port = 9001
-        elif scheme == "wss":
-            default_port = 443
-        port = url.port or default_port
-        try:
-            with socket.create_connection((url.hostname, port), timeout=2.0):
-                self.mqtt_status_lbl.set_text("Status: TCP reachable")
-        except OSError as exc:
-            self.mqtt_status_lbl.set_text(f"Status: {str(exc)[:24]}")
-
-    def _add_component_to_topic(self):
-        topic = self._selected_topic()
-        if topic is None:
-            self._save_topic_from_form()
-            topic = self._selected_topic()
-        option = self.mqtt_component_dd.selected_option
-        if isinstance(option, tuple):
-            option = option[0]
-        kind, item = self._find_component_from_option(option)
-        if not topic or not item or kind not in {"belt", "sensor", "button", "led"}:
-            return
-        component_type = "laser_banner" if kind == "sensor" and getattr(item, "sensorType", "") == "laser_banner" else kind
-        if not any(comp.id == item.id and comp.type == component_type for comp in topic.components):
-            topic.components.append(TopicComponent(id=item.id, type=component_type))
-            self._mqtt_log(f"Added {item.id} to {topic.id}")
-        self._refresh_composer_table()
-
-    def _remove_component_from_topic(self):
-        topic = self._selected_topic()
-        option = self.mqtt_component_dd.selected_option
-        if isinstance(option, tuple):
-            option = option[0]
-        kind, item = self._find_component_from_option(option)
-        if not topic or not item:
-            return
-        topic.components = [comp for comp in topic.components if comp.id != item.id]
-        self._mqtt_log(f"Removed {item.id} from {topic.id}")
-        self._refresh_composer_table()
-
-    def _apply_binding_from_form(self):
-        option = self.mqtt_binding_component_dd.selected_option
-        if isinstance(option, tuple):
-            option = option[0]
-        _, item = self._find_component_from_option(option)
-        variable = self.mqtt_binding_variable_dd.selected_option
-        if isinstance(variable, tuple):
-            variable = variable[0]
-        if item and hasattr(item, variable):
-            setattr(item, variable, self.mqtt_binding_entry.get_text().strip() or None)
-            self._refresh_composer_table()
 
     def handle_resize(self, width: int, height: int):
         self.width = width
@@ -1312,6 +575,19 @@ class EditorUI:
             self.prop_delete_btn.set_relative_position((5, self.height - 45))
         if getattr(self, 'prop_copy_btn', None):
             self.prop_copy_btn.set_relative_position((125, self.height - 45))
+        if getattr(self, 'prop_error_lbl', None):
+            self.prop_error_lbl.set_relative_position((5, self.height - 65))
+        # Keep any floating windows from being stranded off-screen
+        if self.manager_window and self.manager_window.alive():
+            self._clamp_window_to_screen(self.manager_window)
+        if self.placement_window and self.placement_window.alive():
+            self._clamp_window_to_screen(self.placement_window)
+
+    def _clamp_window_to_screen(self, window: pygame_gui.elements.UIWindow):
+        rect = window.rect.copy()
+        rect.x = max(0, min(rect.x, self.width - rect.width))
+        rect.y = max(0, min(rect.y, self.height - rect.height))
+        window.set_position((rect.x, rect.y))
 
     def handle_event(self, event) -> str:
         """Returns commands or None."""
@@ -1357,8 +633,6 @@ class EditorUI:
                     return ("SELECT_ITEM", copied)
             elif event.ui_element == self.manager_btn:
                 return "OPEN_MANAGER"
-            elif event.ui_element == self.mqtt_btn:
-                return "OPEN_MQTT"
             elif event.ui_element == self.manager_select_btn:
                 if self.manager_selected_key in self.manager_items:
                     _, _, item = self.manager_items[self.manager_selected_key]
@@ -1377,70 +651,16 @@ class EditorUI:
                 self.refresh_manager_panel()
             elif self.manager_clear_btn and event.ui_element == self.manager_clear_btn:
                 self.manager_clear = True
-                
-            elif event.ui_element == self.mqtt_topic_add_btn:
-                topic_id = self._new_topic_id()
-                topic = TopicConfig(id=topic_id, topic=topic_id, interval=1000, direction="out", format="json", endianness="LE")
-                self.config.mqttSettings.topics.append(topic)
-                self.mqtt_selected_topic_id = topic.id
-                self.refresh_mqtt_panel()
-            elif event.ui_element == self.mqtt_topic_save_btn:
-                self._apply_mqtt_settings()
-                self._save_topic_from_form()
-            elif event.ui_element == self.mqtt_topic_delete_btn:
-                topic = self._selected_topic()
-                if topic:
-                    self.config.mqttSettings.topics.remove(topic)
-                    self.mqtt_selected_topic_id = None
-                    self.refresh_mqtt_panel()
-            elif event.ui_element == self.mqtt_component_add_btn:
-                self._add_component_to_topic()
-            elif event.ui_element == self.mqtt_component_remove_btn:
-                self._remove_component_from_topic()
-            elif event.ui_element == self.mqtt_binding_apply_btn:
-                self._apply_binding_from_form()
-                self.refresh_manager_panel()
-            elif event.ui_element == self.mqtt_validate_btn:
-                self._validate_mqtt_connection()
-            elif event.ui_element == self.mqtt_publish_btn:
-                self._debug_publish()
-            elif event.ui_element == self.mqtt_subscribe_btn:
-                self._debug_subscribe()
-            elif event.ui_element == self.mqtt_disconnect_btn:
-                self._debug_disconnect()
-            elif event.ui_element == self.mqtt_refresh_composer_btn:
-                self._refresh_composer_table()
-            elif event.ui_element == self.mqtt_decode_btn:
-                self._decode_last_rx()
 
         if event.type == pygame_gui.UI_SELECTION_LIST_NEW_SELECTION:
             if event.ui_element == self.manager_list:
                 self.manager_selected_key = event.text
                 self._update_manager_details()
-            elif event.ui_element == self.mqtt_topic_list:
-                topic = self.mqtt_topic_items.get(event.text)
-                self.mqtt_selected_topic_id = topic.id if topic else None
-                self._show_topic(topic)
-                if self.mqtt_debug_topic_entry:
-                    self.mqtt_debug_topic_entry.set_text(self._full_topic(topic) or "sim/test_topic")
-                self._refresh_composer_table()
-
-        if event.type == pygame_gui.UI_CHECK_BOX_CHECKED:
-            if event.ui_element == self.mqtt_enabled_checkbox:
-                self.config.mqttSettings.enabled = True
-
-        if event.type == pygame_gui.UI_CHECK_BOX_UNCHECKED:
-            if event.ui_element == self.mqtt_enabled_checkbox:
-                self.config.mqttSettings.enabled = False
 
         if event.type == pygame_gui.UI_WINDOW_CLOSE:
             if event.ui_element == self.manager_window:
                 self.manager_window = None
-            elif event.ui_element == self.mqtt_window:
-                self._debug_disconnect()
-                self._apply_mqtt_settings()
-                self.mqtt_window = None
-                
+
         if event.type == pygame_gui.UI_DROP_DOWN_MENU_CHANGED and self.selected_item:
             if event.ui_element == self.prop_inputs.get("sensorType"):
                 val_str = event.text
@@ -1458,21 +678,6 @@ class EditorUI:
                     ]
                 self.show_props_for(self.selected_item)
 
-        if event.type == pygame_gui.UI_DROP_DOWN_MENU_CHANGED:
-            if event.ui_element == self.mqtt_binding_component_dd:
-                self._refresh_binding_variable_dropdown()
-            elif event.ui_element == self.mqtt_binding_variable_dd:
-                option = self.mqtt_binding_component_dd.selected_option
-                if isinstance(option, tuple):
-                    option = option[0]
-                _, item = self._find_component_from_option(option)
-                variable = event.text
-                if item and hasattr(item, variable):
-                    self.mqtt_binding_entry.set_text(str(getattr(item, variable) or ""))
-            elif event.ui_element in [self.mqtt_direction_dd, self.mqtt_format_dd, self.mqtt_endianness_dd]:
-                self._save_topic_from_form()
-                self._refresh_composer_table()
-                
         if event.type == pygame_gui.UI_TEXT_ENTRY_CHANGED and self.selected_item:
             # Find which input changed
             for prop, inp in self.prop_inputs.items():
@@ -1511,9 +716,14 @@ class EditorUI:
                         # Trigger UI refresh if layout-altering property changes
                         if prop in ["sensorType", "beltShape"]:
                             self.show_props_for(self.selected_item)
-                            
+                        self._clear_prop_error()
+
                     except ValueError:
-                        pass # Ignore invalid numbers
+                        # Don't revert the field here: the user may still be
+                        # mid-edit (e.g. typing "-" before "-5"). Just surface
+                        # that the current text isn't a valid value yet; the
+                        # model keeps its last valid value until this parses.
+                        self._show_prop_error(f"Invalid value for '{prop}' - not applied")
                         
             # Check if any vertex coordinate input changed
             if hasattr(self.selected_item, "vertexs") and self.selected_item.vertexs:
@@ -1555,15 +765,11 @@ class EditorUI:
         """Call every frame with the physics engine sensor_states dict to refresh display."""
         
         sensor_states = physics_engine.sensor_states
-        self._flush_mqtt_logs()
-        self._flush_mqtt_decodes()
 
         if self.manager_clear:
             self.manager_clear = False
             physics_engine.clear_all_parcels()
-            
-        self.last_sensor_states = dict(sensor_states or {})
-        self._refresh_composer_table()
+
         if isinstance(self.selected_item, ControlButton):
             self.refresh_button_state()
             return

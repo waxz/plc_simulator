@@ -3,11 +3,55 @@ import struct
 import threading
 import time
 from collections import deque
-from typing import Callable, Deque, Literal, Optional
+from enum import IntEnum
+from typing import Callable, Deque, Literal, NamedTuple, Optional
 
 
-FrameHandler = Callable[[bytes], None]
+class FrameType(IntEnum):
+    """What a frame's payload actually is, carried explicitly in the
+    header instead of being guessed from payload size. 0 is deliberately
+    unused (reserved/invalid), so an all-zero or otherwise-garbage header
+    byte reads as "not a recognized type" rather than aliasing a real one.
+
+    Different nodes can report different metric data - a node's frame_type
+    selects which binary layout its payload uses, not just "this is a
+    metric frame" (see METRICS_CHANNELS/METRICS_MAPPING_BY_FRAME_TYPE in
+    mqtt_data_exchange.py, which maps each METRIC_LAYOUT_* value to its own
+    MetricsMessage/mapping). A metric channel declared in a channel
+    registry (channel_registry.py) names its frame_type as a plain string;
+    run `python generate_frame_type.py --registry channels.json` to add a
+    member here for any name that registry uses but this enum doesn't have
+    yet, instead of hand-editing this class - it only ever appends (an
+    existing member's value never changes, since that value is what's
+    actually on the wire)."""
+    IO_MAPPING = 1      # ComponentMessage-based structured I/O (input/output channels)
+    METRIC_LAYOUT_1 = 2  # MetricsMessage-based metrics, layout 1 (see METRICS_MAPPING)
+    METRIC_LAYOUT_2 = 3  # MetricsMessage-based metrics, layout 2 (see METRICS_MAPPING_2)
+    metri_1 = 4  # added by generate_frame_type.py
+    METRIC_LAYOUT_3 = 5  # added by generate_frame_type.py
+
+
+class ParsedFrame(NamedTuple):
+    """One fully-decoded frame: which node sent it, what kind of payload
+    it carries, and the payload itself. `on_frame` callbacks receive this
+    instead of bare payload bytes, so routing (which channel/handler a
+    frame belongs to) never has to guess from payload size."""
+    node_id: int
+    frame_type: int
+    payload: bytes
+
+
+FrameHandler = Callable[[ParsedFrame], None]
 EndianName = Literal["LE", "BE"]
+
+# Applied to every accepted/connected socket (both server and client sides).
+# Bounds recv() so a background thread can notice shutdown and exit
+# cleanly, and - since a socket's timeout applies to ALL blocking calls on
+# it, not just the one that set it - also bounds sendall(), so a peer that
+# stops reading causes a bounded stall + clean disconnect instead of
+# blocking the caller (the main/GUI thread, for the simulator's TCP server)
+# forever.
+RECV_TIMEOUT_S = 2.0
 
 
 def _length_struct_prefix(endianness: str = "BE") -> str:
@@ -18,7 +62,12 @@ class TCP_StreamParser:
     # VAR CONSTANT equivalents
     BUFFER_LENGTH = 4095
     PAYLOAD_LENGTH = 2048
-    HEADER_SIZE = 8
+    # 4 bytes Magic Marker + 1 byte NodeId + 1 byte FrameType + 4 bytes
+    # Length DINT = 10 bytes. NodeId/FrameType sit between the magic
+    # marker and the length field, matching the wire order TcpFrameCodec
+    # packs them in below.
+    HEADER_SIZE = 10
+    TRAILER_SIZE = 4
 
     def __init__(self, length_endianness: EndianName = "BE"):
         self.length_endianness = length_endianness
@@ -30,14 +79,18 @@ class TCP_StreamParser:
         # VAR PUBLIC variables (State and data interface)
         self.MagicFound = False
         self.MarkerIndex = 0
+        self.NodeId = 0
+        self.FrameType = 0
         self.PayloadLength = 0
         self.TotalPacketSize = 0
-        
+
         self.PayloadReady = False
         self.PayloadReadyCount = 0
+        self.ExtractedNodeId = 0
+        self.ExtractedFrameType = 0
         self.ExtractedPayload = bytearray(self.PAYLOAD_LENGTH + 1)
         self.ExtractedLength = 0
-        self.PendingPayloads: Deque[bytes] = deque()
+        self.PendingPayloads: Deque[ParsedFrame] = deque()
 
     def Execute(self, RxTemp: bytes | bytearray, RxCount: int):
         """
@@ -65,9 +118,9 @@ class TCP_StreamParser:
 
             # Look for the 4-byte Magic Marker: 0x12345678
             for i in range(self.BufferLength - 3):
-                if (self.Buffer[i] == 0x12 and 
-                    self.Buffer[i+1] == 0x34 and 
-                    self.Buffer[i+2] == 0x56 and 
+                if (self.Buffer[i] == 0x12 and
+                    self.Buffer[i+1] == 0x34 and
+                    self.Buffer[i+2] == 0x56 and
                     self.Buffer[i+3] == 0x78):
                     self.MagicFound = True
                     self.MarkerIndex = i
@@ -89,15 +142,16 @@ class TCP_StreamParser:
 
             # Re-verify we still have a header window left after shifting
             if self.BufferLength < self.HEADER_SIZE:
-                return 
+                return
 
-            # 3. EXTRACT LENGTH (4-byte unsigned int)
-            # Unpacking Buffer[4:8] directly handles the shift-and-OR logic
+            # 3. EXTRACT NODE ID, FRAME TYPE, AND LENGTH
+            self.NodeId = self.Buffer[4]
+            self.FrameType = self.Buffer[5]
             self.PayloadLength = struct.unpack(
                 _length_struct_prefix(self.length_endianness) + "I",
-                self.Buffer[4:8],
+                self.Buffer[6:10],
             )[0]
-            self.TotalPacketSize = self.HEADER_SIZE + self.PayloadLength
+            self.TotalPacketSize = self.HEADER_SIZE + self.PayloadLength + self.TRAILER_SIZE
 
             # Safety verification against internal memory sizing bounds
             if self.TotalPacketSize > (self.BUFFER_LENGTH + 1) or self.PayloadLength > (self.PAYLOAD_LENGTH + 1):
@@ -105,17 +159,41 @@ class TCP_StreamParser:
                 self.BufferLength = 0
                 return
 
-            # 4. CHECK COMPLETENESS: Ensure full payload has arrived
+            # 4. CHECK COMPLETENESS: Ensure full payload + trailing marker have arrived
             if self.BufferLength < self.TotalPacketSize:
                 return  # Stop parsing this cycle, await more TCP fragments
+
+            # 4b. VERIFY TRAILING MAGIC MARKER: confirms the length field was
+            # read at a genuine frame boundary, not a false-positive match of
+            # the header magic bytes occurring inside unrelated payload data
+            # (with a garbage length happening to follow it). A mismatch
+            # means MarkerIndex was NOT a real frame start - drop just that
+            # one leading byte and let the loop's own header search (top of
+            # `while`) find the next candidate marker, instead of extracting
+            # corrupted/misaligned data as if it were a real payload.
+            trailer_start = self.HEADER_SIZE + self.PayloadLength
+            if not (
+                self.Buffer[trailer_start] == 0x12
+                and self.Buffer[trailer_start + 1] == 0x34
+                and self.Buffer[trailer_start + 2] == 0x56
+                and self.Buffer[trailer_start + 3] == 0x78
+            ):
+                for i in range(self.BufferLength - 1):
+                    self.Buffer[i] = self.Buffer[i + 1]
+                self.BufferLength -= 1
+                continue  # re-scan for the magic marker from the shifted buffer
 
             # 5. EXTRACT PAYLOAD
             for i in range(self.PayloadLength):
                 self.ExtractedPayload[i] = self.Buffer[self.HEADER_SIZE + i]
-            
+
+            self.ExtractedNodeId = self.NodeId
+            self.ExtractedFrameType = self.FrameType
             self.ExtractedLength = self.PayloadLength
             self.PayloadReady = True
-            self.PendingPayloads.append(bytes(self.ExtractedPayload[:self.ExtractedLength]))
+            self.PendingPayloads.append(
+                ParsedFrame(self.NodeId, self.FrameType, bytes(self.ExtractedPayload[:self.ExtractedLength]))
+            )
 
             if self.PayloadReady:
                 self.PayloadReadyCount += 1
@@ -129,32 +207,54 @@ class TCP_StreamParser:
                     self.Buffer[i] = self.Buffer[self.TotalPacketSize + i]
 
             # Prevent infinite loops if a corrupted packet sets PayloadLength to 0
-            if self.TotalPacketSize <= self.HEADER_SIZE:
+            if self.TotalPacketSize <= self.HEADER_SIZE + self.TRAILER_SIZE:
                 self.BufferLength = 0
                 return
 
 
 class TcpFrameCodec:
-    """Handles structured binary framing using a 4-Byte Magic Marker and a 4-Byte Length prefix."""
+    """Handles structured binary framing using a 4-Byte Magic Marker,
+    a 1-Byte Node ID, a 1-Byte Frame Type, a 4-Byte Length prefix, and a
+    trailing 4-Byte copy of the Magic Marker."""
 
-    # 4 bytes Magic Marker (0x12345678) + 4 bytes Length DINT = 8 bytes
-    HEADER_SIZE = 8
+    # 4 bytes Magic Marker (0x12345678) + 1 byte NodeId + 1 byte FrameType
+    # + 4 bytes Length DINT = 10 bytes.
+    HEADER_SIZE = 10
+    # Trailing copy of the Magic Marker - lets the receiver (TCP_StreamParser)
+    # confirm the length field was read at a genuine frame boundary before
+    # trusting the extracted payload, rather than accepting whatever bytes
+    # happen to follow a header-magic false positive as if they were real.
+    TRAILER_SIZE = 4
     MAGIC_MARKER_INT = 0x12345678
     MAGIC_MARKER_BYTES = b"\x12\x34\x56\x78"
     MAX_PAYLOAD_SIZE = 16 * 1024 * 1024
+    DEFAULT_NODE_ID = 0
 
     @classmethod
-    def pack(cls, payload: bytes, length_endianness: EndianName = "BE") -> bytes:
-        """Packs a raw payload with a fixed Magic Marker and configurable Length prefix."""
+    def pack(cls, payload: bytes, frame_type: int, node_id: int = DEFAULT_NODE_ID, length_endianness: EndianName = "BE") -> bytes:
+        """Packs a raw payload with a fixed Magic Marker, a Node ID and
+        Frame Type byte, a configurable Length prefix, and a trailing
+        copy of the Magic Marker confirming the frame is complete.
+
+        `frame_type` has no default - every frame is one specific kind of
+        payload (see FrameType), and a caller that doesn't know which one
+        it's sending is a bug, not something to paper over with a silent
+        default."""
+        if not (0 <= node_id <= 0xFF):
+            raise ValueError(f"node_id must fit in one byte (0-255), got {node_id}")
+        if not (0 <= frame_type <= 0xFF):
+            raise ValueError(f"frame_type must fit in one byte (0-255), got {frame_type}")
         return (
             cls.MAGIC_MARKER_BYTES
+            + bytes((node_id, frame_type))
             + struct.pack(_length_struct_prefix(length_endianness) + "I", len(payload))
             + payload
+            + cls.MAGIC_MARKER_BYTES
         )
 
     @classmethod
-    def read(cls, sock: socket.socket, parser: TCP_StreamParser) -> Optional[bytes]:
-        """Reads from a socket, scans for the Magic Marker, and extracts the payload safely."""
+    def read(cls, sock: socket.socket, parser: TCP_StreamParser) -> Optional[ParsedFrame]:
+        """Reads from a socket, scans for the Magic Marker, and extracts a full frame safely."""
         if parser.PendingPayloads:
             return parser.PendingPayloads.popleft()
 
@@ -171,65 +271,105 @@ class TcpFrameCodec:
 
 
 class TcpFramedServer:
-    """Single-client TCP server used by the simulator exchange side."""
+    """Multi-client TCP server used by the simulator exchange side. Runs its
+    accept loop on a background daemon thread (started by `start()`) and
+    spawns one additional background daemon thread per connected client to
+    receive its frames, so any number of PLC mocks/monitoring tools can
+    stay connected at once. `send()` broadcasts a payload to every
+    currently-connected client.
 
-    def __init__(self, host: str, port: int, on_frame: FrameHandler, length_endianness: EndianName = "BE"):
+    Every connected client's recv thread - and the caller's own thread
+    calling `send()` - eventually reach into the SAME shared
+    `SimulatorConfig` object (via the `on_frame` callback and the payload
+    passed to `send()`, respectively). This class itself only touches its
+    own client-socket bookkeeping (guarded by `_clients_lock`); it's
+    `MQTTSyncEngine`'s `_lock` (in mqtt_data_exchange.py, wrapping both
+    `ComponentMessage.serialize()`/`deserialize()` calls into `self.config`)
+    that actually serializes concurrent access to the config across
+    however many client threads end up calling `on_frame` at once - that
+    lock's correctness doesn't depend on how many clients there are.
+    """
+
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        on_frame: FrameHandler,
+        length_endianness: EndianName = "BE",
+        max_clients: int = 8,
+    ):
         self.host = host
         self.port = port
         self.on_frame = on_frame
         self.length_endianness = length_endianness
+        self.max_clients = max_clients
         self.is_running = False
         self._server_socket: Optional[socket.socket] = None
-        self._client_socket: Optional[socket.socket] = None
-        self._thread: Optional[threading.Thread] = None
-        self._send_lock = threading.Lock()
-        
+        self._accept_thread: Optional[threading.Thread] = None
+        # Guards the client set itself (add/remove/iterate) - separate from
+        # MQTTSyncEngine's config lock, which this class knows nothing
+        # about. Every socket operation below happens outside this lock
+        # (only the bookkeeping dict is protected), so a slow/stalled
+        # client's bounded (RECV_TIMEOUT_S) stall in sendall() never blocks
+        # other clients from being registered/removed concurrently.
+        self._clients_lock = threading.Lock()
+        self._clients: dict[socket.socket, threading.Thread] = {}
 
     def start(self) -> None:
         if self.is_running:
             return
         self.is_running = True
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
+        self._accept_thread = threading.Thread(target=self._accept_loop, daemon=True)
+        self._accept_thread.start()
 
-    def send(self, payload: bytes) -> bool:
-        with self._send_lock:
-            if self._client_socket is None:
-                return False
+    def send(self, payload: bytes, frame_type: int, node_id: int = TcpFrameCodec.DEFAULT_NODE_ID) -> bool:
+        """Broadcast to every connected client. Returns True if at least
+        one client received it (False if there were none, or all failed)."""
+        framed_packet = TcpFrameCodec.pack(payload, frame_type=frame_type, node_id=node_id, length_endianness=self.length_endianness)
+        with self._clients_lock:
+            clients = list(self._clients.keys())
+        sent_to_any = False
+        for client in clients:
             try:
-                framed_packet = TcpFrameCodec.pack(payload, self.length_endianness)
-                self._client_socket.sendall(framed_packet)
-                return True
+                client.sendall(framed_packet)
+                sent_to_any = True
             except OSError as exc:
                 print(f"[TCP] Send failed: {exc}")
-                self._close_client()
-                return False
+                self._remove_client(client)
+        return sent_to_any
 
     def stop(self) -> None:
         self.is_running = False
-        self._close_client()
         if self._server_socket is not None:
             try:
                 self._server_socket.close()
             except OSError:
                 pass
-        if self._thread is not None:
-            self._thread.join(timeout=3)
+        with self._clients_lock:
+            clients = list(self._clients.keys())
+        for client in clients:
+            self._remove_client(client)
+        if self._accept_thread is not None:
+            self._accept_thread.join(timeout=3)
 
     @property
     def connected(self) -> bool:
-        return self._client_socket is not None
+        return self.client_count > 0
 
-    def _run(self) -> None:
+    @property
+    def client_count(self) -> int:
+        with self._clients_lock:
+            return len(self._clients)
+
+    def _accept_loop(self) -> None:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
                 server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 server.bind((self.host, self.port))
-                server.listen(1)
+                server.listen(self.max_clients)
                 server.settimeout(0.5)
                 self._server_socket = server
                 print(f"[TCP] Listening on {self.host}:{self.port}")
-                parser =TCP_StreamParser(self.length_endianness)
 
                 while self.is_running:
                     try:
@@ -239,42 +379,72 @@ class TcpFramedServer:
                     except OSError:
                         break
 
-                    self._close_client()
-                    self._client_socket = client
-                    print(f"[TCP] Client connected: {address[0]}:{address[1]}")
-                    self._recv_loop(client,parser)
+                    if self.client_count >= self.max_clients:
+                        print(f"[TCP] Rejecting {address[0]}:{address[1]} - max_clients ({self.max_clients}) reached")
+                        try:
+                            client.close()
+                        except OSError:
+                            pass
+                        continue
+
+                    # Accepted sockets start in blocking mode with NO
+                    # timeout of their own - the listening socket's
+                    # settimeout() above only ever applied to accept()
+                    # itself. Without this, send() (sendall(), called every
+                    # tick from the main/GUI thread via
+                    # MQTTSyncEngine.sync()) could block forever the moment
+                    # this peer stops reading - stalls, crashes without
+                    # closing the socket, a network hiccup - freezing the
+                    # whole app, not just this transport. recv() in
+                    # _recv_loop needs the same bound so a permanently
+                    # silent (but not disconnected) peer doesn't leave that
+                    # thread stuck forever either, blocking a clean stop().
+                    client.settimeout(RECV_TIMEOUT_S)
+                    print(f"[TCP] Client connected: {address[0]}:{address[1]} "
+                          f"({self.client_count + 1}/{self.max_clients})")
+                    thread = threading.Thread(
+                        target=self._recv_loop, args=(client, address), daemon=True
+                    )
+                    with self._clients_lock:
+                        self._clients[client] = thread
+                    thread.start()
         except OSError as exc:
             if self.is_running:
                 print(f"[TCP] Server stopped after error: {exc}")
-        finally:
-            self._close_client()
 
-    def _recv_loop(self, client: socket.socket, parser: TCP_StreamParser) -> None:
+    def _recv_loop(self, client: socket.socket, address) -> None:
+        parser = TCP_StreamParser(self.length_endianness)
         try:
-            while self.is_running and client is self._client_socket:
-                payload = TcpFrameCodec.read(client, parser)
-                if payload is None:
+            while self.is_running:
+                try:
+                    frame = TcpFrameCodec.read(client, parser)
+                except socket.timeout:
+                    # No data within RECV_TIMEOUT_S - not an error, just
+                    # gives this loop a chance to notice is_running went
+                    # False (or the connection is otherwise still healthy
+                    # with a legitimately idle gap between sends).
                     continue
-                self.on_frame(payload)
+                if frame is None:
+                    continue
+                self.on_frame(frame)
         except (ConnectionError, OSError, ValueError) as exc:
             if self.is_running:
-                print(f"[TCP] Receive failed: {exc}")
+                print(f"[TCP] Receive failed for {address[0]}:{address[1]}: {exc}")
         finally:
-            self._close_client()
-            print("[TCP] Client disconnected.")
+            self._remove_client(client)
+            print(f"[TCP] Client disconnected: {address[0]}:{address[1]} ({self.client_count}/{self.max_clients})")
 
-    def _close_client(self) -> None:
-        client = self._client_socket
-        self._client_socket = None
-        if client is not None:
-            try:
-                client.shutdown(socket.SHUT_RDWR)
-            except OSError:
-                pass
-            try:
-                client.close()
-            except OSError:
-                pass
+    def _remove_client(self, client: socket.socket) -> None:
+        with self._clients_lock:
+            self._clients.pop(client, None)
+        try:
+            client.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+        try:
+            client.close()
+        except OSError:
+            pass
 
 
 class TcpFramedClient:
@@ -306,15 +476,15 @@ class TcpFramedClient:
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
 
-    def send(self, payload: bytes) -> bool:
+    def send(self, payload: bytes, frame_type: int, node_id: int = TcpFrameCodec.DEFAULT_NODE_ID) -> bool:
 
         with self._send_lock:
             if self._socket is None:
                 return False
             try:
-                # FIX: Let TcpFrameCodec handle all header wrapping natively 
+                # FIX: Let TcpFrameCodec handle all header wrapping natively
                 # to avoid compounding length calculations.
-                framed_packet = TcpFrameCodec.pack(payload, self.length_endianness)
+                framed_packet = TcpFrameCodec.pack(payload, frame_type=frame_type, node_id=node_id, length_endianness=self.length_endianness)
                 self._socket.sendall(framed_packet)
                 return True
             except OSError as exc:
@@ -336,17 +506,26 @@ class TcpFramedClient:
         while self.is_running:
             try:
                 sock = socket.create_connection((self.host, self.port), timeout=3.0)
-                sock.settimeout(None)
+                # RECV_TIMEOUT_S, not None: this used to drop the timeout
+                # entirely once connected, so both recv() (below) and
+                # send() (above, sharing this same socket) could block
+                # forever - recv() if the simulator ever stops sending,
+                # send() if it stops reading. A bounded timeout turns
+                # either into a clean reconnect instead of a permanent hang.
+                sock.settimeout(RECV_TIMEOUT_S)
                 self._socket = sock
                 print(f"[TCP] Connected to {self.host}:{self.port}")
                 parser =TCP_StreamParser(self.length_endianness)
 
                 while self.is_running and sock is self._socket:
-                    payload = TcpFrameCodec.read(sock, parser)
-                    if payload is None:
+                    try:
+                        frame = TcpFrameCodec.read(sock, parser)
+                    except socket.timeout:
+                        continue
+                    if frame is None:
                         continue
 
-                    self.on_frame(payload)
+                    self.on_frame(frame)
             except OSError as exc:
                 if self.is_running:
                     print(f"[TCP] Connection failed: {exc}")
@@ -371,4 +550,3 @@ class TcpFramedClient:
                 sock.close()
             except OSError:
                 pass
-

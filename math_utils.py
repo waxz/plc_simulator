@@ -1,5 +1,5 @@
 import math
-from typing import Tuple, List
+from typing import Dict, Tuple, List
 
 def rotate_point(cx: float, cy: float, angle_deg: float, px: float, py: float) -> Tuple[float, float]:
     """Rotates a point around a center by an angle in degrees. Note: CAD standard assumes CCW."""
@@ -33,6 +33,29 @@ def get_rect_vertices(cx: float, cy: float, width: float, height: float, rotatio
         rx, ry = rotate_point(0, 0, rotation, vx, vy)
         vertices.append((cx + rx, cy + ry))
     return vertices
+
+def get_default_quad_vertices(length: float, belt_width: float) -> List[Dict[str, float]]:
+    """Local-space corners of a centered rectangle, used as the default
+    quadrilateral shape for a linear belt with no explicit `vertexs`."""
+    hw = length / 2.0
+    hh = belt_width / 2.0
+    return [{'x': -hw, 'y': -hh}, {'x': hw, 'y': -hh}, {'x': hw, 'y': hh}, {'x': -hw, 'y': hh}]
+
+def get_belt_polygon(belt) -> List[Tuple[float, float]]:
+    """World-space polygon for a linear belt (rectangle or quadrilateral shape).
+
+    Falls back to a centered rectangle synthesized from `length`/`beltWidth`
+    when `vertexs` is unset. This is the single source of truth for belt
+    geometry shared by hit-testing, physics, and rendering.
+    """
+    if getattr(belt, 'shape', 'rectangle') == 'quadrilateral':
+        pts = belt.vertexs or get_default_quad_vertices(belt.length, belt.beltWidth)
+        vertices = []
+        for pt in pts:
+            rx, ry = rotate_point(0, 0, belt.rotation, pt['x'], pt['y'])
+            vertices.append((belt.x + rx, belt.y + ry))
+        return vertices
+    return get_rect_vertices(belt.x, belt.y, belt.length, belt.beltWidth, belt.rotation)
 
 def point_in_polygon(x: float, y: float, polygon: List[Tuple[float, float]]) -> bool:
     """Ray casting algorithm for point in polygon."""

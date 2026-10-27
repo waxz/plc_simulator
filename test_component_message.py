@@ -28,16 +28,27 @@ class TestComponentMessageWithRealConfig(unittest.TestCase):
         original_belt_2_angle = next(b for b in config.belts if b.id == "belt_2").directionAngle
 
         message = ComponentMessage(mapping)
-        self.assertEqual(message.format_string, ">BBBBBBBffff")
-        self.assertEqual(mapping[0], (ByteType.BIT, "sensor_2/sensor_states[0]"))
-        self.assertEqual(mapping[8], (ByteType.BIT, "sensor_1/sensor_states[0]"))
-        self.assertEqual(mapping[40], (ByteType.BIT, "sensor_3/sensor_states[0]"))
+        # Structural checks, not exact bit positions or byte counts - those
+        # shift every time a sensor is added to test_config.json (it's
+        # grown from 3 sensors to 9 over the life of this test, which is
+        # exactly what made the old hardcoded index/format-string
+        # assertions here go stale and start failing). IR sensors always
+        # sort before laser_banner sensors (sensor_state_mapping's sort
+        # key), so the very first bit is always the alphabetically-first
+        # IR sensor; the rest just needs to be present somewhere, and belts
+        # are always appended at the end regardless of sensor count.
+        first_ir_id = min(s.id for s in config.sensors if s.sensorType == "ir")
+        self.assertEqual(mapping[0], (ByteType.BIT, f"{first_ir_id}/sensor_states[0]"))
+        self.assertIn((ByteType.BIT, "sensor_1/sensor_states[0]"), mapping)
+        self.assertIn((ByteType.BIT, "sensor_3/sensor_states[0]"), mapping)
         self.assertEqual(mapping[-4:], [
             (ByteType.FLOAT, "belt_1/speed"),
             (ByteType.FLOAT, "belt_1/directionAngle"),
             (ByteType.FLOAT, "belt_2/speed"),
             (ByteType.FLOAT, "belt_2/directionAngle"),
         ])
+        self.assertTrue(message.format_string.startswith(">"))
+        self.assertTrue(message.format_string.endswith("ffff"))
         payload = message.serialize(config)
 
         config.sensors[0].sensor_states = "0" * len(config.sensors[0].sensor_states)

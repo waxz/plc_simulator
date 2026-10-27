@@ -25,6 +25,21 @@ class Belt(BaseModel):
     transition_momentum_duration: float = 0.6
     
 
+# How a component's on/off (or multi-bit) state is packed onto the wire by
+# the auto-generating mapping builders (paddng_component/
+# custom_component_mapping in mqtt_message_binding.py) - "bit" (the
+# default) is the original behavior: one BIT entry per state bit, packed
+# 8-to-a-byte with padding auto-inserted where needed. Any other value
+# packs the WHOLE value into a single compact register instead ("word" is
+# conventionally a 16-bit PLC register, hence "uint16" here) - which one
+# fits depends on how many bits the component actually needs (see
+# mqtt_message_binding.sensor_state_bit_count and
+# verify_component_list's width guard). This is a property of the
+# component's own declared config, not a per-channel authoring choice -
+# nothing outside config_parser.py/mqtt_message_binding.py decides it.
+PackFormat = Literal["bit", "byte", "uint16", "uint32", "float"]
+
+
 class Sensor(BaseModel):
     id: str
     x: float
@@ -42,6 +57,7 @@ class Sensor(BaseModel):
     wordBinding: Optional[str] = None
     detectedWord: Optional[int] = 0
     sensor_states: Optional[Union[bool, int, str]] = None
+    packFormat: PackFormat = "bit"
 
 class Source(BaseModel):
     id: str
@@ -77,6 +93,7 @@ class ControlButton(BaseModel):
     color: str = "#3b82f6"
     sensor_states: Optional[Union[bool, int, str]] = None
     stateBinding: Optional[str] = None
+    packFormat: PackFormat = "bit"
 
 class LedIndicator(BaseModel):
     id: str
@@ -87,6 +104,7 @@ class LedIndicator(BaseModel):
     color: str = "#22c55e"
     isOn: bool = False
     stateBinding: Optional[str] = None
+    packFormat: PackFormat = "bit"
 
 class TopicComponent(BaseModel):
     id: str
@@ -112,6 +130,11 @@ class MqttSettings(BaseModel):
     tcpPort: int = 5001
     endianness: Literal["LE", "BE"] = "LE"
     topics: List[TopicConfig] = Field(default_factory=list)
+    # This simulator's own identity on the TCP frame protocol's Node ID
+    # byte (see FrameType/ParsedFrame in tcp_framed_transport.py) - tags
+    # every frame the simulator itself sends. A connecting client (e.g.
+    # plc_mock.py) has its own separate node id, not this one.
+    nodeId: int = 0
 
 class SimulatorConfig(BaseModel):
     version: str = "1.0.0"
