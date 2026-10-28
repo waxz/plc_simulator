@@ -19,6 +19,7 @@ THEMES = {
         "BG": (31, 35, 41),            # canvas
         "GRID": (39, 44, 51),          # minor grid
         "GRID_MAJOR": (47, 53, 61),    # every 5th line
+        "DRAWING": (84, 92, 104),      # the layout's DXF background
         "AXIS_X": (62, 92, 70),        # world X axis (y = 0)
         "AXIS_Y": (92, 62, 66),        # world Y axis (x = 0)
         "PANEL": (36, 40, 47),         # side panels, status bar
@@ -43,6 +44,7 @@ THEMES = {
         "BG": (226, 229, 233),
         "GRID": (215, 219, 224),
         "GRID_MAJOR": (201, 206, 212),
+        "DRAWING": (150, 157, 168),
         "AXIS_X": (118, 168, 128),
         "AXIS_Y": (190, 122, 126),
         "PANEL": (244, 245, 247),
@@ -293,6 +295,11 @@ def pygame_gui_theme() -> dict:
                            "misc": {**flat, "text_horiz_alignment_padding": "4"}},
         "#prop_group": {"colours": {"dark_bg": "#00000000", "normal_text": h(ACCENT)},
                         "font": {"name": "noto_sans", "size": "11", "bold": "1"},
+                        "misc": {"text_horiz_alignment": "left"}},
+        "#toolbar": {"colours": {"dark_bg": h(PANEL), "normal_border": h(PANEL_BORDER)},
+                     "misc": {"shape": "rectangle", "border_width": "1", "shadow_width": "0"}},
+        "#tool_group": {"colours": {"dark_bg": "#00000000", "normal_text": h(TEXT_FAINT)},
+                        "font": {"name": "noto_sans", "size": "10", "bold": "1"},
                         "misc": {"text_horiz_alignment": "left"}},
         "#prop_kind": {"colours": {"dark_bg": "#00000000", "normal_text": h(TEXT_DIM)},
                        "font": {"name": "noto_sans", "size": "11", "bold": "1"},

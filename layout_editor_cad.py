@@ -478,6 +478,7 @@ class CadController:
         background = file_menu.addMenu("Background (DXF)")
         add(background, "Import DXF Background...", self.import_background)
         add(background, "Background Settings...", self.background_settings)
+        add(background, "Export Cropped DXF...", self.export_cropped_background)
         background.addSeparator()
         add(background, "Remove Background", self.remove_background)
         add(file_menu, "Export DXF...", self.export_dxf)
@@ -665,7 +666,8 @@ class CadController:
             self._error("Import DXF Background", f"Could not read {path}:\n{exc}")
             return
         self._status("")
-        dialog = BackgroundImportDialog(self.window, info, stored, current)
+        dialog = BackgroundImportDialog(self.window, info, stored, current, source_path=path,
+                                        layout_dir=self._layout_dir())
         if dialog.exec() != QDialog.Accepted:
             return
         background = dialog.background()
@@ -676,6 +678,47 @@ class CadController:
         self._status(f"Background: {count:,} entities ({where}), scale {background.scale:g} m/unit, offset "
                      f"({background.offsetX:.4g}, {background.offsetY:.4g}) m. File > Background Settings... "
                      f"to change.")
+
+    def export_cropped_background(self):
+        """The current background's window and filters, written as a small
+        DXF (same units and coordinates); offers to switch the background to it."""
+        bg = self.config.background
+        if bg is None:
+            self._status("No background: File > Import DXF Background... first.")
+            return
+        src = self._resolve(bg.path)
+        base = os.path.splitext(os.path.basename(src))[0]
+        dst, _ = QFileDialog.getSaveFileName(self.window, "Export Cropped DXF",
+                                             os.path.join(self._layout_dir(), f"{base}_crop.dxf"), "DXF Files (*.dxf)")
+        if not dst:
+            return
+        try:
+            with _busy():
+                result = dxf_io.export_cropped(src, dst, bg.clip, skip_types=bg.skipTypes,
+                                               hidden_layers=bg.hiddenLayers)
+        except (OSError, ValueError, ezdxf.DXFError) as exc:
+            self._error("Export Cropped DXF", f"Could not write {dst}:\n{exc}")
+            return
+        answer = QMessageBox.question(
+            self.window, "Export Cropped DXF",
+            f"Wrote {result.shapes:,} shapes and {result.texts:,} texts to\n{dst}\n\n"
+            f"Use the cropped file as the background?")
+        if answer == QMessageBox.Yes:
+            self.use_cropped_background(dst)
+        else:
+            self._status(f"Exported {dst}")
+
+    def use_cropped_background(self, path: str):
+        """Switch the background file to a cropped copy (same coordinates, so
+        placement, window and filters carry over unchanged)."""
+        bg = self.config.background
+        try:
+            stored = os.path.relpath(path, self._layout_dir())
+        except ValueError:
+            stored = path
+        after = bg.model_copy(update={"path": stored})
+        self._push("Use cropped background", [BackgroundCommand(self, bg.model_copy(), after, "Background")])
+        self._status(f"Background is now {stored} ({len(self._background_shapes):,} entities).")
 
     def remove_background(self):
         if self.config.background is None:

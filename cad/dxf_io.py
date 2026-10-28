@@ -12,6 +12,10 @@ inspect_drawing(path)  - what the import dialog needs: header units checked
                          in modelspace, and a quick preview.
 export_layout(config, path) - write the layout as a DXF in metres, one layer
                          per component kind, for CAD / documentation.
+export_cropped(src, dst, clip, ...) - write one window of a big drawing (with
+                         the same filters as the background) as a small DXF:
+                         blocks expanded, edges cut at the window, same units,
+                         layers and coordinates, texts inside kept.
 """
 import math
 import os
@@ -864,3 +868,90 @@ def export_layout(config: SimulatorConfig, path: str) -> None:
             msp.add_circle((ports.outlet.x, ports.outlet.y), 0.1, dxfattribs={"layer": "CONNECTIONS"})
 
     doc.saveas(path)
+
+
+@dataclass
+class CropResult:
+    path: str
+    shapes: int            # geometry entities written
+    texts: int             # TEXT / MTEXT kept
+    bounds: Optional[Box]  # of what was written, drawing units
+
+
+def _text_point(entity) -> Optional[Tuple[float, float]]:
+    try:
+        p = entity.dxf.insert
+    except AttributeError:
+        return None
+    return (p.x, p.y)
+
+
+def export_cropped(src: str, dst: str, clip: Optional[Box] = None, *, skip_types: Iterable[str] = (),
+                   hidden_layers: Iterable[str] = (), keep_text: bool = True,
+                   to_origin: bool = False) -> CropResult:
+    """Write the part of `src` inside `clip` (drawing units; None = whole
+    drawing) to `dst` - what the import dialog shows for that window and
+    filters, as a DXF a CAD tool or this editor opens in a fraction of the
+    time. Block references are expanded, entities crossing the window are
+    cut at its edge, lines / arcs / circles / polylines keep their true arcs.
+    Units ($INSUNITS) and layer names / colours carry over; coordinates stay
+    those of the original unless `to_origin` moves the window's lower-left to
+    (0, 0). Top-level TEXT / MTEXT whose insert point is inside are copied
+    when `keep_text`."""
+    geom = read_background(src, clip=clip, skip_types=skip_types, hidden_layers=hidden_layers)
+    source = _load(src).doc
+    window = _norm_box(clip) if clip is not None else None
+    dx, dy = 0.0, 0.0
+    if to_origin:
+        anchor = window or geom.bounds
+        if anchor is not None:
+            dx, dy = -anchor[0], -anchor[1]
+
+    doc = ezdxf.new("R2010", setup=True)
+    doc.header["$INSUNITS"] = int(source.header.get("$INSUNITS", 0))
+    hidden = set(hidden_layers)
+
+    def layer(name: str) -> str:
+        if name not in doc.layers:
+            attribs = {}
+            if name in source.layers:
+                color = abs(int(source.layers.get(name).dxf.get("color", 7)))  # negative = layer off
+                attribs = {"color": color if 1 <= color <= 255 else 7}
+            doc.layers.add(name, **attribs)
+        return name
+
+    msp = doc.modelspace()
+    for shape in geom.shapes or []:
+        points = [(x + dx, y + dy, b) for (x, y), b in zip(shape.points, shape.bulges)]
+        msp.add_lwpolyline(points, format="xyb", close=shape.closed, dxfattribs={"layer": layer(shape.layer)})
+
+    texts = 0
+    if keep_text:
+        for entity in source.modelspace().query("TEXT MTEXT"):
+            name = entity.dxf.get("layer", "0")
+            point = _text_point(entity)
+            if name in hidden or point is None:
+                continue
+            if window is not None and not (window[0] <= point[0] <= window[2] and window[1] <= point[1] <= window[3]):
+                continue
+            # Rebuilt from its attributes, not copied: a copy drags along
+            # AutoCAD-only extension objects ezdxf can't carry over.
+            attribs = {"layer": layer(name), "insert": (point[0] + dx, point[1] + dy),
+                       "rotation": entity.dxf.get("rotation", 0.0)}
+            if entity.dxftype() == "TEXT":
+                attribs["height"] = entity.dxf.get("height", 1.0)
+                msp.add_text(entity.dxf.get("text", ""), dxfattribs=attribs)
+            else:
+                attribs.update(char_height=entity.dxf.get("char_height", 1.0),
+                               attachment_point=entity.dxf.get("attachment_point", 1))
+                if entity.dxf.hasattr("width"):
+                    attribs["width"] = entity.dxf.width
+                msp.add_mtext(entity.text, dxfattribs=attribs)
+            texts += 1
+
+    os.makedirs(os.path.dirname(os.path.abspath(dst)), exist_ok=True)
+    doc.saveas(dst)
+    bounds = geom.bounds
+    if bounds is not None:
+        bounds = (bounds[0] + dx, bounds[1] + dy, bounds[2] + dx, bounds[3] + dy)
+    return CropResult(dst, len(geom.shapes or []), texts, bounds)

@@ -16,10 +16,14 @@ the user fix all of that before anything is loaded into the editor:
               type the offsets (BackgroundDrawing.offsetX/offsetY, metres).
   Skip        dimensions, hatches, leaders; hide layers. What is skipped or
               hidden is not drawn, snapped to or picked.
+  Crop        "Export Cropped DXF..." writes the window (with the filters)
+              as a small DXF (dxf_io.export_cropped) and can switch the
+              background to it - a big drawing set then loads in no time.
 
 The result is a BackgroundDrawing; the dialog never touches the editor.
 """
 import math
+import os
 from typing import List, Optional, Tuple
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
@@ -27,7 +31,7 @@ from PySide6.QtGui import QBrush, QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QGraphicsPathItem,
     QGraphicsRectItem, QGraphicsScene, QGraphicsView, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QPushButton, QSplitter, QVBoxLayout, QWidget,
+    QFileDialog, QListWidgetItem, QMessageBox, QPushButton, QSplitter, QVBoxLayout, QWidget,
 )
 
 import hmi_style as hmi
@@ -174,10 +178,13 @@ class BackgroundImportDialog(QDialog):
     CUSTOM = "Custom window (dragged on the preview)"
 
     def __init__(self, parent, info: dxf_io.DrawingInfo, stored_path: str,
-                 current: Optional[BackgroundDrawing] = None):
+                 current: Optional[BackgroundDrawing] = None, source_path: Optional[str] = None,
+                 layout_dir: Optional[str] = None):
         super().__init__(parent)
         self.info = info
         self.stored_path = stored_path
+        self.source_path = source_path or stored_path   # the file the preview shows
+        self.layout_dir = layout_dir or os.getcwd()      # stored paths are relative to it
         self.current = current
         self.setWindowTitle("Background Settings" if current is not None else "Import DXF Background")
         self.window_box: Optional[Box] = None
@@ -191,9 +198,11 @@ class BackgroundImportDialog(QDialog):
         side = QWidget()
         side_layout = QVBoxLayout(side)
         side_layout.setContentsMargins(0, 0, 0, 0)
-        side_layout.addWidget(QLabel(
+        self.file_label = QLabel(
             f"<b>{stored_path}</b><br>{info.shape_estimate:,} entities (blocks expanded), "
-            f"{len(info.layers)} layers. Header units: {info.header_units_name}."))
+            f"{len(info.layers)} layers. Header units: {info.header_units_name}.")
+        self.file_label.setWordWrap(True)
+        side_layout.addWidget(self.file_label)
 
         # -- units -------------------------------------------------------------
         units_box = QGroupBox("Units")
@@ -228,6 +237,17 @@ class BackgroundImportDialog(QDialog):
         self.window_label.setWordWrap(True)
         wl.addWidget(self.window_label)
         wl.addWidget(QLabel("<i>Drag a rectangle on the preview to choose any window.</i>"))
+        crop_row = QHBoxLayout()
+        self.crop_button = QPushButton("Export Cropped DXF...")
+        self.crop_button.setToolTip("Write this window, without what is left out below, as a new DXF "
+                                    "(same units and coordinates) - and optionally use it as the background")
+        self.crop_button.clicked.connect(self._export_cropped_clicked)
+        self.crop_origin_check = QCheckBox("Move to (0, 0)")
+        self.crop_origin_check.setToolTip("Put the window's lower-left corner at the drawing's origin")
+        crop_row.addWidget(self.crop_button)
+        crop_row.addWidget(self.crop_origin_check)
+        crop_row.addStretch(1)
+        wl.addLayout(crop_row)
         side_layout.addWidget(window_box)
 
         # -- placement ---------------------------------------------------------
@@ -474,7 +494,63 @@ class BackgroundImportDialog(QDialog):
             if not item.isHidden():
                 item.setCheckState(state)
 
+    def _export_cropped_clicked(self):
+        base = os.path.splitext(os.path.basename(self.source_path))[0]
+        start = os.path.join(self.layout_dir, f"{base}_crop.dxf")
+        dst, _ = QFileDialog.getSaveFileName(self, "Export Cropped DXF", start, "DXF Files (*.dxf)")
+        if not dst:
+            return
+        result = self.export_cropped(dst, use_as_background=False)
+        if result is None:
+            return
+        answer = QMessageBox.question(
+            self, "Export Cropped DXF",
+            f"Wrote {result.shapes:,} shapes and {result.texts:,} texts to\n{dst}\n\n"
+            f"Use the cropped file as the background? It loads much faster than the full drawing.")
+        if answer == QMessageBox.Yes:
+            self.use_background_file(dst, moved=self.crop_origin_check.isChecked())
+
     # -- API (also used by tests) -----------------------------------------------
+
+    def export_cropped(self, dst: str, use_as_background: bool = False):
+        """Write the window with the current filters to `dst`; returns the
+        dxf_io.CropResult (None when it failed, after telling the user)."""
+        to_origin = self.crop_origin_check.isChecked()
+        try:
+            # Moving to (0, 0) needs a known corner: the window, else the drawing's extents.
+            clip = self.window_box or (self.info.extents if to_origin else None)
+            result = dxf_io.export_cropped(
+                self.source_path, dst, clip,
+                skip_types=[k for k, c in self.skip_checks.items() if c.isChecked()],
+                hidden_layers=self.hidden_layers(), to_origin=to_origin)
+        except (OSError, ValueError) as exc:
+            QMessageBox.warning(self, "Export Cropped DXF", f"Could not write {dst}:\n{exc}")
+            return None
+        if use_as_background:
+            self.use_background_file(dst, moved=to_origin)
+        return result
+
+    def use_background_file(self, path: str, moved: bool = False):
+        """Make `path` (a cropped copy of the previewed drawing) the
+        background file. Its coordinates are the original's unless it was
+        moved to (0, 0); either way the layout placement stays the same."""
+        try:
+            self.stored_path = os.path.relpath(path, self.layout_dir)
+        except ValueError:  # different drive on Windows
+            self.stored_path = path
+        anchor = self.window_box or self.info.extents
+        if moved and anchor is not None:
+            x0, y0 = anchor[0], anchor[1]
+            scale = self.scale()
+            self.origin_check.setChecked(False)
+            self._updating = True
+            self.offset_x.setValue(self.offset_x.value() + x0 * scale)
+            self.offset_y.setValue(self.offset_y.value() + y0 * scale)
+            self._updating = False
+            self.window_box = None   # the cropped file is the window now
+        self.file_label.setText(f"<b>{self.stored_path}</b><br>Cropped from {os.path.basename(self.source_path)}"
+                                f"; the cropped file will be the background.")
+        self._refresh()
 
     def set_unit(self, label: str):
         self.unit_combo.setCurrentText(label)

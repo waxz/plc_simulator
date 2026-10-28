@@ -1,4 +1,4 @@
-"""The simulator window's panels: the toolbar folders, a read-only inspector
+"""The simulator window's panels: the toolbar under the status bar, a read-only inspector
 of the selected component and the Components tree. Layouts are designed in
 the layout editor (layout_editor.py, "Edit in Designer"); this window only
 runs and watches them."""
@@ -10,16 +10,17 @@ from physics import PhysicsEngine
 
 
 TOP_BAR = 30     # px, simulator status bar
+TOOLBAR_H = 34   # px, the tool bar under it
 BOTTOM_BAR = 24  # px, key hint bar
+CANVAS_TOP = TOP_BAR + TOOLBAR_H
 
 
-TOOLBAR_W = 150
-# The toolbar's folders: (title, [(attribute, button text[, object id])]).
-TOOLBAR_FOLDERS = (
-    ("SIMULATION", (("sim_play_btn", "Start", "#sim_primary"), ("sim_clear_btn", "Clear Parcels"),
-                    ("sim_reset_btn", "Reset"))),
-    ("LAYOUT", (("manager_btn", "Components"), ("designer_btn", "Edit in Designer"))),
-    ("VIEW", (("theme_btn", "Light Theme"),)),
+# The tool bar's groups, left to right: (title, [(attribute, text, width[, object id])]).
+TOOLBAR_GROUPS = (
+    ("SIMULATION", (("sim_play_btn", "Start", 76, "#sim_primary"), ("sim_clear_btn", "Clear Parcels", 108),
+                    ("sim_reset_btn", "Reset", 64))),
+    ("LAYOUT", (("manager_btn", "Components", 100), ("designer_btn", "Edit in Designer", 126))),
+    ("VIEW", (("drawing_btn", "Hide Drawing", 110), ("theme_btn", "Light Theme", 104))),
 )
 
 # What the inspector lists for each kind of component (sorted into the
@@ -66,24 +67,22 @@ class EditorUI:
         self.height = height
         self.config = config
 
-        # Toolbar (Left): folders of tools, each header collapses its folder.
+        # Tool bar (top, under the status bar): small group titles, then buttons.
         self.toolbar_panel = pygame_gui.elements.UIPanel(
-            relative_rect=pygame.Rect(10, TOP_BAR + 8, TOOLBAR_W, 200),
-            manager=self.manager
+            relative_rect=pygame.Rect(0, TOP_BAR, self.width, TOOLBAR_H),
+            manager=self.manager, object_id="#toolbar",
         )
-        self._toolbar_folders = []   # [header button, [tool buttons], collapsed, title]
-        for title, tools in TOOLBAR_FOLDERS:
-            header = pygame_gui.elements.UIButton(
-                relative_rect=pygame.Rect(4, 0, TOOLBAR_W - 10, 22),
-                text=f"–  {title}",
-                manager=self.manager,
-                container=self.toolbar_panel,
-                object_id="#folder_header",
-            )
+        self.toolbar_groups = []   # (title label, [buttons])
+        x = 10
+        for title, tools in TOOLBAR_GROUPS:
+            label = pygame_gui.elements.UILabel(
+                pygame.Rect(x, 0, 8 + 7 * len(title), TOOLBAR_H - 2), title, self.manager,
+                container=self.toolbar_panel, object_id="#tool_group")
+            x += label.relative_rect.width + 4
             buttons = []
-            for attr, text, *style in tools:
+            for attr, text, w, *style in tools:
                 button = pygame_gui.elements.UIButton(
-                    relative_rect=pygame.Rect(16, 0, TOOLBAR_W - 28, 24),
+                    relative_rect=pygame.Rect(x, 4, w, TOOLBAR_H - 10),
                     text=text,
                     manager=self.manager,
                     container=self.toolbar_panel,
@@ -91,12 +90,15 @@ class EditorUI:
                 )
                 setattr(self, attr, button)
                 buttons.append(button)
-            self._toolbar_folders.append([header, buttons, False, title])
-        self._layout_toolbar()
+                x += w + 4
+            self.toolbar_groups.append((label, buttons))
+            x += 18
+        if not (config is not None and config.background is not None):
+            self.drawing_btn.disable()   # nothing to show / hide
 
         # Inspector (Right): read-only, rows built for the selected item.
         self.prop_panel = pygame_gui.elements.UIPanel(
-            relative_rect=pygame.Rect(self.width - PANEL_W, TOP_BAR, PANEL_W, self._panel_height()),
+            relative_rect=pygame.Rect(self.width - PANEL_W, CANVAS_TOP, PANEL_W, self._panel_height()),
             manager=self.manager
         )
         self.prop_rows = {}       # attr -> (name label, value label)
@@ -342,25 +344,8 @@ class EditorUI:
 
     # -- toolbar -------------------------------------------------------------------
 
-    def _layout_toolbar(self):
-        """Stack the toolbar folders: header, then its tools unless collapsed."""
-        y = 6
-        for header, buttons, collapsed, title in self._toolbar_folders:
-            header.set_relative_position((4, y))
-            header.set_text(f"{'+' if collapsed else '–'}  {title}")
-            y += 24
-            for button in buttons:
-                if collapsed:
-                    button.hide()
-                    continue
-                button.show()
-                button.set_relative_position((16, y))
-                y += 28
-            y += 4
-        self.toolbar_panel.set_dimensions((TOOLBAR_W, y + 4))
-
-    def sync_sim_buttons(self, playing: bool, theme: str):
-        """Start <-> Pause (green / amber) and the theme button's wording."""
+    def sync_sim_buttons(self, playing: bool, theme: str, drawing_shown: bool = True):
+        """Start <-> Pause (green / amber), the theme and drawing buttons' wording."""
         if getattr(self, "_shown_playing", None) != playing:
             self._shown_playing = playing
             self.sim_play_btn.set_text("Pause" if playing else "Start")
@@ -368,20 +353,18 @@ class EditorUI:
         label = "Dark Theme" if theme == "light" else "Light Theme"
         if self.theme_btn.text != label:
             self.theme_btn.set_text(label)
-
-    def toggle_toolbar_folder(self, title: str):
-        for folder in self._toolbar_folders:
-            if folder[3] == title:
-                folder[2] = not folder[2]
-        self._layout_toolbar()
+        label = "Hide Drawing" if drawing_shown else "Show Drawing"
+        if self.drawing_btn.text != label:
+            self.drawing_btn.set_text(label)
 
     def _panel_height(self) -> int:
-        return max(200, self.height - TOP_BAR - BOTTOM_BAR)
+        return max(200, self.height - CANVAS_TOP - BOTTOM_BAR)
 
     def handle_resize(self, width: int, height: int):
         self.width = width
         self.height = height
-        self.prop_panel.set_position((width - PANEL_W, TOP_BAR))
+        self.toolbar_panel.set_dimensions((width, TOOLBAR_H))
+        self.prop_panel.set_position((width - PANEL_W, CANVAS_TOP))
         self.prop_panel.set_dimensions((PANEL_W, self._panel_height()))
         # Keep the Components window from being stranded off-screen
         if self.manager_window and self.manager_window.alive():
@@ -392,13 +375,10 @@ class EditorUI:
     def handle_event(self, event):
         """Returns a command ("TOGGLE_PLAY", "OPEN_DESIGNER", ("SELECT_ITEM", item), ...) or None."""
         if event.type == pygame_gui.UI_BUTTON_PRESSED:
-            for header, _buttons, _collapsed, title in self._toolbar_folders:
-                if event.ui_element == header:
-                    self.toggle_toolbar_folder(title)
-                    return None
             for button, command in ((self.sim_play_btn, "TOGGLE_PLAY"), (self.sim_clear_btn, "CLEAR"),
                                     (self.sim_reset_btn, "RESET"), (self.theme_btn, "TOGGLE_THEME"),
-                                    (self.manager_btn, "OPEN_MANAGER"), (self.designer_btn, "OPEN_DESIGNER")):
+                                    (self.manager_btn, "OPEN_MANAGER"), (self.designer_btn, "OPEN_DESIGNER"),
+                                    (self.drawing_btn, "TOGGLE_DRAWING")):
                 if event.ui_element == button:
                     return command
             if self.manager_select_btn and event.ui_element == self.manager_select_btn:

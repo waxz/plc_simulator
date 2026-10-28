@@ -13,7 +13,8 @@ from surface import belt_contains
 import devices
 import hmi_style as hmi
 from cad.belts import flow_arrows
-from editor_ui import BOTTOM_BAR, TOP_BAR
+from editor_ui import BOTTOM_BAR, CANVAS_TOP, TOP_BAR
+from sim_drawing import DrawingLayer
 from cad.checks import belt_footprint
 from cad.path import belt_world_path, path_length, segments as path_segments
 from cad.ports import centerline_points
@@ -56,6 +57,11 @@ class Renderer:
         self.exchange = None  # set by main.run_pygame: the status bar shows the PLC link
         self.physics = None   # set by main.run_pygame: Clear Parcels / Reset act on it
         self.config_path = None  # set by main.run_pygame: "Edit in Designer" opens it
+        # The layout's DXF background (config.background), read on the first
+        # frame - config_path, which its path is relative to, is set by then.
+        self.drawing = DrawingLayer()
+        self.show_drawing = True
+        self._drawing_loaded = False
 
         # Camera - initialize to center the origin
         self.camera_x = self.width / 2.0
@@ -115,6 +121,8 @@ class Renderer:
             self.playing = not self.playing
         elif cmd == "TOGGLE_THEME":
             self.set_theme(hmi.other_theme())
+        elif cmd == "TOGGLE_DRAWING":
+            self.show_drawing = not self.show_drawing
         elif cmd == "CLEAR" and self.physics is not None:
             self.physics.clear_parcels()
         elif cmd == "RESET" and self.physics is not None:
@@ -215,7 +223,7 @@ class Renderer:
                 
             self.manager.process_events(event)
             ui_cmd = self.editor_ui.handle_event(event)
-            if ui_cmd in ("TOGGLE_PLAY", "CLEAR", "RESET", "TOGGLE_THEME"):
+            if ui_cmd in ("TOGGLE_PLAY", "CLEAR", "RESET", "TOGGLE_THEME", "TOGGLE_DRAWING"):
                 cmd = self.run_command(ui_cmd)
                 continue
             if ui_cmd:
@@ -242,6 +250,8 @@ class Renderer:
                     self.show_values = not self.show_values
                 elif event.key == pygame.K_t:
                     cmd = self.run_command('TOGGLE_THEME')
+                elif event.key == pygame.K_d:
+                    cmd = self.run_command('TOGGLE_DRAWING')
                 elif event.key == pygame.K_c:
                     cmd = self.run_command('CLEAR')
                     
@@ -399,7 +409,7 @@ class Renderer:
         return texts
 
     def _canvas_rect(self) -> pygame.Rect:
-        return pygame.Rect(0, TOP_BAR, self.width, self.height - TOP_BAR - BOTTOM_BAR)
+        return pygame.Rect(0, CANVAS_TOP, self.width, self.height - CANVAS_TOP - BOTTOM_BAR)
 
     def _polygon_outline(self, points, color, width=1):
         if len(points) >= 3:
@@ -842,6 +852,7 @@ class Renderer:
 
         self.screen.fill(hmi.BG)
         self.draw_grid()
+        self._draw_background_drawing()
         self._labels = []
 
         for sink in self.config.sinks:
@@ -869,13 +880,32 @@ class Renderer:
 
         if physics_engine:
             self.editor_ui.update_sensor_state(physics_engine)
-        self.editor_ui.sync_sim_buttons(self.playing, hmi.THEME)
+        self.editor_ui.sync_sim_buttons(self.playing, hmi.THEME, self.show_drawing)
         self.manager.draw_ui(self.screen)
         self._draw_status_bar(physics_engine)
         self._draw_hint_bar()
 
         pygame.display.flip()
         self.clock.tick(self.fps)
+
+    def load_drawing(self) -> bool:
+        """(Re)read the layout's DXF background; the View > drawing button is
+        only enabled when there is one."""
+        self._drawing_loaded = True
+        ok = self.drawing.load(self.config.background, self.config_path)
+        if self.drawing.error:
+            print(f"[Sim] {self.drawing.error}")
+        elif ok:
+            print(f"[Sim] Drawing: {len(self.drawing.lines):,} lines from {self.drawing.loaded_from}")
+        if not self.headless:
+            (self.editor_ui.drawing_btn.enable if self.drawing.has_drawing else self.editor_ui.drawing_btn.disable)()
+        return ok
+
+    def _draw_background_drawing(self):
+        if not self._drawing_loaded:
+            self.load_drawing()
+        if self.show_drawing:
+            self.drawing.draw(self.screen, self.camera_x, self.camera_y, self.scale * self.zoom)
 
     def _draw_status_bar(self, physics_engine):
         """One quiet strip on top: run state, time, real-time ratio, flow
@@ -938,7 +968,7 @@ class Renderer:
         hint = self._cached_text(
             self.hud_small,
             "SPACE start / pause    C clear parcels    R reset    V parcel speeds " + ("on" if self.show_values else "off")
-            + "    T theme    wheel zoom    drag pan    click a button to press it", hmi.TEXT_FAINT)
+            + "    D drawing    T theme    wheel zoom    drag pan    click a button to press it", hmi.TEXT_FAINT)
         self.screen.blit(hint, (12, bar.y + (BOTTOM_BAR - hint.get_height()) // 2))
 
     def quit(self):

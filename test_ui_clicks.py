@@ -18,6 +18,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 _SETTINGS_DIR = tempfile.mkdtemp()
 os.environ["CONVEYOR_SIM_SETTINGS"] = os.path.join(_SETTINGS_DIR, "settings.json")  # never the user's
 
+import ezdxf  # noqa: E402
 import pygame  # noqa: E402
 import pygame_gui  # noqa: E402
 from PySide6.QtCore import QPoint, Qt  # noqa: E402
@@ -25,7 +26,7 @@ from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMenu, QToolBar  # noqa: E402
 
 import hmi_style as hmi  # noqa: E402
-from config_parser import load_config  # noqa: E402
+from config_parser import BackgroundDrawing, load_config  # noqa: E402
 from layout_editor import MainWindow  # noqa: E402
 from physics import PhysicsEngine  # noqa: E402
 from visualizer import Renderer  # noqa: E402
@@ -250,13 +251,39 @@ class SimulatorClicksTest(unittest.TestCase):
         self.click(ui.theme_btn)
         self.assertEqual(hmi.THEME, "dark")
 
-    def test_folder_headers_fold_up(self):
+    def test_layout_drawing_is_shown_and_the_button_hides_it(self):
+        # A layout with a DXF background: a 4 x 2 m frame and a diagonal, in mm.
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, True)
+        doc = ezdxf.new("R2010")
+        doc.header["$INSUNITS"] = ezdxf.units.MM
+        doc.modelspace().add_lwpolyline([(0, 0), (4000, 0), (4000, 2000), (0, 2000)], close=True)
+        doc.modelspace().add_line((0, 0), (4000, 2000))
+        doc.saveas(os.path.join(tmp, "hall.dxf"))
+        self.config.background = BackgroundDrawing(path="hall.dxf", scale=0.001, offsetX=-50.0, offsetY=-50.0)
+        self.r.config_path = os.path.join(tmp, "layout.json")
+        self.r.load_drawing()
+        self.assertEqual(len(self.r.drawing.lines), 2)
+        self.assertEqual(self.r.drawing.bounds(), (-50.0, -50.0, -46.0, -48.0))
         ui = self.r.editor_ui
-        header = next(f[0] for f in ui._toolbar_folders if f[3] == "LAYOUT")
-        self.click(header)
-        self.assertFalse(ui.designer_btn.visible)
-        self.click(header)
-        self.assertTrue(ui.designer_btn.visible)
+        self.assertTrue(ui.drawing_btn.is_enabled)
+        # Centre the view on the frame's left edge: drawing colour there.
+        self.r.zoom = 1.0
+        self.r.camera_x = self.r.width / 2 + 50.0 * self.r.scale
+        self.r.camera_y = self.r.height / 2 - 49.0 * self.r.scale
+        self.frame()
+        edge = self.r._world_to_screen(-50.0, -49.0)
+        self.assertEqual(self.r.screen.get_at(edge)[:3], hmi.DRAWING)
+        self.assertEqual(ui.drawing_btn.text, "Hide Drawing")
+        self.click(ui.drawing_btn)
+        self.assertFalse(self.r.show_drawing)
+        self.assertEqual(ui.drawing_btn.text, "Show Drawing")
+        self.assertNotEqual(self.r.screen.get_at(edge)[:3], hmi.DRAWING)
+        # Panning moves the cached drawing with the view.
+        self.click(ui.drawing_btn)
+        self.r.camera_x += 30
+        self.frame()
+        self.assertEqual(self.r.screen.get_at((edge[0] + 30, edge[1]))[:3], hmi.DRAWING)
 
     def test_edit_in_designer_opens_the_layout_editor(self):
         self.r.config_path = "test_config.json"

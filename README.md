@@ -209,6 +209,7 @@ The Qt layout editor is where belt shapes and positions are designed:
 | Tools > Check Layout | F7 | Belt overlaps (transfer zones at belt ends are allowed), outlets leading nowhere, broken connections, sensors/sources not over a belt; double-click an issue to select it | Shapely |
 | File > Import DXF Background... | | Floor plan as a locked background, via a dialog: units (prefilled from `$INSUNITS`, cross-checked against the drawing's dimensions), import only a window or one sheet of a drawing set, place it at the origin, leave out dimensions / hatches / leaders / layers | ezdxf |
 | File > Background Settings... | | Change the background's units, window, offset and layers later (undoable) | ezdxf |
+| File > Background (DXF) > Export Cropped DXF... | | Write the background's window, without what is left out, as a small DXF and optionally switch the background to it (undoable) | ezdxf |
 | File > Export DXF... | | Layout in metres, one layer per kind (BELTS, BELT_CENTERLINES, FLOW, SENSORS, ...) | ezdxf |
 | View > Show Ports | | Inlet (green ring), outlet (orange arrow), connection (cyan ring; red = broken) | |
 
@@ -241,6 +242,13 @@ The Qt layout editor is where belt shapes and positions are designed:
        point, or type the offsets. The result's size in metres is shown.
      - **Leave out** dimensions, hatches and leaders, and hide layers. What
        is left out is not drawn, snapped to or picked.
+     - **Export Cropped DXF...** (under the window choice) writes the window,
+       with what is left out removed, as a new DXF: blocks expanded, lines cut
+       at the window edge, arcs kept exact, same units, layers and
+       coordinates (or **Move to (0, 0)**), texts inside kept. It then offers
+       to use the cropped file as the background - placement stays the same,
+       and a 20 MB drawing set becomes a file of a few hundred KB that opens
+       instantly in the editor, the simulator or any CAD tool.
 
      The choices are saved in the layout's `background` (`scale`, `offsetX`,
      `offsetY`, `clip`, `skipTypes`, `hiddenLayers`); change them later with
@@ -367,9 +375,12 @@ coordinates. `V` toggles the per-parcel speed readout (actual / belt speed).
 The simulator runs and watches a layout; it does not edit it. Layouts are
 designed in the layout editor, and **Layout > Edit in Designer** opens the
 current layout there (save, then **Run in Simulator** in the editor to see
-the change). The toolbar on the left is in folders (Simulation, Layout,
-View) that fold up on a click; Layout > Components opens the layout as a
-tree, a folder per kind. Clicking a component shows it in the read-only
+the change). The tool bar under the status bar holds every command in
+three groups: Simulation (Start / Pause, Clear Parcels, Reset), Layout
+(Components - the layout as a tree, a folder per kind - and Edit in
+Designer) and View (Hide / Show Drawing, theme). The layout's DXF background
+is drawn behind the belts as in the editor (same window, filters, scale and
+offset); it is cached as an image, so panning a large drawing stays smooth. Clicking a component shows it in the read-only
 inspector on the right (the editor's sections, wording and units) with a
 **Live** section: drive state and actual speed for a belt, blocked / clear
 (or blocked beams) for a sensor, the contact for a push button, the lamp for
@@ -380,6 +391,7 @@ an LED. Dragging on the canvas always pans the view.
 | Simulation > Start / Pause | `Space` | run or pause the physics (green Start, amber Pause) |
 | Simulation > Clear Parcels | `C` | remove every parcel, keep time and drives running |
 | Simulation > Reset | `R` | clear parcels, time, counters, sensor filters and drive state |
+| View > Hide / Show Drawing | `D` | the layout's DXF background (disabled when the layout has none) |
 | View > Light / Dark Theme | `T` | switch palette (shared with the editor, remembered) |
 | Layout > Edit in Designer | | open this layout in the layout editor |
 

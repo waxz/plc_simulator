@@ -17,6 +17,7 @@ from PySide6.QtWidgets import QApplication, QMenu  # noqa: E402
 from component_library import load_library  # noqa: E402
 from config_parser import load_config  # noqa: E402
 from layout_editor import MainWindow  # noqa: E402
+from editor_ui import TOP_BAR  # noqa: E402
 from visualizer import Renderer  # noqa: E402
 
 _app = QApplication.instance() or QApplication([])
@@ -161,16 +162,21 @@ class SimulatorTreesTest(unittest.TestCase):
         self.addCleanup(self.r.quit)
         self.ui = self.r.editor_ui
 
-    def test_toolbar_folders_collapse(self):
-        titles = [f[3] for f in self.ui._toolbar_folders]
+    def test_tool_bar_is_one_row_under_the_status_bar(self):
         # No component tools: layouts are designed in the layout editor.
+        titles = [label.text for label, _buttons in self.ui.toolbar_groups]
         self.assertEqual(titles, ["SIMULATION", "LAYOUT", "VIEW"])
-        height = self.ui.toolbar_panel.get_relative_rect().height
-        self.ui.toggle_toolbar_folder("LAYOUT")
-        self.assertFalse(self.ui.designer_btn.visible)
-        self.assertLess(self.ui.toolbar_panel.get_relative_rect().height, height)
-        self.ui.toggle_toolbar_folder("LAYOUT")
-        self.assertTrue(self.ui.designer_btn.visible)
+        bar = self.ui.toolbar_panel.get_abs_rect()
+        self.assertEqual((bar.x, bar.y, bar.width), (0, TOP_BAR, self.r.width))
+        buttons = [b for _label, group in self.ui.toolbar_groups for b in group]
+        self.assertEqual(len(buttons), 7)
+        for left, right in zip(buttons, buttons[1:]):
+            self.assertLess(left.get_abs_rect().right, right.get_abs_rect().left)   # left to right
+        for b in buttons:
+            self.assertTrue(bar.contains(b.get_abs_rect()))
+        # The inspector starts below the tool bar.
+        self.assertEqual(self.ui.prop_panel.get_abs_rect().y, bar.bottom)
+        self.assertFalse(self.ui.drawing_btn.is_enabled)     # this layout has no drawing
 
     def test_component_window_is_a_tree(self):
         self.ui.open_manager_panel()
