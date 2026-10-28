@@ -364,10 +364,16 @@ outline and a FAULT tag. Labels are small, upright tags placed by priority
 (faults, then devices, then belt ids); a label that would overlap another is
 left out until you zoom in, and the selected item always shows its tag and
 coordinates. `V` toggles the per-parcel speed readout (actual / belt speed).
-The toolbar on the left is in folders (Simulation, Belts, Sensors, Parcel
-Flow, Operator Panel, Layout, View) that fold up on a click, and Layout >
-Components opens the layout as a tree, a folder per kind. The property panel
-uses the editor's sections and wording.
+The simulator runs and watches a layout; it does not edit it. Layouts are
+designed in the layout editor, and **Layout > Edit in Designer** opens the
+current layout there (save, then **Run in Simulator** in the editor to see
+the change). The toolbar on the left is in folders (Simulation, Layout,
+View) that fold up on a click; Layout > Components opens the layout as a
+tree, a folder per kind. Clicking a component shows it in the read-only
+inspector on the right (the editor's sections, wording and units) with a
+**Live** section: drive state and actual speed for a belt, blocked / clear
+(or blocked beams) for a sensor, the contact for a push button, the lamp for
+an LED. Dragging on the canvas always pans the view.
 
 | Control | Key | Does |
 |---|---|---|
@@ -375,6 +381,7 @@ uses the editor's sections and wording.
 | Simulation > Clear Parcels | `C` | remove every parcel, keep time and drives running |
 | Simulation > Reset | `R` | clear parcels, time, counters, sensor filters and drive state |
 | View > Light / Dark Theme | `T` | switch palette (shared with the editor, remembered) |
+| Layout > Edit in Designer | | open this layout in the layout editor |
 
 Add `--exchange-config <file.json>` to override the MQTT/TCP settings baked into
 the workspace config (see `tcp_exchange_config.json` for the shape).

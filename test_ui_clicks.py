@@ -19,6 +19,7 @@ _SETTINGS_DIR = tempfile.mkdtemp()
 os.environ["CONVEYOR_SIM_SETTINGS"] = os.path.join(_SETTINGS_DIR, "settings.json")  # never the user's
 
 import pygame  # noqa: E402
+import pygame_gui  # noqa: E402
 from PySide6.QtCore import QPoint, Qt  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMenu, QToolBar  # noqa: E402
@@ -251,11 +252,60 @@ class SimulatorClicksTest(unittest.TestCase):
 
     def test_folder_headers_fold_up(self):
         ui = self.r.editor_ui
-        header = next(f[0] for f in ui._toolbar_folders if f[3] == "BELTS")
+        header = next(f[0] for f in ui._toolbar_folders if f[3] == "LAYOUT")
         self.click(header)
-        self.assertFalse(ui.add_linear_btn.visible)
+        self.assertFalse(ui.designer_btn.visible)
         self.click(header)
-        self.assertTrue(ui.add_linear_btn.visible)
+        self.assertTrue(ui.designer_btn.visible)
+
+    def test_edit_in_designer_opens_the_layout_editor(self):
+        self.r.config_path = "test_config.json"
+        with mock.patch("visualizer.subprocess.Popen") as popen:
+            self.click(self.r.editor_ui.designer_btn)
+        args = popen.call_args[0][0]
+        self.assertTrue(args[1].endswith("layout_editor.py"))
+        self.assertEqual(args[2], "test_config.json")
+
+    def centre_on(self, item):
+        self.r.zoom = 1.0
+        self.r.camera_x = self.r.width / 2 - item.x * self.r.scale
+        self.r.camera_y = self.r.height / 2 + item.y * self.r.scale
+        return self.r._world_to_screen(item.x, item.y)
+
+    def test_clicked_component_is_inspected_read_only(self):
+        ui = self.r.editor_ui
+        sensor = next(s for s in self.config.sensors if s.sensorType == "ir")
+        pos = self.centre_on(sensor)
+        self.click_at(pos)
+        self.assertIs(ui.selected_item, sensor)
+        self.assertEqual(ui.prop_title.text, "SENSOR")
+        self.assertEqual(ui.prop_rows["id"][1].text, sensor.id)
+        self.assertTrue(ui.prop_rows["x"][1].text.endswith(" m"))
+        self.assertEqual(ui.live_rows["State"][1].text, "clear")
+        # read-only: labels, no text entries or Delete / Copy
+        self.assertFalse(any(isinstance(w, pygame_gui.elements.UITextEntryLine)
+                             for w in ui.prop_panel.get_container().elements))
+        # a drag that starts on the component pans the view; the sensor stays put
+        x, y = sensor.x, sensor.y
+        camera = self.r.camera_x
+        pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONDOWN, {"pos": pos, "button": 1}))
+        pygame.event.post(pygame.event.Event(pygame.MOUSEMOTION, {"pos": (pos[0] + 40, pos[1]), "rel": (40, 0),
+                                                                   "buttons": (1, 0, 0)}))
+        pygame.event.post(pygame.event.Event(pygame.MOUSEBUTTONUP, {"pos": (pos[0] + 40, pos[1]), "button": 1}))
+        self.r.process_events()
+        self.assertEqual((sensor.x, sensor.y), (x, y))
+        self.assertEqual(self.r.camera_x, camera + 40)
+
+    def test_belt_inspector_shows_the_live_drive(self):
+        ui = self.r.editor_ui
+        belt = self.config.belts[0]
+        belt.running, belt.actualSpeed = False, 0.0
+        ui.show_props_for(belt)
+        self.assertEqual(ui.live_rows["Drive"][1].text, "stopped")
+        belt.running, belt.actualSpeed = True, 1.25
+        self.frame()
+        self.assertEqual(ui.live_rows["Drive"][1].text, "running")
+        self.assertEqual(ui.live_rows["Actual speed"][1].text, "1.25 m/s")
 
     def test_click_a_push_button_on_the_canvas_while_running(self):
         ui = self.r.editor_ui

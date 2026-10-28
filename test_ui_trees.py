@@ -163,13 +163,14 @@ class SimulatorTreesTest(unittest.TestCase):
 
     def test_toolbar_folders_collapse(self):
         titles = [f[3] for f in self.ui._toolbar_folders]
-        self.assertEqual(titles, ["SIMULATION", "BELTS", "SENSORS", "PARCEL FLOW", "OPERATOR PANEL", "LAYOUT", "VIEW"])
+        # No component tools: layouts are designed in the layout editor.
+        self.assertEqual(titles, ["SIMULATION", "LAYOUT", "VIEW"])
         height = self.ui.toolbar_panel.get_relative_rect().height
-        self.ui.toggle_toolbar_folder("BELTS")
-        self.assertFalse(self.ui.add_linear_btn.visible)
+        self.ui.toggle_toolbar_folder("LAYOUT")
+        self.assertFalse(self.ui.designer_btn.visible)
         self.assertLess(self.ui.toolbar_panel.get_relative_rect().height, height)
-        self.ui.toggle_toolbar_folder("BELTS")
-        self.assertTrue(self.ui.add_linear_btn.visible)
+        self.ui.toggle_toolbar_folder("LAYOUT")
+        self.assertTrue(self.ui.designer_btn.visible)
 
     def test_component_window_is_a_tree(self):
         self.ui.open_manager_panel()

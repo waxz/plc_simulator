@@ -10,11 +10,12 @@ from metrics_store import MetricsStore
 from sim_runner import SimulationRunner
 
 
-def run_pygame(config, physics_engine, mqtt, headless: bool, runner=None):
+def run_pygame(config, physics_engine, mqtt, headless: bool, runner=None, config_path=None):
     print(f"Initializing visualizer (Headless: {headless})...")
     renderer = Renderer(config, headless=headless)
     renderer.exchange = mqtt  # the status bar shows the PLC link
     renderer.physics = physics_engine  # Clear Parcels / Reset
+    renderer.config_path = config_path  # Edit in Designer
     if headless:
         # There's no Play button to press without a window.
         renderer.playing = True
@@ -184,7 +185,7 @@ def main():
         print(f"[main] Physics + exchange on a dedicated thread, tick {args.sim_tick_ms:g} ms.")
 
     try:
-        run_pygame(config, physics_engine, mqtt, args.headless, runner=runner)
+        run_pygame(config, physics_engine, mqtt, args.headless, runner=runner, config_path=args.config)
     finally:
         if runner is not None:
             runner.stop()

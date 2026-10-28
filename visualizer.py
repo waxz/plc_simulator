@@ -1,4 +1,6 @@
 import os
+import subprocess
+import sys
 import pygame
 import pygame_gui
 import math
@@ -6,7 +8,6 @@ import time
 from typing import Tuple, Optional, List
 from config_parser import SimulatorConfig, Belt, Sensor, ControlButton, LedIndicator
 from math_utils import get_rect_vertices, point_in_polygon, point_in_arc, get_belt_polygon, get_default_quad_vertices
-from id_utils import next_indexed_id
 from physics import parcel_speed_info
 from surface import belt_contains
 import devices
@@ -54,6 +55,7 @@ class Renderer:
         self.show_values = False
         self.exchange = None  # set by main.run_pygame: the status bar shows the PLC link
         self.physics = None   # set by main.run_pygame: Clear Parcels / Reset act on it
+        self.config_path = None  # set by main.run_pygame: "Edit in Designer" opens it
 
         # Camera - initialize to center the origin
         self.camera_x = self.width / 2.0
@@ -66,7 +68,6 @@ class Renderer:
         # Editor State
         self.playing = False
         self.selected_item = None
-        self.dragging_vertex_idx = None
         self.pressed_button = None
 
         # For the "Sim/Real" timing indicator - time.perf_counter() rather
@@ -94,6 +95,18 @@ class Renderer:
         if not self.headless:
             self.manager.get_theme().load_theme(hmi.pygame_gui_theme())
             self.manager.rebuild_all_from_changed_theme_data()
+
+    def open_designer(self):
+        """Open this layout in the layout editor (its own process): layouts
+        are designed there, then run here."""
+        editor = os.path.join(os.path.dirname(os.path.abspath(__file__)), "layout_editor.py")
+        args = [sys.executable, editor] + ([self.config_path] if self.config_path else [])
+        try:
+            subprocess.Popen(args, cwd=os.path.dirname(editor))
+            print(f"[Sim] Opened the designer on {self.config_path or 'a new layout'} - save there, "
+                  f"then Run in Simulator to see the changes here.")
+        except OSError as exc:
+            print(f"[Sim] Could not start the designer: {exc}")
 
     def run_command(self, cmd):
         """The simulation buttons / keys: returns the command for main.py's
@@ -238,24 +251,6 @@ class Renderer:
                     if self.editor_ui.is_ui_blocking_point(event.pos):
                         continue
                         
-                    # Check if clicked a vertex handle of a selected quadrilateral belt
-                    handle_clicked = False
-                    if self.selected_item and isinstance(self.selected_item, Belt) and self.selected_item.type == "linear" and getattr(self.selected_item, "shape", "rectangle") == "quadrilateral":
-                        belt = self.selected_item
-                        if not belt.vertexs:
-                            belt.vertexs = get_default_quad_vertices(belt.length, belt.beltWidth)
-
-                        for idx, (wx, wy) in enumerate(get_belt_polygon(belt)):
-                            sx, sy = self._world_to_screen(wx, wy)
-                            if math.hypot(event.pos[0] - sx, event.pos[1] - sy) < 10.0:
-                                self.dragging_vertex_idx = idx
-                                self.is_dragging = True
-                                handle_clicked = True
-                                break
-
-                    if handle_clicked:
-                        continue
-                        
                     # Hit testing logic for selection
                     wx, wy = self._screen_to_world(event.pos[0], event.pos[1])
                     clicked_item = self._hit_test(wx, wy)
@@ -270,7 +265,7 @@ class Renderer:
                             self.editor_ui.refresh_button_state()
                             continue
                         else:
-                            print(f"[Sim] '{clicked_item.label or clicked_item.id}' is selected for editing, not pressed - "
+                            print(f"[Sim] '{clicked_item.label or clicked_item.id}' is selected, not pressed - "
                                   f"press Start (or Space) to run the simulation so button presses register.")
 
                     self.is_dragging = True
@@ -290,120 +285,19 @@ class Renderer:
                             self.editor_ui.refresh_button_state()
                         self.pressed_button = None
                     self.is_dragging = False
-                    self.dragging_vertex_idx = None
                     
             elif event.type == pygame.MOUSEMOTION:
-                if self.is_dragging and self.dragging_vertex_idx is not None and self.selected_item:
-                    belt = self.selected_item
-                    mwx, mwy = self._screen_to_world(event.pos[0], event.pos[1])
-                    rad = math.radians(belt.rotation)
-                    cos_a = math.cos(rad)
-                    sin_a = math.sin(rad)
-                    dx = mwx - belt.x
-                    dy = mwy - belt.y
-                    lx = dx * cos_a + dy * sin_a
-                    ly = -dx * sin_a + dy * cos_a
-                    belt.vertexs[self.dragging_vertex_idx] = {'x': lx, 'y': ly}
-                    self.editor_ui.update_props_values(belt)
-                elif self.is_dragging and not self.selected_item:
-                    # Pan camera if nothing selected
+                if self.is_dragging:
+                    # Drag pans the view; components are moved in the designer.
                     dx = event.pos[0] - self.drag_start[0]
                     dy = event.pos[1] - self.drag_start[1]
                     self.camera_x = self.camera_start[0] + dx
                     self.camera_y = self.camera_start[1] + dy
-                elif self.is_dragging and self.selected_item:
-                    # Move selected item incrementally
-                    wx1, wy1 = self._screen_to_world(self.drag_start[0], self.drag_start[1])
-                    wx2, wy2 = self._screen_to_world(event.pos[0], event.pos[1])
-                    self.selected_item.x += (wx2 - wx1)
-                    self.selected_item.y += (wy2 - wy1)
-                    self.drag_start = event.pos
-                    # Update properties UI
-                    self.editor_ui.update_props_values(self.selected_item)
-            
-            # File Dialog handling
-            elif event.type == pygame_gui.UI_FILE_DIALOG_PATH_PICKED:
-                try:
-                    with open(event.text, "w", encoding="utf-8") as f:
-                        f.write(self.config.model_dump_json(indent=2))
-                    print(f"Saved config to {event.text}")
-                except Exception as e:
-                    print(f"Failed to save: {e}")
-                    
+
         self.manager.update(time_delta)
         
-        # Handle custom UI commands
-        if isinstance(cmd, tuple) and cmd[0] == "PLACE_COMPONENT":
-            _, comp_cmd, wx, wy = cmd
-            if comp_cmd == "ADD_LINEAR":
-                new_belt = Belt(
-                    id=next_indexed_id((s.id for s in self.config.belts), "belt"),
-                    type="linear",
-                    x=wx, y=wy, length=5, beltWidth=1, rotation=0, speed=1.0, directionAngle=0, color="#cccccc"
-                )
-                self.config.belts.append(new_belt)
-                self.selected_item = new_belt
-                self.editor_ui.show_props_for(new_belt)
-            elif comp_cmd == "ADD_CURVED":
-                new_belt = Belt(
-                    id=next_indexed_id((s.id for s in self.config.belts), "belt"),
-                    type="curved", shape="arc",
-                    x=wx, y=wy, radius=2, beltWidth=1, startAngle=0, endAngle=90, rotation=0, speed=1.0, directionAngle=0, color="#cccccc"
-                )
-                self.config.belts.append(new_belt)
-                self.selected_item = new_belt
-                self.editor_ui.show_props_for(new_belt)
-            elif comp_cmd == "ADD_SENSOR":
-                new_sensor = Sensor(
-                    id=next_indexed_id((s.id for s in self.config.sensors), "sensor"),
-                    x=wx, y=wy, width=0.1, height=1.0, rotation=0, label="SENSOR", color="#ff0000", sensorType="ir"
-                )
-                self.config.sensors.append(new_sensor)
-                self.selected_item = new_sensor
-                self.editor_ui.show_props_for(new_sensor)
-            elif comp_cmd == "ADD_BUTTON":
-                new_button = ControlButton(
-                    id=next_indexed_id((s.id for s in self.config.buttons), "button"),
-                    x=wx, y=wy, width=0.7, height=0.25, rotation=0, label="START", color="#3b82f6"
-                )
-                self.config.buttons.append(new_button)
-                self.selected_item = new_button
-                self.editor_ui.show_props_for(new_button)
-            elif comp_cmd == "ADD_LED":
-                new_led = LedIndicator(
-                    id=next_indexed_id((s.id for s in self.config.leds), "led"),
-                    x=wx, y=wy, radius=0.2, label="AUTO", color="#22c55e"
-                )
-                self.config.leds.append(new_led)
-                self.selected_item = new_led
-                self.editor_ui.show_props_for(new_led)
-            elif comp_cmd == "ADD_SOURCE":
-                from config_parser import Source
-                new_source = Source(
-                    id=next_indexed_id((s.id for s in self.config.sources), "source"),
-                    x=wx, y=wy, rotation=0, interval=2.0, minWidth=0.4, maxWidth=0.6, minHeight=0.4, maxHeight=0.6, label="SRC"
-                )
-                self.config.sources.append(new_source)
-                self.selected_item = new_source
-                self.editor_ui.show_props_for(new_source)
-            elif comp_cmd == "ADD_SINK":
-                from config_parser import Sink
-                new_sink = Sink(
-                    id=next_indexed_id((s.id for s in self.config.sinks), "sink"),
-                    x=wx, y=wy, width=1.0, height=1.0, label="SNK"
-                )
-                self.config.sinks.append(new_sink)
-                self.selected_item = new_sink
-                self.editor_ui.show_props_for(new_sink)
-                
-        elif cmd == "SAVE_DIALOG":
-            pygame_gui.windows.UIFileDialog(
-                rect=pygame.Rect(160, 50, 440, 500),
-                manager=self.manager,
-                window_title='Save Config',
-                initial_file_path='test_config.json',
-                allow_existing_files_only=False
-            )
+        if cmd == "OPEN_DESIGNER":
+            self.open_designer()
         elif cmd == "OPEN_MANAGER":
             self.editor_ui.open_manager_panel()
         return cmd

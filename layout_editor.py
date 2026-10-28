@@ -3305,12 +3305,7 @@ def _field_specs_for(item: PlacedItem):
 
 
 # Units shown in the property grid's number boxes.
-_FIELD_UNITS = {
-    "x": " m", "y": " m", "rotation": "\u00b0", "directionAngle": "\u00b0", "startAngle": "\u00b0",
-    "endAngle": "\u00b0", "length": " m", "beltWidth": " m", "width": " m", "height": " m", "radius": " m",
-    "beamDistance": " m", "minWidth": " m", "maxWidth": " m", "minHeight": " m", "maxHeight": " m",
-    "speed": " m/s", "transition_momentum_duration": " s", "interval": " s", "onDelay": " s", "offDelay": " s",
-}
+_FIELD_UNITS = hmi.PROPERTY_UNITS
 
 
 class PropertiesPanel(QWidget):

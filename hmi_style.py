@@ -149,6 +149,14 @@ PROPERTY_LABELS = {
 }
 
 
+PROPERTY_UNITS = {
+    "x": " m", "y": " m", "rotation": "\u00b0", "directionAngle": "\u00b0", "startAngle": "\u00b0",
+    "endAngle": "\u00b0", "length": " m", "beltWidth": " m", "width": " m", "height": " m", "radius": " m",
+    "beamDistance": " m", "minWidth": " m", "maxWidth": " m", "minHeight": " m", "maxHeight": " m",
+    "speed": " m/s", "transition_momentum_duration": " s", "interval": " s", "onDelay": " s", "offDelay": " s",
+}
+
+
 def property_label(attr: str) -> str:
     return PROPERTY_LABELS.get(attr, attr.capitalize())
 
@@ -285,6 +293,15 @@ def pygame_gui_theme() -> dict:
                            "misc": {**flat, "text_horiz_alignment_padding": "4"}},
         "#prop_group": {"colours": {"dark_bg": "#00000000", "normal_text": h(ACCENT)},
                         "font": {"name": "noto_sans", "size": "11", "bold": "1"},
+                        "misc": {"text_horiz_alignment": "left"}},
+        "#prop_kind": {"colours": {"dark_bg": "#00000000", "normal_text": h(TEXT_DIM)},
+                       "font": {"name": "noto_sans", "size": "11", "bold": "1"},
+                       "misc": {"text_horiz_alignment": "left"}},
+        "#prop_name": {"colours": {"dark_bg": "#00000000", "normal_text": h(TEXT_DIM)},
+                       "font": {"name": "noto_sans", "size": "12"},
+                       "misc": {"text_horiz_alignment": "left"}},
+        "#prop_value": {"colours": {"dark_bg": "#00000000", "normal_text": h(TEXT)},
+                        "font": {"name": "noto_sans", "size": "12"},
                         "misc": {"text_horiz_alignment": "left"}},
         "#sim_primary": {"colours": {"normal_bg": h(RUNNING), "hovered_bg": h(shade(RUNNING, 1.15)),
                                      "active_bg": h(shade(RUNNING, 0.85)), "normal_text": h(ON_ACCENT),

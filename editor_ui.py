@@ -1,10 +1,12 @@
+"""The simulator window's panels: the toolbar folders, a read-only inspector
+of the selected component and the Components tree. Layouts are designed in
+the layout editor (layout_editor.py, "Edit in Designer"); this window only
+runs and watches them."""
 import pygame
 import hmi_style as hmi
 import pygame_gui
-from copy import deepcopy
 from config_parser import Belt, Sensor, Source, Sink, ControlButton, LedIndicator
 from physics import PhysicsEngine
-from id_utils import unique_incremented_id
 
 
 TOP_BAR = 30     # px, simulator status bar
@@ -12,17 +14,49 @@ BOTTOM_BAR = 24  # px, key hint bar
 
 
 TOOLBAR_W = 150
-# The toolbar's folders: (title, [(attribute, button text)]).
+# The toolbar's folders: (title, [(attribute, button text[, object id])]).
 TOOLBAR_FOLDERS = (
     ("SIMULATION", (("sim_play_btn", "Start", "#sim_primary"), ("sim_clear_btn", "Clear Parcels"),
                     ("sim_reset_btn", "Reset"))),
-    ("BELTS", (("add_linear_btn", "Linear Belt"), ("add_curved_btn", "Curved Belt"))),
-    ("SENSORS", (("add_sensor_btn", "Sensor"),)),
-    ("PARCEL FLOW", (("add_source_btn", "Source"), ("add_sink_btn", "Sink"))),
-    ("OPERATOR PANEL", (("add_button_btn", "Push Button"), ("add_led_btn", "LED"))),
-    ("LAYOUT", (("manager_btn", "Components"),)),
+    ("LAYOUT", (("manager_btn", "Components"), ("designer_btn", "Edit in Designer"))),
     ("VIEW", (("theme_btn", "Light Theme"),)),
 )
+
+# What the inspector lists for each kind of component (sorted into the
+# editor's sections by hmi.group_sort_key).
+INSPECTOR_FIELDS = {
+    Belt: ("id", "x", "y", "rotation", "speed", "directionAngle", "transition_momentum_duration"),
+    Sensor: ("id", "label", "sensorType", "x", "y", "rotation", "width", "height"),
+    Source: ("id", "label", "x", "y", "rotation", "interval", "minWidth", "maxWidth", "minHeight", "maxHeight"),
+    Sink: ("id", "label", "x", "y", "width", "height"),
+    ControlButton: ("id", "label", "x", "y", "rotation", "width", "height"),
+    LedIndicator: ("id", "label", "x", "y", "radius"),
+}
+BELT_GEOMETRY = {
+    "linear": ("length", "beltWidth", "beltShape"),
+    "curved": ("radius", "beltWidth", "startAngle", "endAngle"),
+    "path": ("beltWidth",),
+}
+ROW_H = 24
+PANEL_W = 250
+
+
+def _kind_name(item) -> str:
+    if isinstance(item, Belt):
+        return f"{item.type} belt"
+    return {Sensor: "sensor", Source: "source", Sink: "sink", ControlButton: "push button",
+            LedIndicator: "LED"}.get(type(item), "component")
+
+
+def format_value(attr: str, value) -> str:
+    """A property value as the editor shows it: rounded, with its unit."""
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, float):
+        return f"{value:.3f}".rstrip("0").rstrip(".") + hmi.PROPERTY_UNITS.get(attr, "")
+    if value in (None, ""):
+        return "-"
+    return str(value) + hmi.PROPERTY_UNITS.get(attr, "")
 
 
 class EditorUI:
@@ -31,24 +65,17 @@ class EditorUI:
         self.width = width
         self.height = height
         self.config = config
-        
-        # Save Button
-        self.save_btn = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(10, TOP_BAR + 8, 120, 28),
-            text='Save Layout',
-            manager=self.manager
-        )
-        
+
         # Toolbar (Left): folders of tools, each header collapses its folder.
         self.toolbar_panel = pygame_gui.elements.UIPanel(
-            relative_rect=pygame.Rect(10, TOP_BAR + 44, TOOLBAR_W, 330),
+            relative_rect=pygame.Rect(10, TOP_BAR + 8, TOOLBAR_W, 200),
             manager=self.manager
         )
-        self._toolbar_folders = []   # [header button, [tool buttons], collapsed]
+        self._toolbar_folders = []   # [header button, [tool buttons], collapsed, title]
         for title, tools in TOOLBAR_FOLDERS:
             header = pygame_gui.elements.UIButton(
                 relative_rect=pygame.Rect(4, 0, TOOLBAR_W - 10, 22),
-                text=f"\u2013  {title}",
+                text=f"–  {title}",
                 manager=self.manager,
                 container=self.toolbar_panel,
                 object_id="#folder_header",
@@ -67,313 +94,163 @@ class EditorUI:
             self._toolbar_folders.append([header, buttons, False, title])
         self._layout_toolbar()
 
-        # Properties Panel (Right)
+        # Inspector (Right): read-only, rows built for the selected item.
         self.prop_panel = pygame_gui.elements.UIPanel(
-            relative_rect=pygame.Rect(self.width - 250, TOP_BAR, 250, self._panel_height()),
+            relative_rect=pygame.Rect(self.width - PANEL_W, TOP_BAR, PANEL_W, self._panel_height()),
             manager=self.manager
         )
-
-        self.manager_clear_btn = None
-        
-        self.prop_labels = {}
-        self.prop_inputs = {}
-        
-        # Extended list of all possible properties across all components
-        all_props = [
-            "id", "x", "y","speed" ,"rotation", "length", "beltWidth", 
-            "radius", "startAngle", "endAngle", "directionAngle", 'transition_momentum_duration',
-            "width", "height", "sensorType", "laserCount", "beamDistance",
-            "interval", "minWidth", "maxWidth", "minHeight", "maxHeight",
-            "label", "isOn", "color", "beltShape","beltVertexs"
-        ]
-        
-        y_offset = 10
-        for prop in all_props:
-            disp = hmi.property_label(prop)  # same wording as the editor's property grid
-            lbl = pygame_gui.elements.UILabel(
-                relative_rect=pygame.Rect(5, y_offset, 100, 28),
-                text=disp + ":",
-                manager=self.manager,
-                container=self.prop_panel
-            )
-            if prop == "sensorType":
-                inp = pygame_gui.elements.UIDropDownMenu(
-                    options_list=["ir", "laser_banner"],
-                    starting_option="ir",
-                    relative_rect=pygame.Rect(108, y_offset, 127, 28),
-                    manager=self.manager,
-                    container=self.prop_panel
-                )
-            elif prop == "beltShape":
-                inp = pygame_gui.elements.UIDropDownMenu(
-                    options_list=["rectangle", "quadrilateral"],
-                    starting_option="rectangle",
-                    relative_rect=pygame.Rect(108, y_offset, 127, 28),
-                    manager=self.manager,
-                    container=self.prop_panel
-                )
-            else:
-                inp = pygame_gui.elements.UITextEntryLine(
-                    relative_rect=pygame.Rect(108, y_offset, 127, 28),
-                    manager=self.manager,
-                    container=self.prop_panel
-                )
-            self.prop_labels[prop] = lbl
-            self.prop_inputs[prop] = inp
-            y_offset += 33
-            
+        self.prop_rows = {}       # attr -> (name label, value label)
+        self.live_rows = {}       # live readout name -> (name label, value label)
+        self.prop_title = pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(8, 8, PANEL_W - 16, 18), text="", manager=self.manager,
+            container=self.prop_panel, object_id="#prop_kind")
+        self.prop_hint = pygame_gui.elements.UILabel(
+            relative_rect=pygame.Rect(8, 8, PANEL_W - 16, 40),
+            text="Click a component to inspect it", manager=self.manager,
+            container=self.prop_panel, object_id="#prop_name")
         self.selected_item = None
-        self.hide_all_props()
-        
-        # Sensor state read-only display (bottom of props panel)
-        self.sensor_state_lbl = pygame_gui.elements.UILabel(
-            relative_rect=pygame.Rect(5, self._panel_height() - 85, 235, 28),
-            text="State: --",
-            manager=self.manager,
-            container=self.prop_panel
-        )
-        self.sensor_state_lbl.hide()
-        self.prop_error_lbl = pygame_gui.elements.UILabel(
-            relative_rect=pygame.Rect(5, self._panel_height() - 65, 235, 20),
-            text="",
-            manager=self.manager,
-            container=self.prop_panel
-        )
-        self.prop_error_lbl.hide()
-        self.prop_delete_btn = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(5, self._panel_height() - 45, 115, 30),
-            text="Delete",
-            manager=self.manager,
-            container=self.prop_panel
-        )
-        self.prop_copy_btn = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(125, self._panel_height() - 45, 115, 30),
-            text="Copy",
-            manager=self.manager,
-            container=self.prop_panel
-        )
-        self.prop_delete_btn.hide()
-        self.prop_copy_btn.hide()
-
-        self.vertex_labels = []
-        self.vertex_x_inputs = []
-        self.vertex_y_inputs = []
-        vy_offset = 350
-        for i in range(4):
-            lbl = pygame_gui.elements.UILabel(pygame.Rect(5, vy_offset, 35, 28), f"V{i}:", self.manager, container=self.prop_panel)
-            ix = pygame_gui.elements.UITextEntryLine(pygame.Rect(45, vy_offset, 85, 28), self.manager, container=self.prop_panel)
-            iy = pygame_gui.elements.UITextEntryLine(pygame.Rect(140, vy_offset, 85, 28), self.manager, container=self.prop_panel)
-            self.vertex_labels.append(lbl)
-            self.vertex_x_inputs.append(ix)
-            self.vertex_y_inputs.append(iy)
-            vy_offset += 33
-            lbl.hide()
-            ix.hide()
-            iy.hide()
+        self.show_props_for(None)
 
         self.manager_window = None
         self.manager_list = None
         self.manager_details = None
         self.manager_select_btn = None
-        self.manager_duplicate_btn = None
-        self.manager_delete_btn = None
         self.manager_refresh_btn = None
         self.manager_items = {}
         self.manager_collapsed = set()   # kinds folded up in the manager tree
         self.manager_selected_key = None
-        self.manager_clear = False
 
-        self.placement_window = None
-        self.placement_x_input = None
-        self.placement_y_input = None
-        self.placement_ok_btn = None
-        self.placement_cancel_btn = None
-        self.placement_cmd_type = None
+    # -- inspector -----------------------------------------------------------------
 
     def _group_header(self, group: str):
         """The section heading of one property group (created on first use)."""
         headers = self.__dict__.setdefault("_group_headers", {})
         if group not in headers:
             headers[group] = pygame_gui.elements.UILabel(
-                relative_rect=pygame.Rect(5, 0, 235, 20), text=group.upper(), manager=self.manager,
+                relative_rect=pygame.Rect(8, 0, PANEL_W - 16, 20), text=group.upper(), manager=self.manager,
                 container=self.prop_panel, object_id="#prop_group")
         return headers[group]
+
+    def _row(self, rows: dict, key: str, name: str):
+        if key not in rows:
+            rows[key] = (
+                pygame_gui.elements.UILabel(pygame.Rect(8, 0, 96, ROW_H), name, self.manager,
+                                            container=self.prop_panel, object_id="#prop_name"),
+                pygame_gui.elements.UILabel(pygame.Rect(110, 0, PANEL_W - 122, ROW_H), "", self.manager,
+                                            container=self.prop_panel, object_id="#prop_value"),
+            )
+        return rows[key]
 
     def hide_all_props(self):
         for header in self.__dict__.get("_group_headers", {}).values():
             header.hide()
-        for lbl in self.prop_labels.values():
-            lbl.hide()
-        for inp in self.prop_inputs.values():
-            inp.hide()
-        # Guard: sensor_state_lbl is created after hide_all_props is first called in __init__
-        lbl = getattr(self, 'sensor_state_lbl', None)
-        if lbl:
-            lbl.hide()
-        delete_btn = getattr(self, 'prop_delete_btn', None)
-        if delete_btn:
-            delete_btn.hide()
-        copy_btn = getattr(self, 'prop_copy_btn', None)
-        if copy_btn:
-            copy_btn.hide()
-        self._clear_prop_error()
+        for rows in (self.prop_rows, self.live_rows):
+            for name, value in rows.values():
+                name.hide()
+                value.hide()
 
-        for lbl in getattr(self, 'vertex_labels', []):
-            lbl.hide()
-        for ix in getattr(self, 'vertex_x_inputs', []):
-            ix.hide()
-        for iy in getattr(self, 'vertex_y_inputs', []):
-            iy.hide()
+    def inspector_fields(self, item) -> list:
+        fields = list(INSPECTOR_FIELDS.get(type(item), ("id", "x", "y")))
+        if isinstance(item, Belt):
+            fields += BELT_GEOMETRY.get(item.type, ())
+        elif isinstance(item, Sensor) and item.sensorType == "laser_banner":
+            fields += ["laserCount", "beamDistance"]
+        fields.sort(key=hmi.group_sort_key)
+        return fields
 
-    def _show_prop_error(self, message: str):
-        lbl = getattr(self, 'prop_error_lbl', None)
-        if not lbl:
-            return
-        lbl.set_text(message)
-        lbl.show()
-
-    def _clear_prop_error(self):
-        lbl = getattr(self, 'prop_error_lbl', None)
-        if lbl:
-            lbl.set_text("")
-            lbl.hide()
+    @staticmethod
+    def _value_of(item, attr: str):
+        if attr == "beltShape":
+            return getattr(item, "shape", None)
+        return getattr(item, attr, None)
 
     def show_props_for(self, item):
         self.selected_item = item
         self.hide_all_props()
+        self._live_shown = {}
         if not item:
+            self.prop_title.hide()
+            self.prop_hint.show()
             return
-        self.prop_delete_btn.show()
-        self.prop_copy_btn.show()
-            
-        props_to_show = ["id", "x", "y", "rotation","speed"]
-        if isinstance(item, Belt):
-            props_to_show.append("directionAngle")
-            props_to_show.append("transition_momentum_duration")
-            if item.type == "linear":
-                props_to_show += ["length", "beltWidth", "beltShape"]
-                if getattr(item, "shape", "rectangle") == "quadrilateral":
-                    props_to_show.append("beltVertexs")
-            elif item.type == "curved":
-                props_to_show += ["radius", "beltWidth", "startAngle", "endAngle"]
-            elif item.type == "path":
-                props_to_show += ["beltWidth"]  # anchors are edited in layout_editor.py
-        elif isinstance(item, Sensor):
-            props_to_show += ["width", "height", "sensorType", "label"]
-            if item.sensorType == "laser_banner":
-                props_to_show += ["laserCount", "beamDistance"]
-            # Show the live state label
-            self.sensor_state_lbl.set_text("State: --")
-            self.sensor_state_lbl.show()
-        elif isinstance(item, Source):
-            props_to_show = ["id", "x", "y", "rotation","interval", "minWidth", "maxWidth", "minHeight", "maxHeight", "label"]
-        elif isinstance(item, Sink):
-            props_to_show = ["id", "x", "y", "width", "height", "label"]
-        elif isinstance(item, ControlButton):
-            props_to_show = ["id", "x", "y", "width", "height", "rotation", "label", "color"]
-            self.sensor_state_lbl.set_text("Trigger: --")
-            self.sensor_state_lbl.show()
-        elif isinstance(item, LedIndicator):
-            props_to_show = ["id", "x", "y", "radius", "label", "isOn", "color"]
-            
-        # Same sections, same order as the layout editor's property grid.
-        props_to_show.sort(key=hmi.group_sort_key)
-        current_y = 8
+        self.prop_hint.hide()
+        self.prop_title.set_text(_kind_name(item).upper())
+        self.prop_title.show()
+        y = 32
         last_group = None
-        for p in props_to_show:
-            if p in self.prop_inputs:
-                group = hmi.property_group(p)
-                if group != last_group:
-                    last_group = group
-                    header = self._group_header(group)
-                    header.set_relative_position((5, current_y + (4 if current_y > 8 else 0)))
-                    header.show()
-                    current_y += 26 if current_y > 8 else 22
-                self.prop_labels[p].set_relative_position((5, current_y))
-                self.prop_labels[p].show()
-                
-                # Map UI property names to model attributes
-                attr_name = p
-                if p == "beltShape":
-                    attr_name = "shape"
-                elif p == "beltVertexs":
-                    attr_name = "vertexs"
-                
-                val = getattr(item, attr_name, "")
-                
-                if p == "beltVertexs":
-                    self.prop_inputs[p].set_relative_position((108, current_y))
-                    self.prop_inputs[p].show()
-                    if not val:
-                        # Default points if not set
-                        hw = getattr(item, 'length', 2.0) / 2.0
-                        hh = getattr(item, 'beltWidth', 1.0) / 2.0
-                        val = [{'x': -hw, 'y': -hh}, {'x': hw, 'y': -hh}, {'x': hw, 'y': hh}, {'x': -hw, 'y': hh}]
-                    val_str = "; ".join(f"{pt['x']:.2f},{pt['y']:.2f}" for pt in val)
-                    self.prop_inputs[p].set_text(val_str)
-                    current_y += 33
-                    
-                    # Also populate the 4 vertex entries
-                    for i in range(4):
-                        if i < len(val):
-                            self.vertex_labels[i].set_relative_position((5, current_y))
-                            self.vertex_x_inputs[i].set_relative_position((45, current_y))
-                            self.vertex_y_inputs[i].set_relative_position((140, current_y))
-                            self.vertex_labels[i].show()
-                            self.vertex_x_inputs[i].show()
-                            self.vertex_x_inputs[i].set_text(f"{val[i]['x']:.3f}")
-                            self.vertex_y_inputs[i].show()
-                            self.vertex_y_inputs[i].set_text(f"{val[i]['y']:.3f}")
-                            current_y += 33
-                        else:
-                            self.vertex_labels[i].hide()
-                            self.vertex_x_inputs[i].hide()
-                            self.vertex_y_inputs[i].hide()
-                    continue
-                elif isinstance(val, float):
-                    val_str = str(round(val, 3))
-                else:
-                    val_str = str(val)
-                
-                if p == "sensorType":
-                    self.prop_inputs[p].kill()
-                    self.prop_inputs[p] = pygame_gui.elements.UIDropDownMenu(
-                        options_list=["ir", "laser_banner"],
-                        starting_option=val_str,
-                        relative_rect=pygame.Rect(108, current_y, 127, 28),
-                        manager=self.manager,
-                        container=self.prop_panel
-                    )
-                elif p == "beltShape":
-                    self.prop_inputs[p].kill()
-                    self.prop_inputs[p] = pygame_gui.elements.UIDropDownMenu(
-                        options_list=["rectangle", "quadrilateral"],
-                        starting_option=val_str,
-                        relative_rect=pygame.Rect(108, current_y, 127, 28),
-                        manager=self.manager,
-                        container=self.prop_panel
-                    )
-                else:
-                    self.prop_inputs[p].set_relative_position((108, current_y))
-                    self.prop_inputs[p].show()
-                    self.prop_inputs[p].set_text(val_str)
-                    
-                current_y += 33
-        
-        # Position state label dynamically at the end
-        if self.sensor_state_lbl:
-            self.sensor_state_lbl.set_relative_position((5, current_y + 10))
-        self.refresh_button_state()
+        for attr in self.inspector_fields(item):
+            group = hmi.property_group(attr)
+            if group != last_group:
+                last_group = group
+                y = self._place_header(group, y)
+            name, value = self._row(self.prop_rows, attr, hmi.property_label(attr))
+            value.set_text(format_value(attr, self._value_of(item, attr)))
+            y = self._place_row(name, value, y)
+        live = self._live_values(item)
+        if live:
+            y = self._place_header("Live", y)
+            for key in live:
+                name, value = self._row(self.live_rows, key, key)
+                y = self._place_row(name, value, y)
+        self.update_live()
+
+    def _place_header(self, group: str, y: int) -> int:
+        header = self._group_header(group)
+        header.set_relative_position((8, y + 6))
+        header.show()
+        return y + 28
+
+    @staticmethod
+    def _place_row(name, value, y: int) -> int:
+        name.set_relative_position((8, y))
+        value.set_relative_position((110, y))
+        name.show()
+        value.show()
+        return y + ROW_H
+
+    def _live_values(self, item, physics_engine: PhysicsEngine = None) -> dict:
+        """Readouts that change while the simulation runs: {name: text}."""
+        if isinstance(item, Belt):
+            drive = "FAULT" if item.fault else ("running" if item.running else "stopped")
+            return {"Drive": drive, "Actual speed": f"{item.actualSpeed:.2f} m/s"}
+        if isinstance(item, Sensor):
+            # The conditioned output (delays, NC) as the PLC gets it: True/False
+            # or a "0"/"1" string, one character per beam.
+            state = item.sensor_states
+            bits = state if isinstance(state, str) else ("1" if state else "0")
+            if item.sensorType == "laser_banner":
+                return {"Beams": f"{bits.count('1')} of {len(bits)} blocked"}
+            return {"State": "BLOCKED" if "1" in bits else "clear"}
+        if isinstance(item, ControlButton):
+            return {"Contact": "PRESSED" if getattr(item, "sensor_states", False) else "released"}
+        if isinstance(item, LedIndicator):
+            return {"Lamp": "ON" if item.isOn else "off"}
+        return {}
+
+    def update_live(self, physics_engine: PhysicsEngine = None):
+        """Refresh the Live section's readouts (text only changes when the value does)."""
+        if not self.selected_item:
+            return
+        shown = self.__dict__.setdefault("_live_shown", {})
+        for key, text in self._live_values(self.selected_item, physics_engine).items():
+            if key in self.live_rows and shown.get(key) != text:
+                shown[key] = text
+                self.live_rows[key][1].set_text(text)
+
+    def update_sensor_state(self, physics_engine: PhysicsEngine):
+        """Called every frame by the renderer."""
+        self.update_live(physics_engine)
+
+    def refresh_button_state(self):
+        self.update_live()
 
     def is_ui_blocking_point(self, pos) -> bool:
-        panels = [self.prop_panel, self.toolbar_panel, self.save_btn]
-        for panel in panels:
+        for panel in (self.prop_panel, self.toolbar_panel):
             if panel and panel.rect.collidepoint(pos):
                 return True
-        for window in [self.manager_window]:
-            if window and window.alive() and window.rect.collidepoint(pos):
-                return True
-        return False
+        window = self.manager_window
+        return bool(window and window.alive() and window.rect.collidepoint(pos))
+
+    # -- components tree -----------------------------------------------------------
 
     def open_manager_panel(self):
         if not self.config:
@@ -384,9 +261,9 @@ class EditorUI:
             return
 
         self.manager_window = pygame_gui.elements.UIWindow(
-            rect=pygame.Rect(150, 70, 520, 520),
+            rect=pygame.Rect(170, 70, 520, 520),
             manager=self.manager,
-            window_display_title="Component Manager",
+            window_display_title="Components",
             resizable=False
         )
         container = self.manager_window.get_container()
@@ -403,32 +280,14 @@ class EditorUI:
             container=container
         )
         self.manager_select_btn = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(10, 420, 90, 32),
-            text="Select",
-            manager=self.manager,
-            container=container
-        )
-        self.manager_duplicate_btn = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(110, 420, 90, 32),
-            text="Duplicate",
-            manager=self.manager,
-            container=container
-        )
-        self.manager_delete_btn = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(210, 420, 90, 32),
-            text="Delete",
+            relative_rect=pygame.Rect(10, 420, 110, 32),
+            text="Inspect",
             manager=self.manager,
             container=container
         )
         self.manager_refresh_btn = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(310, 420, 90, 32),
+            relative_rect=pygame.Rect(130, 420, 110, 32),
             text="Refresh",
-            manager=self.manager,
-            container=container
-        )
-        self.manager_clear_btn = pygame_gui.elements.UIButton(
-            relative_rect=pygame.Rect(410, 420, 90, 32),
-            text="Clear",
             manager=self.manager,
             container=container
         )
@@ -454,14 +313,14 @@ class EditorUI:
             if not items:
                 continue
             collapsed = kind in self.manager_collapsed
-            folder = f"{'+' if collapsed else '\u2013'}  {title} ({len(items)})"
+            folder = f"{'+' if collapsed else '–'}  {title} ({len(items)})"
             rows.append(folder)
             self.manager_folder_rows[folder] = kind
             if collapsed:
                 continue
             for idx, item in enumerate(items):
                 text = (getattr(item, "label", "") or "").strip()
-                label = f"      {item.id}" + (f"  \u00b7  {text}" if text and text != item.id else "")
+                label = f"      {item.id}" + (f"  ·  {text}" if text and text != item.id else "")
                 rows.append(label)
                 self.manager_items[label] = (kind, idx, item)
         self.manager_list.set_item_list(rows)
@@ -481,102 +340,14 @@ class EditorUI:
             fields.append(f"<b>{name}</b>: {value}")
         self.manager_details.set_text(f"<b>{kind.upper()}</b><br>" + "<br>".join(fields))
 
-    def _collection_for_kind(self, kind: str):
-        if kind == "belt":
-            return self.config.belts
-        if kind == "sensor":
-            return self.config.sensors
-        if kind == "source":
-            return self.config.sources
-        if kind == "sink":
-            return self.config.sinks
-        if kind == "button":
-            return self.config.buttons
-        if kind == "led":
-            return self.config.leds
-        return None
-
-    def _make_unique_id(self, kind: str, base_id: str) -> str:
-        existing = {
-            item.id
-            for collection in [self.config.belts, self.config.sensors, self.config.sources, self.config.sinks, self.config.buttons, self.config.leds]
-            for item in collection
-        }
-        return unique_incremented_id(existing, base_id)
-
-    def _duplicate_manager_selection(self):
-        if not self.manager_selected_key or self.manager_selected_key not in self.manager_items:
-            return None
-        kind, _, item = self.manager_items[self.manager_selected_key]
-        collection = self._collection_for_kind(kind)
-        if collection is None:
-            return None
-        new_item = deepcopy(item)
-        new_item.id = self._make_unique_id(kind, item.id)
-        if hasattr(new_item, "x"):
-            new_item.x += 0.5
-        if hasattr(new_item, "y"):
-            new_item.y += 0.5
-        collection.append(new_item)
-        self.manager_selected_key = f"{kind:<6} {new_item.id}"
-        self.refresh_manager_panel()
-        return new_item
-
-    def _delete_manager_selection(self):
-        if not self.manager_selected_key or self.manager_selected_key not in self.manager_items:
-            return None
-        kind, idx, item = self.manager_items[self.manager_selected_key]
-        collection = self._collection_for_kind(kind)
-        if collection is not None and item in collection:
-            collection.remove(item)
-        self.manager_selected_key = None
-        self.refresh_manager_panel()
-        if self.selected_item == item:
-            self.show_props_for(None)
-        return item
-
-    def _delete_selected_item(self):
-        item = self.selected_item
-        if not item:
-            return None
-        for kind in ["belt", "sensor", "source", "sink", "button", "led"]:
-            collection = self._collection_for_kind(kind)
-            if collection is not None and item in collection:
-                collection.remove(item)
-                for topic in self.config.mqttSettings.topics:
-                    topic.components = [comp for comp in topic.components if comp.id != item.id]
-                self.selected_item = None
-                self.show_props_for(None)
-                self.refresh_manager_panel()
-                return item
-        return None
-
-    def _duplicate_selected_item(self):
-        item = self.selected_item
-        if not item:
-            return None
-        for kind in ["belt", "sensor", "source", "sink", "button", "led"]:
-            collection = self._collection_for_kind(kind)
-            if collection is not None and item in collection:
-                new_item = deepcopy(item)
-                new_item.id = self._make_unique_id(kind, item.id)
-                if hasattr(new_item, "x"):
-                    new_item.x += 0.5
-                if hasattr(new_item, "y"):
-                    new_item.y += 0.5
-                collection.append(new_item)
-                self.selected_item = new_item
-                self.show_props_for(new_item)
-                self.refresh_manager_panel()
-                return new_item
-        return None
+    # -- toolbar -------------------------------------------------------------------
 
     def _layout_toolbar(self):
         """Stack the toolbar folders: header, then its tools unless collapsed."""
         y = 6
         for header, buttons, collapsed, title in self._toolbar_folders:
             header.set_relative_position((4, y))
-            header.set_text(f"{'+' if collapsed else '\u2013'}  {title}")
+            header.set_text(f"{'+' if collapsed else '–'}  {title}")
             y += 24
             for button in buttons:
                 if collapsed:
@@ -610,99 +381,33 @@ class EditorUI:
     def handle_resize(self, width: int, height: int):
         self.width = width
         self.height = height
-        self.prop_panel.set_position((width - 250, TOP_BAR))
-        self.prop_panel.set_dimensions((250, self._panel_height()))
-        # Update delete/copy buttons to anchor to bottom
-        if getattr(self, 'prop_delete_btn', None):
-            self.prop_delete_btn.set_relative_position((5, self._panel_height() - 45))
-        if getattr(self, 'prop_copy_btn', None):
-            self.prop_copy_btn.set_relative_position((125, self._panel_height() - 45))
-        if getattr(self, 'prop_error_lbl', None):
-            self.prop_error_lbl.set_relative_position((5, self._panel_height() - 65))
-        if getattr(self, 'sensor_state_lbl', None):
-            self.sensor_state_lbl.set_relative_position((5, self._panel_height() - 85))
-        # Keep any floating windows from being stranded off-screen
+        self.prop_panel.set_position((width - PANEL_W, TOP_BAR))
+        self.prop_panel.set_dimensions((PANEL_W, self._panel_height()))
+        # Keep the Components window from being stranded off-screen
         if self.manager_window and self.manager_window.alive():
-            self._clamp_window_to_screen(self.manager_window)
-        if self.placement_window and self.placement_window.alive():
-            self._clamp_window_to_screen(self.placement_window)
+            rect = self.manager_window.rect
+            self.manager_window.set_position((max(0, min(rect.x, width - rect.width)),
+                                              max(0, min(rect.y, height - rect.height))))
 
-    def _clamp_window_to_screen(self, window: pygame_gui.elements.UIWindow):
-        rect = window.rect.copy()
-        rect.x = max(0, min(rect.x, self.width - rect.width))
-        rect.y = max(0, min(rect.y, self.height - rect.height))
-        window.set_position((rect.x, rect.y))
-
-    def handle_event(self, event) -> str:
-        """Returns commands or None."""
+    def handle_event(self, event):
+        """Returns a command ("TOGGLE_PLAY", "OPEN_DESIGNER", ("SELECT_ITEM", item), ...) or None."""
         if event.type == pygame_gui.UI_BUTTON_PRESSED:
             for header, _buttons, _collapsed, title in self._toolbar_folders:
                 if event.ui_element == header:
                     self.toggle_toolbar_folder(title)
                     return None
             for button, command in ((self.sim_play_btn, "TOGGLE_PLAY"), (self.sim_clear_btn, "CLEAR"),
-                                    (self.sim_reset_btn, "RESET"), (self.theme_btn, "TOGGLE_THEME")):
+                                    (self.sim_reset_btn, "RESET"), (self.theme_btn, "TOGGLE_THEME"),
+                                    (self.manager_btn, "OPEN_MANAGER"), (self.designer_btn, "OPEN_DESIGNER")):
                 if event.ui_element == button:
                     return command
-            if event.ui_element == self.save_btn:
-                return "SAVE_DIALOG"
-            elif event.ui_element == self.add_linear_btn:
-                self.open_placement_dialog("ADD_LINEAR")
-            elif event.ui_element == self.add_curved_btn:
-                self.open_placement_dialog("ADD_CURVED")
-            elif event.ui_element == self.add_sensor_btn:
-                self.open_placement_dialog("ADD_SENSOR")
-            elif event.ui_element == self.add_button_btn:
-                self.open_placement_dialog("ADD_BUTTON")
-            elif event.ui_element == self.add_led_btn:
-                self.open_placement_dialog("ADD_LED")
-            elif event.ui_element == self.add_source_btn:
-                self.open_placement_dialog("ADD_SOURCE")
-            elif event.ui_element == self.add_sink_btn:
-                self.open_placement_dialog("ADD_SINK")
-            elif getattr(self, 'placement_cancel_btn', None) and event.ui_element == self.placement_cancel_btn:
-                if self.placement_window:
-                    self.placement_window.kill()
-                    self.placement_window = None
-            elif getattr(self, 'placement_ok_btn', None) and event.ui_element == self.placement_ok_btn:
-                try:
-                    x = float(self.placement_x_input.get_text())
-                    y = float(self.placement_y_input.get_text())
-                    cmd = ("PLACE_COMPONENT", self.placement_cmd_type, x, y)
-                    if self.placement_window:
-                        self.placement_window.kill()
-                        self.placement_window = None
-                    return cmd
-                except ValueError:
-                    pass # ignore invalid
-            elif event.ui_element == self.prop_delete_btn:
-                deleted = self._delete_selected_item()
-                if deleted:
-                    return ("SELECT_ITEM", None)
-            elif event.ui_element == self.prop_copy_btn:
-                copied = self._duplicate_selected_item()
-                if copied:
-                    return ("SELECT_ITEM", copied)
-            elif event.ui_element == self.manager_btn:
-                return "OPEN_MANAGER"
-            elif event.ui_element == self.manager_select_btn:
+            if self.manager_select_btn and event.ui_element == self.manager_select_btn:
                 if self.manager_selected_key in self.manager_items:
                     _, _, item = self.manager_items[self.manager_selected_key]
                     self.show_props_for(item)
                     return ("SELECT_ITEM", item)
-            elif event.ui_element == self.manager_duplicate_btn:
-                item = self._duplicate_manager_selection()
-                if item:
-                    self.show_props_for(item)
-                    return ("SELECT_ITEM", item)
-            elif event.ui_element == self.manager_delete_btn:
-                deleted = self._delete_manager_selection()
-                if deleted and deleted == self.selected_item:
-                    return ("SELECT_ITEM", None)
-            elif event.ui_element == self.manager_refresh_btn:
+            elif self.manager_refresh_btn and event.ui_element == self.manager_refresh_btn:
                 self.refresh_manager_panel()
-            elif self.manager_clear_btn and event.ui_element == self.manager_clear_btn:
-                self.manager_clear = True
 
         if event.type == pygame_gui.UI_SELECTION_LIST_NEW_SELECTION:
             if event.ui_element == self.manager_list:
@@ -718,161 +423,4 @@ class EditorUI:
             if event.ui_element == self.manager_window:
                 self.manager_window = None
 
-        if event.type == pygame_gui.UI_DROP_DOWN_MENU_CHANGED and self.selected_item:
-            if event.ui_element == self.prop_inputs.get("sensorType"):
-                val_str = event.text
-                setattr(self.selected_item, "sensorType", val_str)
-                self.show_props_for(self.selected_item)
-            elif event.ui_element == self.prop_inputs.get("beltShape"):
-                val_str = event.text
-                setattr(self.selected_item, "shape", val_str)
-                # Auto-initialize default vertices if switched to quadrilateral
-                if val_str == "quadrilateral" and not getattr(self.selected_item, "vertexs", None):
-                    hw = getattr(self.selected_item, 'length', 2.0) / 2.0
-                    hh = getattr(self.selected_item, 'beltWidth', 1.0) / 2.0
-                    self.selected_item.vertexs = [
-                        {'x': -hw, 'y': -hh}, {'x': hw, 'y': -hh}, {'x': hw, 'y': hh}, {'x': -hw, 'y': hh}
-                    ]
-                self.show_props_for(self.selected_item)
-
-        if event.type == pygame_gui.UI_TEXT_ENTRY_CHANGED and self.selected_item:
-            # Find which input changed
-            for prop, inp in self.prop_inputs.items():
-                if event.ui_element == inp:
-                    val_str = inp.get_text()
-                    try:
-                        attr_name = prop
-                        if prop == "beltShape":
-                            attr_name = "shape"
-                        elif prop == "beltVertexs":
-                            attr_name = "vertexs"
-                        
-                        if attr_name == "vertexs":
-                            # Parse string of format "x0,y0; x1,y1; x2,y2; x3,y3"
-                            parts = val_str.split(';')
-                            pts = []
-                            for part in parts:
-                                part = part.strip()
-                                if not part: continue
-                                coords = part.split(',')
-                                if len(coords) == 2:
-                                    pts.append({'x': float(coords[0]), 'y': float(coords[1])})
-                            if len(pts) == 4:
-                                setattr(self.selected_item, attr_name, pts)
-                        else:
-                            existing_val = getattr(self.selected_item, attr_name, "")
-                            if isinstance(existing_val, bool):
-                                setattr(self.selected_item, attr_name, val_str.strip().lower() in {"1", "true", "yes", "on", "pressed"})
-                            elif isinstance(existing_val, float):
-                                setattr(self.selected_item, attr_name, float(val_str))
-                            elif isinstance(existing_val, int):
-                                setattr(self.selected_item, attr_name, int(val_str))
-                            else:
-                                setattr(self.selected_item, attr_name, val_str)
-                        
-                        # Trigger UI refresh if layout-altering property changes
-                        if prop in ["sensorType", "beltShape"]:
-                            self.show_props_for(self.selected_item)
-                        self._clear_prop_error()
-
-                    except ValueError:
-                        # Don't revert the field here: the user may still be
-                        # mid-edit (e.g. typing "-" before "-5"). Just surface
-                        # that the current text isn't a valid value yet; the
-                        # model keeps its last valid value until this parses.
-                        self._show_prop_error(f"Invalid value for '{prop}' - not applied")
-                        
-            # Check if any vertex coordinate input changed
-            if hasattr(self.selected_item, "vertexs") and self.selected_item.vertexs:
-                for i in range(4):
-                    if i < len(self.vertex_x_inputs) and (event.ui_element == self.vertex_x_inputs[i] or event.ui_element == self.vertex_y_inputs[i]):
-                        try:
-                            x_val = float(self.vertex_x_inputs[i].get_text())
-                            y_val = float(self.vertex_y_inputs[i].get_text())
-                            self.selected_item.vertexs[i]['x'] = x_val
-                            self.selected_item.vertexs[i]['y'] = y_val
-                            
-                            # Also update the string representation in prop_inputs["beltVertexs"] if it exists
-                            if "beltVertexs" in self.prop_inputs:
-                                val_str = "; ".join(f"{pt['x']:.2f},{pt['y']:.2f}" for pt in self.selected_item.vertexs)
-                                self.prop_inputs["beltVertexs"].set_text(val_str)
-                        except ValueError:
-                            pass
-                        
         return None
-    
-    def update_props_values(self, item):
-        if self.selected_item != item or not item: return
-        
-        if hasattr(item, "x") and "x" in self.prop_inputs:
-            self.prop_inputs["x"].set_text(str(round(item.x, 3)))
-        if hasattr(item, "y") and "y" in self.prop_inputs:
-            self.prop_inputs["y"].set_text(str(round(item.y, 3)))
-            
-        if getattr(item, "type", None) == "linear" and getattr(item, "shape", "rectangle") == "quadrilateral" and hasattr(item, "vertexs") and item.vertexs:
-            for i in range(4):
-                if i < len(item.vertexs):
-                    self.vertex_x_inputs[i].set_text(f"{item.vertexs[i]['x']:.3f}")
-                    self.vertex_y_inputs[i].set_text(f"{item.vertexs[i]['y']:.3f}")
-            if "beltVertexs" in self.prop_inputs:
-                val_str = "; ".join(f"{pt['x']:.2f},{pt['y']:.2f}" for pt in item.vertexs)
-                self.prop_inputs["beltVertexs"].set_text(val_str)
-
-    def update_sensor_state(self, physics_engine: PhysicsEngine):
-        """Call every frame with the physics engine sensor_states dict to refresh display."""
-        
-        sensor_states = physics_engine.sensor_states
-
-        if self.manager_clear:
-            self.manager_clear = False
-            physics_engine.clear_all_parcels()
-
-        if isinstance(self.selected_item, ControlButton):
-            self.refresh_button_state()
-            return
-        if not isinstance(self.selected_item, Sensor):
-            return
-        state = sensor_states.get(self.selected_item.id)
-        if state is None:
-            return
-        if isinstance(state, bool):
-            text = f"State: {'TRIGGERED' if state else 'clear'}"
-            color = "#ff4444" if state else "#aaaaaa"
-        else:
-            # laser banner bit string
-            text = f"Beams: {state}"
-            color = "#44aaff"
-        self.sensor_state_lbl.set_text(text)
-
-    def refresh_button_state(self):
-        if not isinstance(self.selected_item, ControlButton):
-            return
-        state = bool(getattr(self.selected_item, "sensor_states", False))
-        text = f"Trigger: {'PRESSED' if state else 'released'}"
-        self.sensor_state_lbl.set_text(text)
-        self.sensor_state_lbl.show()
-        inp = self.prop_inputs.get("sensor_states")
-        if inp:
-            inp.set_text(str(state))
-
-    def open_placement_dialog(self, cmd_type: str):
-        if self.placement_window and self.placement_window.alive():
-            self.placement_window.kill()
-        self.placement_cmd_type = cmd_type
-        self.placement_window = pygame_gui.elements.UIWindow(
-            rect=pygame.Rect(400, 300, 250, 180),
-            manager=self.manager,
-            window_display_title="Placement Position",
-            resizable=False
-        )
-        container = self.placement_window.get_container()
-        pygame_gui.elements.UILabel(pygame.Rect(10, 10, 30, 28), "X:", self.manager, container=container)
-        self.placement_x_input = pygame_gui.elements.UITextEntryLine(pygame.Rect(50, 10, 150, 28), self.manager, container=container)
-        self.placement_x_input.set_text("0.0")
-        
-        pygame_gui.elements.UILabel(pygame.Rect(10, 50, 30, 28), "Y:", self.manager, container=container)
-        self.placement_y_input = pygame_gui.elements.UITextEntryLine(pygame.Rect(50, 50, 150, 28), self.manager, container=container)
-        self.placement_y_input.set_text("0.0")
-        
-        self.placement_ok_btn = pygame_gui.elements.UIButton(pygame.Rect(50, 90, 70, 30), "OK", self.manager, container=container)
-        self.placement_cancel_btn = pygame_gui.elements.UIButton(pygame.Rect(130, 90, 70, 30), "Cancel", self.manager, container=container)
