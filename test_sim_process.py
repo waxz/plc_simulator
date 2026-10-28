@@ -140,6 +140,60 @@ class MainProcessModeTest(unittest.TestCase):
         self.assertFalse(_pid_alive(pid), "the simulation process outlived the window")
 
 
+class SingleSimulatorTest(unittest.TestCase):
+    """Run in Simulator twice: the running simulator reloads the layout in
+    the same process instead of a second window opening (sim_link.py)."""
+
+    def test_the_running_simulator_reloads_on_request(self):
+        import json
+        import shutil
+        tmp = tempfile.mkdtemp()
+        settings = os.path.join(tmp, "s.json")
+        other = os.path.join(tmp, "other.json")
+        shutil.copy(LAYOUT, other)
+        env = {**os.environ, "SDL_VIDEODRIVER": "dummy", "PYTHONUNBUFFERED": "1", "CONVEYOR_SIM_SETTINGS": settings}
+        proc = subprocess.Popen([sys.executable, os.path.join(HERE, "main.py"), LAYOUT, "--no-sim-process",
+                                 "--exchange-config", exchange_file(tmp)],
+                                cwd=HERE, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        self.addCleanup(proc.stdout.close)
+        self.addCleanup(proc.kill)
+        lines = []
+
+        def read_until(pattern, timeout=60):
+            end = time.monotonic() + timeout
+            while time.monotonic() < end:
+                line = proc.stdout.readline()
+                if not line:
+                    return False
+                lines.append(line)
+                if pattern in line:
+                    return True
+            return False
+
+        self.assertTrue(read_until("Starting simulation loop"), "".join(lines[-20:]))
+        registry = os.path.join(tmp, "sim_instance.json")
+        with open(registry, encoding="utf-8") as f:
+            entry = json.load(f)
+        self.assertIn("port", entry)        # (its pid can differ from proc.pid: a venv launcher on Windows)
+        old_env = os.environ.get("CONVEYOR_SIM_SETTINGS")
+        os.environ["CONVEYOR_SIM_SETTINGS"] = settings
+        try:
+            import sim_link
+            self.assertEqual(sim_link.request_reload(other), entry["pid"])
+        finally:
+            if old_env is None:
+                del os.environ["CONVEYOR_SIM_SETTINGS"]
+            else:
+                os.environ["CONVEYOR_SIM_SETTINGS"] = old_env
+        self.assertTrue(read_until("Reloading"), "".join(lines[-20:]))
+        self.assertTrue(read_until("Starting simulation loop"), "".join(lines[-20:]))
+        self.assertIsNone(proc.poll(), "the same simulator keeps running")
+        with open(registry, encoding="utf-8") as f:
+            self.assertEqual(os.path.normcase(json.load(f)["config"]), os.path.normcase(os.path.abspath(other)))
+        proc.terminate()
+        proc.wait(timeout=10)
+
+
 def _pid_alive(pid: int) -> bool:
     if sys.platform == "win32":
         out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True).stdout

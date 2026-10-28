@@ -169,6 +169,23 @@ class EditorClicksTest(unittest.TestCase):
         saved = load_config(self.layout)
         self.assertEqual(next(b for b in saved.belts if b.id == "belt_1_1_2").speed, 1.25)
 
+    def test_run_in_simulator_reuses_the_running_simulator(self):
+        from sim_link import SimulatorLink
+        link = SimulatorLink(self.layout)                            # a simulator window is running
+        self.addCleanup(link.close)
+        with mock.patch("layout_editor.subprocess.Popen") as popen:
+            QTest.mouseClick(self.toolbar_button(self.window.run_sim_action), Qt.LeftButton)
+            QTest.mouseClick(self.toolbar_button(self.window.run_sim_action), Qt.LeftButton)
+        popen.assert_not_called()                                   # no second simulator
+        self.assertEqual(os.path.normcase(link.take_reload()), os.path.normcase(os.path.abspath(self.layout)))
+        self.assertIn("reloading", self.window.statusBar().currentMessage())
+        link.close()
+        with mock.patch("layout_editor.subprocess.Popen") as popen:  # it closed: start one
+            popen.return_value.poll.return_value = None
+            QTest.mouseClick(self.toolbar_button(self.window.run_sim_action), Qt.LeftButton)
+            QTest.mouseClick(self.toolbar_button(self.window.run_sim_action), Qt.LeftButton)
+        self.assertEqual(popen.call_count, 1, "the second click waits for the one starting")
+
     # -- component tree ------------------------------------------------------------------
 
     def test_click_a_row_in_the_component_tree_selects_it_on_the_canvas(self):

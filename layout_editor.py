@@ -4279,11 +4279,24 @@ class MainWindow(QMainWindow):
             self.theme_actions[hmi.THEME].setChecked(True)
 
     def run_simulation(self) -> bool:
-        """Save the layout, then open it in the simulator window
-        (python main.py <layout>) as its own process."""
+        """Save the layout, then show it in the simulator: the simulator
+        already running reloads it (sim_link.py - one simulator window, not
+        one per click); otherwise a new one starts (python main.py <layout>)
+        as its own process."""
+        import sim_link
         if not self.config_path or not self.undo_stack.isClean():
             if not self._save_config():
                 return False
+        name = os.path.basename(self.config_path)
+        if sim_link.request_reload(self.config_path) is not None:
+            self.statusBar().showMessage(f"The simulator is reloading {name} - press Start (or Space) there to "
+                                         f"run it.", 8000)
+            return True
+        if self._sim_process is not None and self._sim_process.poll() is None:
+            # Started by the last click, not listening yet (still loading).
+            self.statusBar().showMessage("The simulator is still starting - it opens with the saved layout.",
+                                         8000)
+            return True
         main_py = os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py")
         self._sim_process = subprocess.Popen([sys.executable, main_py, self.config_path],
                                              cwd=os.path.dirname(main_py))

@@ -193,8 +193,12 @@ The Qt layout editor is where belt shapes and positions are designed:
   Motion, Signal, Operation, Display) with units on every number. Sensors
   expose on/off delay, light-on (NC) and bit/byte packing; buttons their type,
   NC contact and key; belts the speed or VFD command format.
-- **Run in Simulator** (toolbar, `F5`) saves the layout if needed and starts
-  `main.py` on it in its own window.
+- **Run in Simulator** (toolbar, `F5`) saves the layout if needed and shows
+  it in the simulator. There is one simulator window: if one is already
+  running (started from here, or `python main.py` in a terminal), it reloads
+  the saved layout in place; otherwise `main.py` starts in its own window.
+  The running simulator is noted in `sim_instance.json` next to the settings
+  file (`sim_link.py`).
 - Dark and light themes: the toolbar button or **View > Theme**. The choice
   is shared with the simulator and remembered in
   `~/.conveyor_sim/settings.json` (or `$CONVEYOR_SIM_SETTINGS`).

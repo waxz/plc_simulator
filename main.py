@@ -11,7 +11,9 @@ from sim_runner import SimulationRunner
 
 
 def run_pygame(config, physics_engine, mqtt, headless: bool, runner=None, config_path=None,
-               speed=1.0, render_fps: int = 30, sim_lock=None):
+               speed=1.0, render_fps: int = 30, sim_lock=None, link=None):
+    """The window loop. Returns a layout path when the designer asked this
+    simulator to reload (sim_link.py), else None."""
     print(f"Initializing visualizer (Headless: {headless})...")
     renderer = Renderer(config, headless=headless)
     renderer.speed = speed
@@ -32,10 +34,15 @@ def run_pygame(config, physics_engine, mqtt, headless: bool, runner=None, config
     # overlay) - the one place that still verifies timing when running
     # --headless, where there's no on-screen overlay to look at.
     last_timing_report = time.perf_counter()
+    reload_path = None
 
     try:
         while running:
             dt = clock.tick(render_fps) / 1000.0
+            if link is not None:
+                reload_path = link.take_reload()
+                if reload_path:
+                    break
             # Event processing
             # TODO:   dt pass to process_events
             cmd = renderer.process_events()
@@ -87,6 +94,7 @@ def run_pygame(config, physics_engine, mqtt, headless: bool, runner=None, config
         print("Simulation stopped by user.")
     finally:
         renderer.quit()
+    return reload_path
 
 
 def build_engine(config, config_lock, metrics_store, channel_registry_path=None, show_layout=False):
@@ -173,7 +181,7 @@ def build_argparser() -> argparse.ArgumentParser:
     return parser
 
 
-def run_with_simulation_process(args, config, speed):
+def run_with_simulation_process(args, config, speed, link=None):
     """The window here, the simulation (physics, PLC exchange, web UI) in a
     child process with a CPU core of its own - see sim_process.py."""
     from sim_process import PhysicsProxy
@@ -187,8 +195,8 @@ def run_with_simulation_process(args, config, speed):
     print(f"[main] Physics + exchange in their own process (pid {proxy.process.pid}, speed "
           f"{'max' if speed is None else f'{speed:g}x'}); the window renders at {args.render_fps} fps.")
     try:
-        run_pygame(config, proxy, proxy.exchange, False, config_path=args.config, speed=speed,
-                   render_fps=args.render_fps)
+        return run_pygame(config, proxy, proxy.exchange, False, config_path=args.config, speed=speed,
+                          render_fps=args.render_fps, link=link)
     finally:
         proxy.stop()
 
@@ -202,6 +210,32 @@ def main():
     if speed is not None and speed <= 0:
         raise SystemExit("--speed must be > 0")
 
+    # One simulator window: the designer's Run in Simulator asks this one to
+    # reload the saved layout instead of opening another (sim_link.py).
+    link = None
+    if not args.headless:
+        from sim_link import SimulatorLink
+        link = SimulatorLink(args.config)
+    try:
+        while True:
+            reload_path = run_layout(args, speed, link)
+            if not reload_path:
+                break
+            print(f"[main] Reloading {reload_path} (Run in Simulator from the designer)...")
+            args.config = reload_path
+            link.set_config(reload_path)
+    finally:
+        if link is not None:
+            link.close()
+
+
+_web_ui_started = False
+
+
+def run_layout(args, speed, link=None):
+    """Load args.config and run it until the window closes. Returns a layout
+    path to run next (the designer asked for a reload), else None."""
+    global _web_ui_started
     print(f"Loading configuration from {args.config}...")
     config = load_config(args.config)
     if args.exchange_config:
@@ -210,8 +244,7 @@ def main():
     print(f"Loaded {len(config.belts)} belts, {len(config.sensors)} sensors.")
 
     if args.sim_process and not args.headless:
-        run_with_simulation_process(args, config, speed)
-        return
+        return run_with_simulation_process(args, config, speed, link)
 
     # Shared by both: physics mutates config.belts/config.sensors on this
     # (main) thread every update(), while MQTTSyncEngine reads/writes those
@@ -228,7 +261,8 @@ def main():
     mqtt = build_engine(config, config_lock, metrics_store, channel_registry_path=args.channel_registry,
                         show_layout=args.show_layout)
 
-    if args.web_ui:
+    if args.web_ui and not _web_ui_started:          # its thread outlives a reload
+        _web_ui_started = True
         start_web_ui(args.config, args.channel_registry, metrics_store, host=args.web_host, port=args.web_port)
         if args.channel_registry is None:
             print(
@@ -248,8 +282,8 @@ def main():
               f"{'max' if speed is None else f'{speed:g}x'}); the window renders at {args.render_fps} fps.")
 
     try:
-        run_pygame(config, physics_engine, mqtt, args.headless, runner=runner, config_path=args.config,
-                   speed=speed, render_fps=args.render_fps, sim_lock=config_lock)
+        return run_pygame(config, physics_engine, mqtt, args.headless, runner=runner, config_path=args.config,
+                          speed=speed, render_fps=args.render_fps, sim_lock=config_lock, link=link)
     finally:
         if runner is not None:
             runner.stop()
