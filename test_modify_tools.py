@@ -14,7 +14,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QEvent, QPointF, Qt  # noqa: E402
 from PySide6.QtGui import QAction, QKeyEvent, QKeySequence, QMouseEvent  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
-from PySide6.QtWidgets import QApplication, QToolBar  # noqa: E402
+from PySide6.QtWidgets import QApplication, QDoubleSpinBox, QToolBar  # noqa: E402
 
 from cad.path import path_length, segments  # noqa: E402
 from config_parser import SimulatorConfig, SketchEntity, load_config  # noqa: E402
@@ -210,6 +210,111 @@ class ModifyToolsTest(unittest.TestCase):
         self.start("Move")
         self.assertFalse(self.cad.modify_tools["move"].active)
         self.assertIn("select sketch lines first", self.window.statusBar().currentMessage())
+
+    # -- grips and the Properties panel -------------------------------------------------
+
+    def grips_of(self, index):
+        return [g for g in self.cad.sketch_grips.grips if g.index == index]
+
+    def drag_grip(self, grip, x, y):
+        vp = self.view.viewport()
+        start = QPointF(self.view.mapFromScene(grip.scenePos()))
+        end = QPointF(self.view.mapFromScene(to_scene_pos(x, y)))
+        for kind, pos, button, buttons in ((QEvent.MouseButtonPress, start, Qt.LeftButton, Qt.LeftButton),
+                                           (QEvent.MouseMove, end, Qt.NoButton, Qt.LeftButton),
+                                           (QEvent.MouseButtonRelease, end, Qt.LeftButton, Qt.NoButton)):
+            _app.sendEvent(vp, QMouseEvent(kind, pos, vp.mapToGlobal(pos), button, buttons, Qt.NoModifier))
+        _app.processEvents()
+
+    def grip_at(self, index, x, y):
+        return min(self.grips_of(index), key=lambda g: math.dist(
+            (g.scenePos().x(), g.scenePos().y()), (to_scene_pos(x, y).x(), to_scene_pos(x, y).y())))
+
+    def test_drag_a_line_end_point_and_its_middle(self):
+        self.cad.set_sketch([line((0, 0), (4, 0))])
+        self.click(2, 0)                                            # select it on the canvas
+        self.assertEqual(len(self.grips_of(0)), 3)                  # two ends + the middle
+        self.drag_grip(self.grip_at(0, 4, 0), 4, 3)
+        self.assertEqual(self.sketch(), [((0, 0), (4, 3))])
+        self.assertTrue(self.cad.sketch_items[0].isSelected())      # still selected: drag again
+        self.drag_grip(self.grip_at(0, 2, 1.5), 2, 2.5)             # the middle: moves the line
+        self.assertEqual(self.sketch(), [((0, 1), (4, 4))])
+        self.window.undo_stack.undo()
+        self.window.undo_stack.undo()
+        self.assertEqual(self.sketch(), [((0, 0), (4, 0))])
+
+    def test_drag_a_circle_center_and_radius(self):
+        from cad import modify
+        pts, bul, closed = modify.make_circle((0, 0), 2.0)
+        self.cad.set_sketch([SketchEntity(points=pts, bulges=bul, closed=closed)])
+        self.select(0)
+        self.assertEqual(len(self.grips_of(0)), 5)                  # center + four quadrants
+        self.drag_grip(self.grip_at(0, 0, 0), 3, 1)
+        c, r = modify.circle_info(self.window.config.sketch[0])
+        self.assertAlmostEqual(c[0], 3.0)
+        self.assertAlmostEqual(c[1], 1.0)
+        self.drag_grip(self.grip_at(0, 3, 3), 3, 4)                 # the top quadrant, 1 m out
+        c, r = modify.circle_info(self.window.config.sketch[0])
+        self.assertAlmostEqual(r, 3.0)
+        self.assertAlmostEqual(c[0], 3.0)
+
+    def test_drag_an_arc_radius_and_center(self):
+        from cad import modify
+        pts, bul, closed = modify.make_arc((0, 0), 2.0, 0.0, 90.0)
+        self.cad.set_sketch([SketchEntity(points=pts, bulges=bul, closed=closed)])
+        self.select(0)
+        mid = (2 * math.cos(math.pi / 4), 2 * math.sin(math.pi / 4))
+        self.drag_grip(self.grip_at(0, *mid), 3, 3)                 # radius 3 sqrt 2, angles kept
+        info = modify.describe(self.window.config.sketch[0])
+        self.assertAlmostEqual(info["radius"], math.hypot(3, 3), places=6)
+        self.assertAlmostEqual(info["sweep"], 90.0)
+        self.drag_grip(self.grip_at(0, 0, 0), 1, -1)                # the center: moves it
+        info = modify.describe(self.window.config.sketch[0])
+        self.assertAlmostEqual(info["center"][0], 1.0)
+        self.assertAlmostEqual(info["center"][1], -1.0)
+
+    def property_boxes(self):
+        tree = self.window.properties_panel.tree
+        return {b.toolTip(): b for b in tree.findChildren(QDoubleSpinBox) if b.isVisible()}
+
+    def test_properties_edit_line_arc_and_circle(self):
+        from cad import modify
+        panel = self.window.properties_panel
+        self.cad.set_sketch([line((0, 0), (4, 0))])
+        self.select(0)
+        self.assertTrue(panel.tree.isVisible())
+        boxes = self.property_boxes()
+        boxes["x1"].setValue(6.0)
+        _app.processEvents()
+        self.assertEqual(self.sketch(), [((0, 0), (6, 0))])
+        boxes = self.property_boxes()                               # rebuilt after the edit
+        boxes["angle"].setValue(90.0)                               # length kept, about the start
+        _app.processEvents()
+        self.assertEqual(self.sketch(), [((0, 0), (0, 6))])
+
+        pts, bul, closed = modify.make_arc((0, 0), 2.0, 0.0, 90.0)
+        self.cad.set_sketch([SketchEntity(points=pts, bulges=bul, closed=closed)])
+        self.select(0)
+        boxes = self.property_boxes()
+        self.assertEqual(set(boxes), {"cx", "cy", "radius", "start", "sweep"})
+        boxes["radius"].setValue(5.0)
+        _app.processEvents()
+        info = modify.describe(self.window.config.sketch[0])
+        self.assertAlmostEqual(info["radius"], 5.0)
+        self.assertAlmostEqual(info["sweep"], 90.0)
+
+        pts, bul, closed = modify.make_circle((1, 1), 1.0)
+        self.cad.set_sketch([SketchEntity(points=pts, bulges=bul, closed=closed)])
+        self.select(0)
+        boxes = self.property_boxes()
+        boxes["cx"].setValue(4.0)
+        _app.processEvents()
+        c, r = modify.circle_info(self.window.config.sketch[0])
+        self.assertAlmostEqual(c[0], 4.0)
+        self.assertAlmostEqual(r, 1.0)
+        self.window.undo_stack.undo()
+        c, r = modify.circle_info(self.window.config.sketch[0])
+        self.assertAlmostEqual(c[0], 1.0)
 
     # -- clipboard ---------------------------------------------------------------------
 

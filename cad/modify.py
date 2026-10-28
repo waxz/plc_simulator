@@ -23,7 +23,7 @@ user can act on.
 import math
 from typing import Iterable, List, Optional, Sequence, Tuple
 
-from cad.path import Segment, bulge_to_segment, fillet_corners, reverse_polyline, segments
+from cad.path import Segment, bulge_to_segment, fillet_corners, path_length, reverse_polyline, segments
 
 Point = Tuple[float, float]
 Shape = Tuple[List[Point], List[float], bool]
@@ -466,3 +466,118 @@ def scale(shape: Shape, center: Point, factor: float) -> Shape:
     pts, bul, closed = as_shape(shape)
     cx, cy = center
     return [(cx + (x - cx) * factor, cy + (y - cy) * factor) for x, y in pts], bul, closed
+
+
+# ---------------------------------------------------------------------------
+# Editing a shape's own geometry (grips, Properties)
+# ---------------------------------------------------------------------------
+
+def circle_info(shape) -> Optional[Tuple[Point, float]]:
+    """(center, radius) if the shape is a full circle (closed, all arcs of
+    one circle), else None."""
+    shape = as_shape(shape)
+    if not shape[2]:
+        return None
+    segs = _segs(shape)
+    if not segs or any(s.kind != "arc" for s in segs):
+        return None
+    c, r = segs[0].center, segs[0].radius
+    for s in segs[1:]:
+        if math.hypot(s.center[0] - c[0], s.center[1] - c[1]) > 1e-6 or abs(s.radius - r) > 1e-6:
+            return None
+    return c, r
+
+
+def single_arc(shape) -> Optional[Segment]:
+    """The arc if the shape is exactly one open arc, else None."""
+    shape = as_shape(shape)
+    if shape[2] or len(shape[0]) != 2:
+        return None
+    seg = _segs(shape)[0]
+    return seg if seg.kind == "arc" else None
+
+
+def kind_of(shape) -> str:
+    """"line", "arc", "circle" or "polyline"."""
+    shape = as_shape(shape)
+    if circle_info(shape) is not None:
+        return "circle"
+    if single_arc(shape) is not None:
+        return "arc"
+    if not shape[2] and len(shape[0]) == 2:
+        return "line"
+    return "polyline"
+
+
+def make_circle(center: Point, radius: float) -> Shape:
+    if radius <= 0:
+        raise ModifyError("The radius must be more than 0.")
+    cx, cy = center
+    return [(cx + radius, cy), (cx - radius, cy)], [1.0, 1.0], True
+
+
+def make_arc(center: Point, radius: float, start_deg: float, sweep_deg: float) -> Shape:
+    """An arc from start_deg turning sweep_deg (+ CCW, - CW) about center."""
+    if radius <= 0:
+        raise ModifyError("The radius must be more than 0.")
+    if not 1e-6 < abs(sweep_deg) < 360.0 - 1e-6:
+        raise ModifyError("The sweep must be between 0 and 360 degrees (use a circle for a full turn).")
+    cx, cy = center
+    a0, a1 = math.radians(start_deg), math.radians(start_deg + sweep_deg)
+    return ([(cx + radius * math.cos(a0), cy + radius * math.sin(a0)),
+             (cx + radius * math.cos(a1), cy + radius * math.sin(a1))],
+            [math.tan(math.radians(sweep_deg) / 4.0), 0.0], False)
+
+
+def move_vertices(shape, moves: dict) -> Shape:
+    """Move vertices {index: new point}. An arc next to a moved vertex keeps
+    passing through its own midpoint (moved along when both its ends move
+    by the same amount), so it bends with the edit instead of bulging."""
+    from cad.path import three_point_bulge
+    pts, bul, closed = as_shape(shape)
+    segs = _segs((pts, bul, closed))
+    n = len(pts)
+    new_pts = list(pts)
+    for i, p in moves.items():
+        new_pts[i] = (float(p[0]), float(p[1]))
+    new_bul = list(bul)
+    for k, seg in enumerate(segs):
+        a, b = k, (k + 1) % n
+        if seg.kind != "arc" or (a not in moves and b not in moves):
+            continue
+        da = (new_pts[a][0] - pts[a][0], new_pts[a][1] - pts[a][1])
+        db = (new_pts[b][0] - pts[b][0], new_pts[b][1] - pts[b][1])
+        mid = seg.point_at(0.5)
+        if abs(da[0] - db[0]) < 1e-12 and abs(da[1] - db[1]) < 1e-12:
+            mid = (mid[0] + da[0], mid[1] + da[1])                  # the whole arc moved: same shape
+        new_bul[k] = three_point_bulge(new_pts[a], new_pts[b], mid)
+    return new_pts, new_bul, closed
+
+
+def bend_segment(shape, k: int, through: Point) -> Shape:
+    """Segment k made the arc from its start to its end through `through`
+    (straight when the three are in line)."""
+    from cad.path import three_point_bulge
+    pts, bul, closed = as_shape(shape)
+    bul = list(bul)
+    bul[k] = three_point_bulge(pts[k], pts[(k + 1) % len(pts)], through)
+    return list(pts), bul, closed
+
+
+def describe(shape) -> dict:
+    """The numbers a Properties panel shows for a shape."""
+    shape = as_shape(shape)
+    kind = kind_of(shape)
+    out = {"kind": kind, "length": path_length(_segs(shape))}
+    if kind == "circle":
+        out["center"], out["radius"] = circle_info(shape)
+    elif kind == "arc":
+        seg = single_arc(shape)
+        out.update(center=seg.center, radius=seg.radius, start=math.degrees(seg.start_angle) % 360.0,
+                   sweep=math.degrees(seg.sweep))
+    elif kind == "line":
+        (x0, y0), (x1, y1) = shape[0]
+        out.update(start=(x0, y0), end=(x1, y1), angle=math.degrees(math.atan2(y1 - y0, x1 - x0)))
+    else:
+        out.update(vertices=list(shape[0]), closed=shape[2])
+    return out

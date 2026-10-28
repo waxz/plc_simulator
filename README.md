@@ -260,6 +260,31 @@ undo step, points snap (OSNAP) and can be typed:
 `Ctrl+C` / `Ctrl+V` / `Ctrl+X` copy, paste and cut sketch lines and
 components together (pasted at the mouse, keeping their layout).
 
+**Grips**: select sketch lines (up to 10) and handles appear on them. Drag a
+handle to edit the line in place; it snaps like the drawing tools, and each
+drop is one undo step:
+
+- **Line / polyline**: the white squares on the end points and vertices move
+  that point. An arc next to a moved vertex bends so it still passes through
+  its own middle. The blue square in the middle of a straight segment moves
+  the segment parallel. On an arc segment, that middle square bends the arc
+  through the dragged point.
+- **Arc**: the end points; the orange **center**, which moves the arc; and the
+  yellow middle of the arc, which changes the **radius** while the center and
+  angles stay the same.
+- **Circle**: the orange **center**, which moves the circle; and the four
+  yellow quadrant points, which change the **radius**.
+
+With exactly one sketch entity selected, the **Properties** panel shows its
+numbers to type:
+
+| Entity | Fields |
+|---|---|
+| Line | start X/Y, end X/Y, length and angle (the start stays put) |
+| Arc | center X/Y, radius, start angle and sweep (+ = counter-clockwise) |
+| Circle | center X/Y and radius |
+| Polyline | each vertex X/Y (the first 100) |
+
 1. **Geometry first**, like any CAD tool:
    - **Sketch Line (S)** draws construction lines and tangent arcs (L / A),
      and **Sketch Arc (Shift+S)** draws an arc, by the toolbar's **Arc**

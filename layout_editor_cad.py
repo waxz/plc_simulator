@@ -20,12 +20,12 @@ import math
 import os
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import QPointF, Qt
+from PySide6.QtCore import QPointF, Qt, QTimer
 from PySide6.QtGui import (
     QAction, QBrush, QColor, QKeySequence, QPainterPath, QPainterPathStroker, QPen, QPolygonF, QUndoCommand,
 )
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QFileDialog, QGraphicsEllipseItem, QGraphicsPathItem, QGraphicsPolygonItem, QInputDialog,
+    QApplication, QDialog, QDoubleSpinBox, QFileDialog, QGraphicsEllipseItem, QGraphicsPathItem, QGraphicsPolygonItem, QInputDialog,
     QLabel, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QStyle, QToolBar, QVBoxLayout, QWidget,
 )
 
@@ -42,6 +42,7 @@ from cad.ports import belt_ports
 from cad.snap import join_shapes
 from config_parser import BackgroundDrawing, BeltConnection, SketchEntity
 from id_utils import next_indexed_id
+from sketch_grips import SketchGripManager
 from modify_tool import (
     BreakTool, CopyTool, ExtendTool, FilletTool, MirrorTool, MoveTool, OffsetTool, RotateTool, ScaleTool, TrimTool,
 )
@@ -291,11 +292,15 @@ class CadController:
         window.view.on_copy_extra = self.selected_sketch_entities
         window.view.on_paste_extra = self.paste_sketch
         self.grips = AnchorGripManager(window, belt_item_cls=belt_item_cls, scale=scale, snap=self.snap)
+        self.sketch_grips = SketchGripManager(self)
         self.ports = PortOverlay(self)
         self.closing = False  # set by MainWindow.closeEvent: stop touching the scene
         self.background_item: Optional[BackgroundItem] = None
         self.check_panel = LayoutCheckPanel(self)
         self._build_actions(file_menu)
+        panel = getattr(window, "properties_panel", None)
+        if panel is not None:
+            panel.sketch_fields = self.fill_sketch_properties
         window.scene.on_items_moved = self.on_items_moved
         window.undo_stack.indexChanged.connect(self._on_undo_index_changed)
         if self.config.background is not None:
@@ -415,6 +420,33 @@ class CadController:
             self.sketch_items.append(item)
         self._refresh_snap_shapes()
 
+    def preview_sketch(self, index: int, shape):
+        """Show a grip drag live: sketch entity `index` becomes `shape`
+        without an undo step (edit_sketch makes the step on the drop)."""
+        pts, bul, closed = shape
+        entity = self.config.sketch[index]
+        entity.points, entity.bulges, entity.closed = [tuple(p) for p in pts], list(bul), closed
+        self.sketch_items[index].set_entity(entity, self.to_scene_pos)
+
+    def edit_sketch(self, index: int, shape, text: str = "Edit sketch", before_shape=None):
+        """Sketch entity `index` becomes `shape` - one undo step, the entity
+        stays selected. `before_shape`: its shape before a live preview."""
+        before = [e.model_copy(deep=True) for e in self.config.sketch]
+        if before_shape is not None:
+            pts, bul, closed = before_shape
+            before[index] = SketchEntity(points=pts, bulges=bul, closed=closed)
+        pts, bul, closed = shape
+        after = list(before)
+        after[index] = SketchEntity(points=[tuple(p) for p in pts], bulges=list(bul), closed=closed)
+        self.window.undo_stack.push(SketchCommand(self, before, after, text))
+        self.select_sketch([index])
+
+    def select_sketch(self, indices):
+        self.window.scene.clearSelection()
+        for item in self.sketch_items:
+            if item.index in indices:
+                item.setSelected(True)
+
     def add_sketch(self, entity: SketchEntity):
         before = list(self.config.sketch)
         self.window.undo_stack.push(SketchCommand(self, before, before + [entity], "Sketch"))
@@ -429,6 +461,86 @@ class CadController:
         before = list(self.config.sketch)
         after = [e for i, e in enumerate(before) if i not in selected]
         self.window.undo_stack.push(SketchCommand(self, before, after, "Delete sketch"))
+        return True
+
+    def fill_sketch_properties(self, panel) -> bool:
+        """The Properties grid for one selected sketch entity: a line's end
+        points, length and angle; an arc's center, radius and angles; a
+        circle's center and radius; a polyline's vertices. Each edit is one
+        undo step (edit_sketch)."""
+        from cad import modify as cmod
+        indices = self.selected_sketch_indices()
+        if len(indices) != 1:
+            if indices:
+                panel.empty.setText(f"{len(indices)} sketch entities selected.\nSelect one to edit its numbers.")
+            return False
+        index = indices[0]
+        shape = cmod.as_shape(self.config.sketch[index])
+        info = cmod.describe(shape)
+        kind = info["kind"]
+        spins = {}
+
+        def spin(group, label, key, value, suffix=" m", lo=-1e6, hi=1e6):
+            box = QDoubleSpinBox()
+            box.setRange(lo, hi)
+            box.setDecimals(3 if suffix == " m" else 2)
+            box.setSuffix(suffix)
+            box.setKeyboardTracking(False)          # one edit per Enter / focus change, not per key
+            box.setValue(value)
+            box.valueChanged.connect(lambda _v: QTimer.singleShot(0, apply))
+            box.setToolTip(key)
+            spins[key] = box
+            panel._add_row(group, label, box)
+
+        def apply():
+            v = {k: b.value() for k, b in spins.items()}
+            try:
+                if kind == "line":
+                    (x0, y0), (x1, y1) = (v["x0"], v["y0"]), (v["x1"], v["y1"])
+                    if abs(v["length"] - info["length"]) > 1e-9 or abs(v["angle"] - info["angle"]) > 1e-9:
+                        a = math.radians(v["angle"])        # length / angle: the start stays put
+                        x1, y1 = x0 + v["length"] * math.cos(a), y0 + v["length"] * math.sin(a)
+                    new = ([(x0, y0), (x1, y1)], [0.0, 0.0], False)
+                elif kind == "arc":
+                    new = cmod.make_arc((v["cx"], v["cy"]), v["radius"], v["start"], v["sweep"])
+                elif kind == "circle":
+                    new = cmod.make_circle((v["cx"], v["cy"]), v["radius"])
+                else:
+                    new = cmod.move_vertices(shape, {i: (v[f"x{i}"], v[f"y{i}"]) for i in range(len(shape[0]))
+                                                     if f"x{i}" in v})
+            except cmod.ModifyError as e:
+                self._status(str(e))
+                return
+            if new != shape:
+                self.edit_sketch(index, new, f"Edit {kind}")
+
+        if kind == "line":
+            spin("Start", "X", "x0", info["start"][0])
+            spin("Start", "Y", "y0", info["start"][1])
+            spin("End", "X", "x1", info["end"][0])
+            spin("End", "Y", "y1", info["end"][1])
+            spin("Geometry", "Length", "length", info["length"], lo=1e-6)
+            spin("Geometry", "Angle", "angle", info["angle"], suffix=" °", lo=-360.0, hi=360.0)
+        elif kind in ("arc", "circle"):
+            spin("Center", "X", "cx", info["center"][0])
+            spin("Center", "Y", "cy", info["center"][1])
+            spin("Geometry", "Radius", "radius", info["radius"], lo=1e-6)
+            if kind == "arc":
+                spin("Geometry", "Start angle", "start", info["start"], suffix=" °", lo=-360.0, hi=360.0)
+                spin("Geometry", "Sweep", "sweep", info["sweep"], suffix=" °", lo=-359.99, hi=359.99)
+                panel._add_row("Geometry", "Length", QLabel(f"{info['length']:.3f} m"))
+        else:
+            panel._add_row("Geometry", "Length", QLabel(f"{info['length']:.3f} m"))
+            panel._add_row("Geometry", "Closed", QLabel("yes" if info["closed"] else "no"))
+            for i, (x, y) in enumerate(info["vertices"][:100]):     # a huge import: the first 100
+                spin("Vertices", f"{i + 1} X", f"x{i}", x)
+                spin("Vertices", f"{i + 1} Y", f"y{i}", y)
+        for tree_item in panel._group_items.values():
+            tree_item.setExpanded(True)
+        panel.tree.resizeColumnToContents(0)
+        panel.header.setText(f"<span style='font-size:8pt; letter-spacing:1px'>SKETCH</span>"
+                             f"<br><b style='font-size:11pt'>{kind.capitalize()} {index + 1}</b>"
+                             f"<br><span>Drag its grips on the canvas, or type exact numbers here.</span>")
         return True
 
     def selected_sketch_indices(self) -> List[int]:
@@ -892,18 +1004,26 @@ class SketchItem(QGraphicsPathItem):
     movable, drawn as thin cyan construction geometry."""
 
     def __init__(self, entity: SketchEntity, index: int, to_scene_pos):
-        flat, _ = path_flatten(path_segments(entity.points, entity.bulges, entity.closed), 0.01)
-        if entity.closed and flat:
-            flat.append(flat[0])
-        path = QPainterPath()
-        path.addPolygon(QPolygonF([to_scene_pos(x, y) for x, y in flat]))
-        super().__init__(path)
+        super().__init__(self._path(entity, to_scene_pos))
         self.entity = entity
         self.index = index
         self.setPen(QPen(QColor("#22d3ee"), 0))
         self.setZValue(SKETCH_Z)
         self.setFlag(QGraphicsPathItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setToolTip("Sketch geometry - Tools > Belt from Sketch/Drawing (B) turns it into a belt; Delete removes it")
+
+    @staticmethod
+    def _path(entity: SketchEntity, to_scene_pos) -> QPainterPath:
+        flat, _ = path_flatten(path_segments(entity.points, entity.bulges, entity.closed), 0.01)
+        if entity.closed and flat:
+            flat.append(flat[0])
+        path = QPainterPath()
+        path.addPolygon(QPolygonF([to_scene_pos(x, y) for x, y in flat]))
+        return path
+
+    def set_entity(self, entity: SketchEntity, to_scene_pos):
+        self.entity = entity
+        self.setPath(self._path(entity, to_scene_pos))
 
     def shape(self) -> QPainterPath:
         stroker = QPainterPathStroker()

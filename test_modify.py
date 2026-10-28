@@ -156,5 +156,58 @@ class ExplodeTransformTest(unittest.TestCase):
         close(self, pts[0], (3, -1))
 
 
+class EditGeometryTest(unittest.TestCase):
+    def test_kinds_and_describe(self):
+        self.assertEqual(modify.kind_of(line((0, 0), (3, 4))), "line")
+        self.assertEqual(modify.kind_of(([(2, 0), (0, 2)], [Q, 0.0], False)), "arc")
+        self.assertEqual(modify.kind_of(modify.make_circle((1, 1), 2)), "circle")
+        self.assertEqual(modify.kind_of(([(0, 0), (1, 0), (1, 1)], [0.0] * 3, False)), "polyline")
+        info = modify.describe(line((0, 0), (3, 4)))
+        self.assertAlmostEqual(info["length"], 5.0)
+        self.assertAlmostEqual(info["angle"], math.degrees(math.atan2(4, 3)))
+        info = modify.describe(([(2, 0), (0, 2)], [Q, 0.0], False))
+        close(self, info["center"], (0, 0))
+        self.assertAlmostEqual(info["radius"], 2.0)
+        self.assertAlmostEqual(info["start"], 0.0)
+        self.assertAlmostEqual(info["sweep"], 90.0)
+        c, r = modify.circle_info(modify.make_circle((1, 1), 2))
+        close(self, c, (1, 1))
+        self.assertAlmostEqual(r, 2.0)
+
+    def test_make_arc_round_trips(self):
+        arc = modify.make_arc((1, -1), 3.0, 30.0, -120.0)
+        info = modify.describe(arc)
+        close(self, info["center"], (1, -1))
+        self.assertAlmostEqual(info["radius"], 3.0)
+        self.assertAlmostEqual(info["start"], 30.0)
+        self.assertAlmostEqual(info["sweep"], -120.0)
+        with self.assertRaises(ModifyError):
+            modify.make_arc((0, 0), 0.0, 0.0, 90.0)
+        with self.assertRaises(ModifyError):
+            modify.make_circle((0, 0), -1.0)
+
+    def test_moving_a_vertex_bends_the_arc_beside_it_through_its_midpoint(self):
+        corner = ([(0, 0), (4, 0), (5, 1), (5, 5)], [0.0, Q, 0.0, 0.0], False)
+        mid = segments(*corner)[1].point_at(0.5)
+        pts, bul, _c = modify.move_vertices(corner, {2: (5, 2)})
+        close(self, pts[2], (5, 2))
+        arc = segments(pts, bul, False)[1]
+        self.assertEqual(arc.kind, "arc")
+        close(self, arc.p0, (4, 0))
+        close(self, arc.p1, (5, 2))
+        self.assertAlmostEqual(math.dist(arc.center, mid), arc.radius)       # still through the old middle
+        pts, bul, _c = modify.move_vertices(corner, {1: (4, 1), 2: (5, 2)})  # both ends by (0, 1): same arc
+        arc = segments(pts, bul, False)[1]
+        self.assertAlmostEqual(arc.radius, 1.0)
+
+    def test_bend_a_segment(self):
+        pts, bul, _c = modify.bend_segment(line((0, 0), (2, 0)), 0, (1, 1))
+        arc = segments(pts, bul, False)[0]
+        self.assertAlmostEqual(arc.radius, 1.0)
+        close(self, arc.center, (1, 0))
+        _p, bul, _c = modify.bend_segment(line((0, 0), (2, 0)), 0, (1, 0))      # in line: straight
+        self.assertEqual(bul[0], 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

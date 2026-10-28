@@ -3363,6 +3363,9 @@ class PropertiesPanel(QWidget):
         self.on_model_changed = on_model_changed
         # Set externally by MainWindow once both exist.
         self.undo_stack: Optional[QUndoStack] = None
+        # Set by the CAD controller: fills the grid for one selected sketch
+        # line/arc/circle, returns False if the selection holds none.
+        self.sketch_fields = None
         self.current: Optional[PlacedItem] = None
         self.spins = {}
         self.texts = {}
@@ -3420,6 +3423,13 @@ class PropertiesPanel(QWidget):
         else:
             self.current = None
             self._clear_dynamic_rows()
+            self._group_items = {}
+            if not selected and self.sketch_fields is not None and self.sketch_fields(self):
+                self.setEnabled(True)
+                self.empty.hide()
+                self.header.show()
+                self.tree.show()
+                return
             self.empty.setText("Select a component on the canvas\nto see and edit its properties."
                                if not selected else f"{len(selected)} components selected.\n"
                                "Select one to edit its properties.")
