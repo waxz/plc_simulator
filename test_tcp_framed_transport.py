@@ -241,17 +241,79 @@ class StreamParserResyncTest(unittest.TestCase):
 
 
 class StreamParserSafetyBoundsTest(unittest.TestCase):
-    def test_declared_payload_length_larger_than_buffer_flushes_and_recovers(self):
+    def test_a_too_long_declared_length_is_skipped_without_losing_the_next_frame(self):
         parser = TCP_StreamParser()
-        huge_length = struct.pack(">I", parser.BUFFER_LENGTH + 100)
+        huge_length = struct.pack(">I", parser.PAYLOAD_LENGTH + 100)
         malformed = MAGIC + bytes((0, FrameType.IO_MAPPING)) + huge_length + b"short"
-        feed(parser, malformed)
-        self.assertEqual(len(parser.PendingPayloads), 0)
-        self.assertEqual(parser.BufferLength, 0)
+        feed(parser, malformed + pack(b"right-behind-it"))          # one read: both
+        self.assertEqual([f.payload for f in parser.PendingPayloads], [b"right-behind-it"])
+        self.assertGreater(parser.SkippedBytes, 0)
+        self.assertLessEqual(parser.BufferLength, 3)
 
-        # The parser must still work normally for the next real frame.
-        feed(parser, pack(b"back-to-normal"))
-        self.assertEqual(parser.PendingPayloads.popleft().payload, b"back-to-normal")
+    def test_zero_length_frames_do_not_eat_what_follows(self):
+        parser = TCP_StreamParser()
+        feed(parser, pack(b"") + pack(b"after-empty") + pack(b""))
+        self.assertEqual([f.payload for f in parser.PendingPayloads], [b"", b"after-empty", b""])
+
+    def test_large_reads_are_parsed_whole(self):
+        parser = TCP_StreamParser()
+        stream = b"".join(pack(bytes([i]) * 200) for i in range(30))          # ~6.7 kB in one read
+        feed(parser, stream)
+        self.assertEqual(len(parser.PendingPayloads), 30)
+
+
+class ServerRepliesTest(unittest.TestCase):
+    """The server answers one client (send_to) and reports per client."""
+
+    def setUp(self):
+        import socket
+        import threading
+        from tcp_framed_transport import TcpFramedClient, TcpFramedServer
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        self.got = {"a": [], "b": []}
+        self.server_frames = []
+        self.server = TcpFramedServer("127.0.0.1", port, self.server_frames.append, max_payload=64)
+        self.server.start()
+        self.addCleanup(self.server.stop)
+        self.clients = {}
+        for name in ("a", "b"):
+            c = TcpFramedClient("127.0.0.1", port, self.got[name].append)
+            c.start()
+            self.addCleanup(c.stop)
+            self.clients[name] = c
+        self.wait(lambda: self.server.client_count == 2 and all(c.connected for c in self.clients.values()))
+        self.threading = threading
+
+    def wait(self, predicate, timeout=5.0):
+        import time
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            if predicate():
+                return True
+            time.sleep(0.01)
+        self.fail("timed out")
+
+    def test_send_to_reaches_only_the_asking_client(self):
+        self.clients["a"].send(b"question", frame_type=FrameType.LAYOUT_CHECK, node_id=7)
+        self.wait(lambda: self.server_frames)
+        frame = self.server_frames[0]
+        self.assertIsNotNone(frame.conn)
+        self.assertTrue(self.server.send_to(frame.conn, b"answer", frame_type=FrameType.LAYOUT_CHECK))
+        self.wait(lambda: self.got["a"])
+        import time
+        time.sleep(0.2)
+        self.assertEqual([f.payload for f in self.got["a"]], [b"answer"])
+        self.assertEqual(self.got["b"], [])                             # the other client never sees it
+        info = {i["conn"]: i for i in self.server.client_info()}
+        self.assertEqual(info[frame.conn]["node_id"], 7)
+        self.assertEqual(info[frame.conn]["received"], 1)
+
+    def test_payloads_over_the_limit_are_not_sent(self):
+        self.assertFalse(self.server.send(b"x" * 65, frame_type=FrameType.IO_MAPPING))
+        self.assertEqual(self.server.stats()["oversize"], 1)
+        self.assertTrue(self.server.send(b"x" * 64, frame_type=FrameType.IO_MAPPING))
 
 
 if __name__ == "__main__":

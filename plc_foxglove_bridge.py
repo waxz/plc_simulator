@@ -363,7 +363,7 @@ class PlcFoxgloveBridge:
                                       f"(input {self.mine[1]} bytes, output {self.mine[3]} bytes)")
         reply = struct.pack(self.endian + io_layout._CHECK, *self.mine,
                             io_layout.CHECK_MISMATCH if problems else io_layout.CHECK_MATCH)
-        self.tcp.send(reply, frame_type=FrameType.LAYOUT_CHECK, node_id=frame.node_id)
+        self.tcp.send_to(frame.conn, reply, frame_type=FrameType.LAYOUT_CHECK, node_id=frame.node_id)
 
     def _metrics(self, frame: ParsedFrame):
         name, message = self.metrics[frame.frame_type]

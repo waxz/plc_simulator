@@ -70,6 +70,11 @@ SUBSCRIBE_TOPICS: Dict[str, Dict[str, Any]] = {
 }
 
 
+# The SIMATIC AX TcpClient's send / receive buffers are 256 bytes: a frame
+# (10 header + payload + 4 trailer) carries 242 payload bytes at most.
+PLC_MAX_PAYLOAD = 242
+
+
 def io_topics(config: SimulatorConfig) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
     """The IO-mapping channels for a layout: (publish_topics, subscribe_topics).
 
@@ -285,8 +290,12 @@ class MQTTSyncEngine:
         self.rx_size_errors = 0
         self._size_warned_at = -1e9
         # Result of the last FrameType.LAYOUT_CHECK from a client: None (none
-        # yet), True (layouts match) or False.
+        # yet), True (layouts match) or False - and per TCP connection.
         self.layout_match: Optional[bool] = None
+        self.layout_match_by_conn: Dict[int, bool] = {}
+        # Output frames ignored: from a node other than tcpOutputOwner, or
+        # (tcpRequireLayoutCheck) from a connection without a matching check.
+        self.rx_ignored = 0
 
         if not self._enabled:
             print("[DataExchange] Exchange disabled in config. Skipping.")
@@ -420,12 +429,16 @@ class MQTTSyncEngine:
         if self._transport == "tcp":
             bind_host = config.mqttSettings.tcpBindHost
             tcp_port = config.mqttSettings.tcpPort
+            settings = config.mqttSettings
             self._tcp = TcpFramedServer(
                 bind_host,
                 tcp_port,
                 self._handle_tcp_payload,
-                length_endianness=config.mqttSettings.endianness,
+                length_endianness=settings.tcpLengthEndianness or settings.endianness,
+                rx_timeout=settings.tcpRxTimeoutMs / 1000.0 if settings.tcpRxTimeoutMs else None,
+                max_payload=settings.tcpMaxPayload,
             )
+            self._warn_frame_sizes()
             self._tcp.start()
             print(f"[TCPSync] Simulator server listening on {bind_host}:{tcp_port} ...")
 
@@ -488,7 +501,7 @@ class MQTTSyncEngine:
         """Exchange health counters: inbound frames applied/rejected, plus
         (TCP) connected clients and frames sent/dropped by slow clients."""
         result = {"rx_frames": self.rx_frames, "rx_errors": self.rx_errors,
-                  "rx_size_errors": self.rx_size_errors}
+                  "rx_size_errors": self.rx_size_errors, "rx_ignored": self.rx_ignored}
         if self._tcp is not None:
             result.update(self._tcp.stats())
         return result
@@ -559,6 +572,17 @@ class MQTTSyncEngine:
             channel.mark()
         return handler
 
+    def _warn_frame_sizes(self) -> None:
+        """The SIMATIC AX TcpClient (tcp_client_lib.st) sends and receives
+        through 256-byte buffers: a frame's payload must stay within 242
+        bytes. Warn when an I/O frame of this layout doesn't."""
+        for channel in (*self._pub_channels, *self._sub_channels):
+            size = channel.message.payload_size
+            if size > PLC_MAX_PAYLOAD:
+                print(f"[TCPSync] Warning: the {channel.topic} frame has a {size}-byte payload - over the "
+                      f"{PLC_MAX_PAYLOAD} bytes the AX TcpClient's 256-byte buffers can take; raise them "
+                      f"on the PLC (or set tcpMaxPayload to see it dropped here).")
+
     def io_layout_check(self) -> Optional[tuple]:
         """(input fingerprint, input size, output fingerprint, output size)
         of the IO-mapping channels, or None without both."""
@@ -582,6 +606,8 @@ class MQTTSyncEngine:
             return
         problems = io_layout.compare_layout_check(mine, theirs[:4])
         self.layout_match = not problems
+        if frame.conn is not None:
+            self.layout_match_by_conn[frame.conn] = not problems
         if problems:
             print(f"[DataExchange] I/O layout MISMATCH with node {frame.node_id}: " + "; ".join(problems))
         else:
@@ -590,7 +616,10 @@ class MQTTSyncEngine:
         reply = struct.pack(endian + io_layout._CHECK, *mine,
                             io_layout.CHECK_MISMATCH if problems else io_layout.CHECK_MATCH)
         if self._tcp is not None:
-            self._tcp.send(reply, frame_type=FrameType.LAYOUT_CHECK, node_id=self._node_id)
+            # To the client that asked only: a PLC decodes whatever frame it
+            # receives as its input image (it doesn't check the frame type),
+            # so a broadcast reply would corrupt every other client's inputs.
+            self._tcp.send_to(frame.conn, reply, frame_type=FrameType.LAYOUT_CHECK, node_id=self._node_id)
 
     def _handle_tcp_payload(self, frame: ParsedFrame) -> None:
         """Routes by the frame's explicit FrameType byte (see
@@ -609,6 +638,11 @@ class MQTTSyncEngine:
             return
 
         if frame.frame_type == FrameType.IO_MAPPING:
+            settings = self.config.mqttSettings
+            if (settings.tcpOutputOwner is not None and frame.node_id != settings.tcpOutputOwner) or (
+                    settings.tcpRequireLayoutCheck and not self.layout_match_by_conn.get(frame.conn, False)):
+                self.rx_ignored += 1
+                return
             if not self._sub_channels:
                 print("[TCPSync] Ignoring payload because no subscribe channels are configured.")
                 return

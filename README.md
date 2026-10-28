@@ -969,6 +969,42 @@ to a whole byte, then every other field in declaration order.
 python io_layout.py delivery.json --st
 ```
 
+**The PLC side, generated.** `st_export.py` writes the whole AX side of
+the exchange from this layout:
+- STRUCTs per frame;
+- serializers built from the exact byte and bit offsets, in the layout's
+  byte order;
+- a `SimIoContract` class with the frame magic, frame types, sizes and
+  fingerprints;
+- AxUnit golden-vector tests, which must reproduce the Python bytes;
+- `io_contract.json`.
+
+`--check` exits 1 when the generated files are stale, for an apax script or
+CI. See [docs/plc-exchange-workflow.md](docs/plc-exchange-workflow.md) for
+the evaluation and the workflow, including the existing
+`generate_st_serde.py` and what the PLC side still needs.
+
+```bash
+python st_export.py delivery.json --out ../ax_dev/src/generated --tests-out ../ax_dev/test/generated --contract ../ax_dev/contract/io_contract.json
+python st_export.py delivery.json --out ../ax_dev/src/generated --tests-out ../ax_dev/test/generated --check
+```
+
+**TCP robustness options** (`mqttSettings`, all off by default):
+
+| Setting | Effect |
+|---|---|
+| `tcpRxTimeoutMs` | close a client that has sent nothing this long (0 = never) |
+| `tcpMaxPayload` | don't send frames with a longer payload, counted in the stats (0 = no limit; the AX TcpClient takes 242) |
+| `tcpOutputOwner` | take the PLC output frame only from this node id |
+| `tcpRequireLayoutCheck` | take it only from a connection whose LAYOUT_CHECK matched |
+| `tcpLengthEndianness` | byte order of the frame length field, when it differs from the payload's |
+
+Changes that are always on:
+- A LAYOUT_CHECK reply now goes only to the client that asked. A broadcast
+  reply used to reach the PLC, which read it as its input image.
+- The parser resynchronizes without losing frames, and accepts empty ones.
+- Sockets use `TCP_NODELAY` and keep-alive.
+
 The simulator prints each channel's size and layout fingerprint (a CRC-32
 of offsets, types and names) when it starts - `main.py --show-layout`
 prints the full tables - and `plc_mock.py` prints its own

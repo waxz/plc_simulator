@@ -622,6 +622,22 @@ class MqttSettings(BaseModel):
     # this frame into its IO_MAPPING input struct.
     beltFeedback: bool = False
     beltFeedbackIntervalMs: int = 10
+    # TCP exchange robustness (tcp_framed_transport.py), all opt-in:
+    #   tcpLengthEndianness   byte order of the frame's length field (None:
+    #                         the payload's `endianness`, as always)
+    #   tcpRxTimeoutMs        close a client silent this long (0: never)
+    #   tcpMaxPayload         don't send frames with a longer payload (0: no
+    #                         limit) - the AX TcpClient's buffers hold 256
+    #                         bytes per frame: payload 242 at most
+    #   tcpOutputOwner        accept the PLC output frame (IO_MAPPING) only
+    #                         from this node id (None: from any client)
+    #   tcpRequireLayoutCheck accept it only from a connection whose
+    #                         LAYOUT_CHECK matched
+    tcpLengthEndianness: Optional[Literal["LE", "BE"]] = None
+    tcpRxTimeoutMs: int = 0
+    tcpMaxPayload: int = 0
+    tcpOutputOwner: Optional[int] = None
+    tcpRequireLayoutCheck: bool = False
 
 class BeltConnection(BaseModel):
     """Design-time joint: `fromBelt`'s outlet meets `toBelt`'s inlet, with

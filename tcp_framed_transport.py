@@ -43,6 +43,7 @@ class ParsedFrame(NamedTuple):
     node_id: int
     frame_type: int
     payload: bytes
+    conn: Optional[int] = None      # TcpFramedServer: the client connection it came from (send_to)
 
 
 FrameHandler = Callable[[ParsedFrame], None]
@@ -56,6 +57,18 @@ EndianName = Literal["LE", "BE"]
 # blocking the caller (the main/GUI thread, for the simulator's TCP server)
 # forever.
 RECV_TIMEOUT_S = 2.0
+RECV_CHUNK = 4096
+
+
+def _tune(sock: socket.socket) -> None:
+    """Small cyclic frames: no Nagle delay (with delayed ACKs it can hold a
+    10 ms frame back for tens of ms); keep-alive probes to notice a peer
+    that vanished without closing (a PLC powered off, a pulled cable)."""
+    for level, option in ((socket.IPPROTO_TCP, socket.TCP_NODELAY), (socket.SOL_SOCKET, socket.SO_KEEPALIVE)):
+        try:
+            sock.setsockopt(level, option, 1)
+        except OSError:
+            pass
 
 
 def _length_struct_prefix(endianness: str = "BE") -> str:
@@ -63,157 +76,86 @@ def _length_struct_prefix(endianness: str = "BE") -> str:
 
 
 class TCP_StreamParser:
-    # VAR CONSTANT equivalents
-    BUFFER_LENGTH = 4095
-    PAYLOAD_LENGTH = 2048
-    # 4 bytes Magic Marker + 1 byte NodeId + 1 byte FrameType + 4 bytes
-    # Length DINT = 10 bytes. NodeId/FrameType sit between the magic
-    # marker and the length field, matching the wire order TcpFrameCodec
-    # packs them in below.
-    HEADER_SIZE = 10
-    TRAILER_SIZE = 4
+    """Splits a byte stream into frames (see TcpFrameCodec): magic, node id,
+    frame type, payload length, payload, trailing magic.
+
+    Resynchronizes on anything that isn't a valid frame - garbage, a
+    header-magic false positive (its trailer doesn't match), a length
+    beyond PAYLOAD_LENGTH - by skipping ONE byte and searching for the next
+    magic marker, so frames already received behind it are never lost.
+    Zero-length payloads are valid frames.
+
+    The field names mirror the PLC's TCP_StreamParser (ST) for comparison:
+    PayloadReady / PayloadReadyCount / Extracted* describe the last frame of
+    the latest Execute(); PendingPayloads (Python only) queues every frame."""
+
+    BUFFER_LENGTH = 4095            # bytes kept between reads at most (beyond: resync)
+    PAYLOAD_LENGTH = 2048           # the largest payload accepted
+    HEADER_SIZE = 10                # magic (4) + node id (1) + frame type (1) + length (4)
+    TRAILER_SIZE = 4                # the trailing copy of the magic
+    MAGIC = bytes((0x12, 0x34, 0x56, 0x78))
 
     def __init__(self, length_endianness: EndianName = "BE"):
         self.length_endianness = length_endianness
-        # VAR variables (Persistent internal stream buffer)
-        # Using bytearray for fixed-size pre-allocation and indexing parity
-        self.Buffer = bytearray(self.BUFFER_LENGTH + 1)
-        self.BufferLength = 0
-
-        # VAR PUBLIC variables (State and data interface)
-        self.MagicFound = False
-        self.MarkerIndex = 0
-        self.NodeId = 0
-        self.FrameType = 0
-        self.PayloadLength = 0
-        self.TotalPacketSize = 0
-
+        self._length = struct.Struct(_length_struct_prefix(length_endianness) + "I")
+        self.Buffer = bytearray()
         self.PayloadReady = False
         self.PayloadReadyCount = 0
         self.ExtractedNodeId = 0
         self.ExtractedFrameType = 0
-        self.ExtractedPayload = bytearray(self.PAYLOAD_LENGTH + 1)
+        self.ExtractedPayload = b""
         self.ExtractedLength = 0
         self.PendingPayloads: Deque[ParsedFrame] = deque()
+        # Bytes skipped while resynchronizing (garbage, false headers, bad lengths).
+        self.SkippedBytes = 0
+
+    @property
+    def BufferLength(self) -> int:
+        return len(self.Buffer)
 
     def Execute(self, RxTemp: bytes | bytearray, RxCount: int):
-        """
-        Executes the cyclic parsing loop.
-        RxTemp can be a slice of any length; its elements are read from index 0.
-        """
-        self.PayloadReady = False  # Reset flag every cycle
-
-        # 1. APPEND NEW NETWORK DATA TO STREAM BUFFER
+        """Append RxTemp[:RxCount] and extract every complete frame."""
+        self.PayloadReady = False
         if RxCount > 0:
-            # Match against the upper bound of the constant size
-            if (self.BufferLength + RxCount) <= (self.BUFFER_LENGTH + 1):
-                # Copy temporary network chunk to the end of our stream buffer
-                for i in range(RxCount):
-                    # Emulating standard index 0 start for the incoming byte stream
-                    self.Buffer[self.BufferLength + i] = RxTemp[i]
-                self.BufferLength += RxCount
-            else:
-                # Buffer Overflow Safety: Wipe pointer
-                self.BufferLength = 0
-
-        # 2. PARSING LOOP: Process internal stream buffer
-        while self.BufferLength >= self.HEADER_SIZE:
-            self.MagicFound = False
-
-            # Look for the 4-byte Magic Marker: 0x12345678
-            for i in range(self.BufferLength - 3):
-                if (self.Buffer[i] == 0x12 and
-                    self.Buffer[i+1] == 0x34 and
-                    self.Buffer[i+2] == 0x56 and
-                    self.Buffer[i+3] == 0x78):
-                    self.MagicFound = True
-                    self.MarkerIndex = i
-                    break  # Found earliest marker, break FOR loop
-
-            # Handle garbage data or unmatched fragments safely
-            if not self.MagicFound:
-                if self.BufferLength > 3:
-                    for i in range(3):
-                        self.Buffer[i] = self.Buffer[self.BufferLength - 3 + i]
-                    self.BufferLength = 3
-                return  # Force break of loop/method to wait for more data
-
-            # If the magic marker was found deeper in the stream, slide buffer to align
-            if self.MarkerIndex > 0:
-                for i in range(self.BufferLength - self.MarkerIndex):
-                    self.Buffer[i] = self.Buffer[self.MarkerIndex + i]
-                self.BufferLength -= self.MarkerIndex
-
-            # Re-verify we still have a header window left after shifting
-            if self.BufferLength < self.HEADER_SIZE:
-                return
-
-            # 3. EXTRACT NODE ID, FRAME TYPE, AND LENGTH
-            self.NodeId = self.Buffer[4]
-            self.FrameType = self.Buffer[5]
-            self.PayloadLength = struct.unpack(
-                _length_struct_prefix(self.length_endianness) + "I",
-                self.Buffer[6:10],
-            )[0]
-            self.TotalPacketSize = self.HEADER_SIZE + self.PayloadLength + self.TRAILER_SIZE
-
-            # Safety verification against internal memory sizing bounds
-            if self.TotalPacketSize > (self.BUFFER_LENGTH + 1) or self.PayloadLength > (self.PAYLOAD_LENGTH + 1):
-                # Protocol violation or data corruption. Flush buffer.
-                self.BufferLength = 0
-                return
-
-            # 4. CHECK COMPLETENESS: Ensure full payload + trailing marker have arrived
-            if self.BufferLength < self.TotalPacketSize:
-                return  # Stop parsing this cycle, await more TCP fragments
-
-            # 4b. VERIFY TRAILING MAGIC MARKER: confirms the length field was
-            # read at a genuine frame boundary, not a false-positive match of
-            # the header magic bytes occurring inside unrelated payload data
-            # (with a garbage length happening to follow it). A mismatch
-            # means MarkerIndex was NOT a real frame start - drop just that
-            # one leading byte and let the loop's own header search (top of
-            # `while`) find the next candidate marker, instead of extracting
-            # corrupted/misaligned data as if it were a real payload.
-            trailer_start = self.HEADER_SIZE + self.PayloadLength
-            if not (
-                self.Buffer[trailer_start] == 0x12
-                and self.Buffer[trailer_start + 1] == 0x34
-                and self.Buffer[trailer_start + 2] == 0x56
-                and self.Buffer[trailer_start + 3] == 0x78
-            ):
-                for i in range(self.BufferLength - 1):
-                    self.Buffer[i] = self.Buffer[i + 1]
-                self.BufferLength -= 1
-                continue  # re-scan for the magic marker from the shifted buffer
-
-            # 5. EXTRACT PAYLOAD
-            for i in range(self.PayloadLength):
-                self.ExtractedPayload[i] = self.Buffer[self.HEADER_SIZE + i]
-
-            self.ExtractedNodeId = self.NodeId
-            self.ExtractedFrameType = self.FrameType
-            self.ExtractedLength = self.PayloadLength
+            self.Buffer += RxTemp[:RxCount]
+        buf = self.Buffer
+        while True:
+            start = buf.find(self.MAGIC)
+            if start < 0:
+                # No marker: keep only a possible marker prefix at the end.
+                keep = min(len(buf), len(self.MAGIC) - 1)
+                self.SkippedBytes += len(buf) - keep
+                del buf[:len(buf) - keep]
+                break
+            if start:
+                self.SkippedBytes += start
+                del buf[:start]
+            if len(buf) < self.HEADER_SIZE:
+                break
+            length = self._length.unpack_from(buf, 6)[0]
+            if length > self.PAYLOAD_LENGTH:
+                # Not a real header (or a frame we can never take): skip this marker.
+                self.SkippedBytes += 1
+                del buf[:1]
+                continue
+            total = self.HEADER_SIZE + length + self.TRAILER_SIZE
+            if len(buf) < total:
+                break                                   # wait for the rest
+            if buf[total - self.TRAILER_SIZE:total] != self.MAGIC:
+                self.SkippedBytes += 1                  # a false positive: resync from the next byte
+                del buf[:1]
+                continue
+            frame = ParsedFrame(buf[4], buf[5], bytes(buf[self.HEADER_SIZE:self.HEADER_SIZE + length]))
+            del buf[:total]
+            self.ExtractedNodeId, self.ExtractedFrameType = frame.node_id, frame.frame_type
+            self.ExtractedPayload, self.ExtractedLength = frame.payload, length
             self.PayloadReady = True
-            self.PendingPayloads.append(
-                ParsedFrame(self.NodeId, self.FrameType, bytes(self.ExtractedPayload[:self.ExtractedLength]))
-            )
-
-            if self.PayloadReady:
-                self.PayloadReadyCount += 1
-
-            # FIX 4: Put application callback trigger HERE if handling multiple frames in 1 cycle
-
-            # 6. SLIDE STREAM BUFFER AHEAD
-            self.BufferLength -= self.TotalPacketSize
-            if self.BufferLength > 0:
-                for i in range(self.BufferLength):
-                    self.Buffer[i] = self.Buffer[self.TotalPacketSize + i]
-
-            # Prevent infinite loops if a corrupted packet sets PayloadLength to 0
-            if self.TotalPacketSize <= self.HEADER_SIZE + self.TRAILER_SIZE:
-                self.BufferLength = 0
-                return
+            self.PayloadReadyCount += 1
+            self.PendingPayloads.append(frame)
+        if len(buf) > self.BUFFER_LENGTH + 1:
+            # More than any valid frame needs: drop the oldest, keep resyncing.
+            self.SkippedBytes += len(buf) - (self.BUFFER_LENGTH + 1)
+            del buf[:len(buf) - (self.BUFFER_LENGTH + 1)]
 
 
 class TcpFrameCodec:
@@ -262,7 +204,7 @@ class TcpFrameCodec:
         if parser.PendingPayloads:
             return parser.PendingPayloads.popleft()
 
-        chunk = sock.recv(256)
+        chunk = sock.recv(RECV_CHUNK)
         if not chunk:
             raise ConnectionError("socket closed by peer")
 
@@ -288,6 +230,11 @@ class _ClientWriter:
 
     def __init__(self, sock: socket.socket, on_error: Callable[[], None]):
         self._sock = sock
+        self.address = None
+        self.conn_id = 0
+        self.last_rx = time.monotonic()
+        self.last_node_id: Optional[int] = None
+        self.received = 0
         self._on_error = on_error
         self._cond = threading.Condition()
         self._pending: "dict[tuple[int, int], bytes]" = {}
@@ -365,12 +312,22 @@ class TcpFramedServer:
         on_frame: FrameHandler,
         length_endianness: EndianName = "BE",
         max_clients: int = 8,
+        rx_timeout: Optional[float] = None,
+        max_payload: int = 0,
     ):
         self.host = host
         self.port = port
         self.on_frame = on_frame
         self.length_endianness = length_endianness
         self.max_clients = max_clients
+        # Close a client that has sent nothing this long (None / 0: never) -
+        # a silently dead peer otherwise stays "connected" forever.
+        self.rx_timeout = rx_timeout or None
+        # Frames with a longer payload are not sent (0: no limit) - e.g. the
+        # PLC's receive buffer; counted in stats()["oversize"].
+        self.max_payload = max_payload
+        self.oversize = 0
+        self._next_conn = 0
         self.is_running = False
         self._server_socket: Optional[socket.socket] = None
         self._accept_thread: Optional[threading.Thread] = None
@@ -394,17 +351,44 @@ class TcpFramedServer:
         self._accept_thread = threading.Thread(target=self._accept_loop, daemon=True)
         self._accept_thread.start()
 
+    def _frame(self, payload: bytes, frame_type: int, node_id: int) -> Optional[bytes]:
+        if self.max_payload and len(payload) > self.max_payload:
+            self.oversize += 1
+            if self.oversize == 1 or self.oversize % 1000 == 0:
+                print(f"[TCP] Not sending a {len(payload)}-byte frame (type {frame_type}): over the "
+                      f"{self.max_payload}-byte limit (tcpMaxPayload) - {self.oversize} so far")
+            return None
+        return TcpFrameCodec.pack(payload, frame_type=frame_type, node_id=node_id,
+                                  length_endianness=self.length_endianness)
+
     def send(self, payload: bytes, frame_type: int, node_id: int = TcpFrameCodec.DEFAULT_NODE_ID) -> bool:
         """Queue a frame for every connected client and return immediately.
         Returns True if at least one client is connected to receive it.
         Delivery happens on each client's writer thread; a newer frame of
         the same (frame_type, node_id) replaces one still waiting."""
-        framed_packet = TcpFrameCodec.pack(payload, frame_type=frame_type, node_id=node_id, length_endianness=self.length_endianness)
+        framed_packet = self._frame(payload, frame_type, node_id)
+        if framed_packet is None:
+            return False
         with self._clients_lock:
             writers = list(self._writers.values())
         for writer in writers:
             writer.enqueue((frame_type, node_id), framed_packet)
         return bool(writers)
+
+    def send_to(self, conn: Optional[int], payload: bytes, frame_type: int,
+                node_id: int = TcpFrameCodec.DEFAULT_NODE_ID) -> bool:
+        """Queue a frame for ONE client - the connection a request came from
+        (ParsedFrame.conn): a reply, which every other client (a PLC that
+        decodes whatever arrives as its input image) must not receive."""
+        framed_packet = self._frame(payload, frame_type, node_id)
+        if framed_packet is None:
+            return False
+        with self._clients_lock:
+            writer = next((w for w in self._writers.values() if w.conn_id == conn), None)
+        if writer is None:
+            return False
+        writer.enqueue((frame_type, node_id), framed_packet)
+        return True
 
     def stats(self) -> "dict[str, int]":
         """Frames written to sockets and frames replaced before sending
@@ -417,7 +401,19 @@ class TcpFramedServer:
             "clients": len(writers),
             "sent": sent + sum(w.sent for w in writers),
             "dropped": dropped + sum(w.dropped for w in writers),
+            "oversize": self.oversize,
         }
+
+    def client_info(self) -> "list[dict]":
+        """Per connected client: connection id, address, the node id it
+        sends as, seconds since it last sent, frames received / sent /
+        dropped."""
+        now = time.monotonic()
+        with self._clients_lock:
+            writers = list(self._writers.values())
+        return [{"conn": w.conn_id, "address": f"{w.address[0]}:{w.address[1]}" if w.address else "",
+                 "node_id": w.last_node_id, "rx_age_s": round(now - w.last_rx, 3), "received": w.received,
+                 "sent": w.sent, "dropped": w.dropped} for w in writers]
 
     def stop(self) -> None:
         self.is_running = False
@@ -481,12 +477,15 @@ class TcpFramedServer:
                     # silent (but not disconnected) peer doesn't leave that
                     # thread stuck forever either, blocking a clean stop().
                     client.settimeout(RECV_TIMEOUT_S)
+                    _tune(client)
                     print(f"[TCP] Client connected: {address[0]}:{address[1]} "
                           f"({self.client_count + 1}/{self.max_clients})")
                     thread = threading.Thread(
                         target=self._recv_loop, args=(client, address), daemon=True
                     )
                     writer = _ClientWriter(client, on_error=lambda c=client: self._remove_client(c))
+                    self._next_conn += 1
+                    writer.conn_id, writer.address = self._next_conn, address
                     with self._clients_lock:
                         self._clients[client] = thread
                         self._writers[client] = writer
@@ -497,6 +496,9 @@ class TcpFramedServer:
 
     def _recv_loop(self, client: socket.socket, address) -> None:
         parser = TCP_StreamParser(self.length_endianness)
+        with self._clients_lock:
+            writer = self._writers.get(client)
+        conn = writer.conn_id if writer is not None else None
         try:
             while self.is_running:
                 try:
@@ -505,11 +507,21 @@ class TcpFramedServer:
                     # No data within RECV_TIMEOUT_S - not an error, just
                     # gives this loop a chance to notice is_running went
                     # False (or the connection is otherwise still healthy
-                    # with a legitimately idle gap between sends).
+                    # with a legitimately idle gap between sends) - unless
+                    # the watchdog (rx_timeout) says the peer is gone.
+                    if (self.rx_timeout and writer is not None
+                            and time.monotonic() - writer.last_rx > self.rx_timeout):
+                        print(f"[TCP] {address[0]}:{address[1]} silent for over {self.rx_timeout:g} s - closing")
+                        break
                     continue
+                if writer is not None:
+                    writer.last_rx = time.monotonic()
                 if frame is None:
                     continue
-                self.on_frame(frame)
+                if writer is not None:
+                    writer.received += 1
+                    writer.last_node_id = frame.node_id
+                self.on_frame(frame._replace(conn=conn))
         except (ConnectionError, OSError, ValueError) as exc:
             if self.is_running:
                 print(f"[TCP] Receive failed for {address[0]}:{address[1]}: {exc}")
@@ -602,6 +614,7 @@ class TcpFramedClient:
                 # send() if it stops reading. A bounded timeout turns
                 # either into a clean reconnect instead of a permanent hang.
                 sock.settimeout(RECV_TIMEOUT_S)
+                _tune(sock)
                 self._socket = sock
                 print(f"[TCP] Connected to {self.host}:{self.port}")
                 parser =TCP_StreamParser(self.length_endianness)
