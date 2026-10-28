@@ -68,21 +68,41 @@ class SceneTest(unittest.TestCase):
         self.assertTrue(lo <= rows["load_1"][8] <= hi)
         self.assertAlmostEqual(rows["load_1"][8], scene3d.parcel_height("load_1"), places=3)   # stable per id
 
-    def test_a_gripped_part_rides_the_tool_up_and_down(self):
+    def test_a_gripped_part_hangs_from_the_tool_and_the_arm_sends_its_joints(self):
         robot = self.config.robots[0]
-        robot.phase, robot.phaseT, robot.holding = "to_place", 0.5, True
-        robot.toolX, robot.toolY = 3.0, 1.0
+        robot.holding = True
+        robot.tcpX, robot.tcpY, robot.tcpZ = 3.0, 1.0, 1.6
+        robot.j1, robot.j2, robot.j5 = 30.0, 20.0, 70.0
         some = self.engine.parcel_views()[0]
         held = ParcelView("held_1", some.points, 3.0, 1.0, "#ffaa00", 0.0, None, "parcel", 0, "held")
         state = scene3d.dynamic_state(self.config, [held], 1.0)
-        z = body_rows(state)["held_1"][4]
-        zp = scene3d.surface_z(self.config, robot.pickLevel)
-        self.assertGreater(z, zp + 0.3)                        # mid-carry: lifted
-        self.assertEqual(state["robots"][robot.id][2], z)
-        self.assertTrue(state["robots"][robot.id][3])
-        self.assertEqual(state["robots"][robot.id][4], body_rows(state)["held_1"][8])
-        robot.phaseT = 1.0                                     # set down
-        self.assertAlmostEqual(scene3d.tool_z(robot, zp, zp), zp)
+        row = body_rows(state)["held_1"]
+        self.assertAlmostEqual(row[4], 1.6 - row[8], places=3)          # its top at the TCP
+        joints = state["robots"][robot.id]
+        self.assertEqual(joints[:6], [30.0, 20.0, robot.j3, robot.j4, 70.0, robot.j6])
+        self.assertTrue(joints[6])
+        scene = scene3d.static_scene(self.config, DEMO)
+        geometry = scene["robots"][0]["geometry"]
+        self.assertAlmostEqual(geometry["reach"], robot.reach)
+        self.assertAlmostEqual(geometry["mount"], robot.mountHeight)
+
+    def test_buttons_and_lamps_become_control_panels(self):
+        config = load_config(os.path.join(HERE, "test_config.json"))
+        config.background = None
+        panels = scene3d.static_scene(config)["panels"]
+        self.assertEqual(sorted(p["title"] for p in panels), ["L1", "L2", "L3"])     # one console per line
+        for panel in panels:
+            rows = {}
+            for d in panel["devices"]:
+                rows.setdefault(d["row"], set()).add(d["style"])
+            self.assertEqual(rows, {0: {"lamp"}, 1: {"button"}})            # pilot lamps above pushbuttons
+            labels = [d["label"].split()[1] for d in panel["devices"]]
+            self.assertEqual(labels, ["AUTO", "MANUAL", "ERROR", "START", "STOP", "RESET"])
+        from config_parser import ControlButton
+        config.buttons.append(ControlButton(id="es", x=18.9, y=-19.4, label="L1 E-STOP", color="#ff0000",
+                                            buttonType="latching", normallyClosed=True))
+        l1 = next(p for p in scene3d.control_panels(config) if p["title"] == "L1")
+        self.assertEqual(next(d for d in l1["devices"] if d["id"] == "es")["style"], "estop")
 
     def test_a_running_simulation_streams_live_states(self):
         self.engine.run_for(6.0)

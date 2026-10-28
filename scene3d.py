@@ -5,14 +5,13 @@ serves it; view3d_web/viewer.js draws it with three.js).
 The simulation is 2D seen from above (x, y, heading); this adds the third
 dimension from the layout's floor levels and a few standard heights:
 
-  floor of level L         L * levelHeight (the elevators' levelHeight;
-                           1.0 m when the layout has none)
+  floor of level L         L * levelHeight (heights.py)
   belt top                 floor + BELT_TOP
   a parcel / pallet        bottom on its level's belt top
   a pallet's load          on the pallet deck (PALLET_H above)
   on a travelling lift     on the platform, at the lift's height
-  in a gripper             the robot's tool height (lifted between pick
-                           and place, from its cycle phase)
+  in a gripper             hanging from the robot's tool centre point (the
+                           6-axis arm's own TCP height, robot6.py)
 
 so every moving thing goes out with a full 3D pose (x, y, z, yaw) and size.
 Machines that will really move things up and down later (mobile robots,
@@ -20,41 +19,26 @@ lifting arms) only need to report their z here; the viewer draws whatever
 it gets.
 
   static_scene(config, config_path)  -> the layout: belts as outlines to
-                                        extrude, sensors, panels, machines,
-                                        the DXF floor plan (sent once)
+                                        extrude, sensors, control panels
+                                        (operator buttons and lamps grouped),
+                                        machines, the DXF floor plan (once)
   dynamic_state(config, views, ...)  -> moving parts and live states (sent
                                         ~30 times a second)
 """
 import math
-import zlib
+import re
 from typing import Dict, List, Optional, Sequence
 
+import robot6
 from config_parser import SimulatorConfig
+from heights import BELT_TOP, PALLET_H, PARCEL_H, level_height, parcel_height, surface_z  # noqa: F401 (re-exported)
 
-BELT_TOP = 0.75            # m above its floor: a conveyor's working height
 BELT_THICKNESS = 0.12
-PALLET_H = 0.14            # pallet deck height
-PARCEL_H = (0.18, 0.42)    # parcel heights, picked per parcel id (stable)
-TOOL_LIFT = 0.5            # a robot lifts its tool this much above pick / place
 SHAFT_LEVEL = -1000        # machines.SHAFT_LEVEL: elevator i's riders are on SHAFT_LEVEL - i
 MAX_DRAWING_POINTS = 600_000
-
-
-def level_height(config: SimulatorConfig) -> float:
-    for elevator in config.elevators:
-        if elevator.levelHeight > 0:
-            return float(elevator.levelHeight)
-    return 1.0
-
-
-def surface_z(config: SimulatorConfig, level: int, lh: Optional[float] = None) -> float:
-    """Top of the belts on floor `level`."""
-    return (lh if lh is not None else level_height(config)) * level + BELT_TOP
-
-
-def parcel_height(part_id: str) -> float:
-    lo, hi = PARCEL_H
-    return lo + (zlib.crc32(part_id.encode("utf-8")) % 1000) / 999.0 * (hi - lo)
+PANEL_GAP = 1.0            # m: operator devices this close belong to one control panel,
+PANEL_TAG_GAP = 4.0        # and those of one line (label "L1 ...") this close
+E_STOP = re.compile(r"e[-_ ]?stop|emergency|estop|not[-_ ]?aus", re.I)
 
 
 def _r(v: float) -> float:
@@ -97,6 +81,83 @@ def _drawing_polylines(config: SimulatorConfig, config_path: Optional[str]) -> L
     return out
 
 
+def _device_style(device, kind: str) -> str:
+    """How an operator device looks on a panel."""
+    if kind == "led":
+        return "lamp"
+    text = f"{device.label} {device.id}"
+    if E_STOP.search(text) or (getattr(device, "buttonType", "") == "latching" and device.normallyClosed):
+        return "estop"
+    if getattr(device, "buttonType", "") == "latching":
+        return "selector"
+    return "button"
+
+
+def _line_tag(device) -> str:
+    """The line a device belongs to by its label ("L2 START" -> "L2"), or ""."""
+    words = (device.label or "").split()
+    return words[0].upper() if len(words) >= 2 else ""
+
+
+ROW_ORDER = {"lamp": 0, "button": 1, "selector": 2, "estop": 2}
+
+
+def control_panels(config: SimulatorConfig) -> List[dict]:
+    """The operator buttons and lamps as control panels (consoles). Devices
+    within PANEL_GAP of each other share a console, and so do devices of
+    one line (same first label word, "L1 START" / "L1 AUTO") within
+    PANEL_TAG_GAP. Laid out like a real panel: pilot lamps on the top row,
+    pushbuttons below, selectors and the emergency stop at the bottom, each
+    row in layout order. The console faces away from the nearest belt: the
+    operator stands in the aisle."""
+    devices = [(b, "button") for b in config.buttons] + [(l, "led") for l in config.leds]
+    if not devices:
+        return []
+    parent = list(range(len(devices)))
+
+    def root(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i, (a, _ka) in enumerate(devices):
+        for j in range(i + 1, len(devices)):
+            b = devices[j][0]
+            d = math.hypot(a.x - b.x, a.y - b.y)
+            same_line = _line_tag(a) and _line_tag(a) == _line_tag(b)
+            if d <= PANEL_GAP or (same_line and d <= PANEL_TAG_GAP):
+                parent[root(i)] = root(j)
+    groups: Dict[int, list] = {}
+    for i, d in enumerate(devices):
+        groups.setdefault(root(i), []).append(d)
+    belt_points = [p for belt in config.belts for p in (_belt_outline(belt) or ([], []))[0]]
+    panels = []
+    for k, members in enumerate(sorted(groups.values(), key=lambda g: (g[0][0].x, g[0][0].y))):
+        cx = sum(d.x for d, _ in members) / len(members)
+        cy = sum(d.y for d, _ in members) / len(members)
+        yaw = -90.0
+        if belt_points:
+            bx, by = min(belt_points, key=lambda p: (p[0] - cx) ** 2 + (p[1] - cy) ** 2)
+            if math.hypot(cx - bx, cy - by) > 1e-6:
+                yaw = math.degrees(math.atan2(cy - by, cx - bx))     # facing the aisle
+        rows: Dict[int, list] = {}
+        for d, kind in members:                                   # config order within a row
+            style = _device_style(d, kind)
+            rows.setdefault(ROW_ORDER[style], []).append((d, kind, style))
+        laid = []
+        for r, key in enumerate(sorted(rows)):
+            row = sorted(rows[key], key=lambda m: m[2] == "estop")    # the e-stop at the end
+            for c, (d, kind, style) in enumerate(row):
+                laid.append({"id": d.id, "kind": kind, "style": style, "color": d.color, "label": d.label or d.id,
+                             "row": r, "col": c, "cols": len(row)})
+        tags = {_line_tag(d) for d, _ in members if _line_tag(d)}
+        panels.append({"id": f"panel_{k + 1}", "x": _r(cx), "y": _r(cy), "yaw": _r(yaw),
+                       "title": " / ".join(sorted(tags)) or f"Panel {k + 1}",
+                       "rows": len(rows), "cols": max(len(v) for v in rows.values()), "devices": laid})
+    return panels
+
+
 def static_scene(config: SimulatorConfig, config_path: Optional[str] = None, version: int = 0) -> dict:
     lh = level_height(config)
     elevator_belts = {e.beltId: e.id for e in config.elevators if e.beltId}
@@ -134,13 +195,11 @@ def static_scene(config: SimulatorConfig, config_path: Optional[str] = None, ver
                      "level": s.level, "label": s.label} for s in config.sources],
         "sinks": [{"id": s.id, "x": s.x, "y": s.y, "w": s.width, "h": s.height, "label": s.label}
                   for s in config.sinks],
-        "buttons": [{"id": b.id, "x": b.x, "y": b.y, "w": b.width, "h": b.height, "rot": b.rotation,
-                     "color": b.color, "label": b.label} for b in config.buttons],
-        "leds": [{"id": l.id, "x": l.x, "y": l.y, "r": l.radius, "color": l.color, "label": l.label}
-                 for l in config.leds],
+        "panels": control_panels(config),
         "stoppers": [{"id": s.id, "x": s.x, "y": s.y, "w": s.width, "d": s.depth, "rot": s.rotation,
                       "level": s.level, "color": s.color} for s in config.stoppers],
-        "robots": [{"id": r.id, "x": r.x, "y": r.y, "reach": r.reach, "level": r.level, "color": r.color,
+        "robots": [{"id": r.id, "x": r.x, "y": r.y, "z": _r(lh * r.level), "level": r.level, "color": r.color,
+                    "geometry": robot6.Geometry(r.reach, r.mountHeight, r.toolLength).as_dict(),
                     "pick": [r.pickX, r.pickY, surface_z(config, r.pickLevel, lh)],
                     "place": [r.placeX, r.placeY, surface_z(config, r.placeLevel, lh)], "label": r.label}
                    for r in config.robots],
@@ -155,36 +214,6 @@ def static_scene(config: SimulatorConfig, config_path: Optional[str] = None, ver
 # The moving parts (sent every frame)
 # ---------------------------------------------------------------------------
 
-def _smooth(t: float) -> float:
-    t = 0.0 if t < 0.0 else (1.0 if t > 1.0 else t)
-    return t * t * (3.0 - 2.0 * t)
-
-
-def _pallet_under(views, x: float, y: float) -> bool:
-    from math_utils import point_in_polygon
-    return any(v.kind == "pallet" and point_in_polygon(x, y, v.points) for v in views)
-
-
-def tool_z(robot, zp: float, zq: float) -> float:
-    """A robot's tool height (the gripped part's bottom) from its phase:
-    down at the pick (second half of reaching it), up, across, down at the
-    place, up on the way home; `zp` / `zq` = the part's bottom at the pick /
-    place point."""
-    top = max(zp, zq) + TOOL_LIFT
-    t, phase = robot.phaseT, robot.phase
-    if phase == "to_pick":
-        return top + (zp - top) * _smooth((t - 0.5) / 0.5)
-    if phase == "to_place":
-        if t < 0.3:
-            return zp + (top - zp) * _smooth(t / 0.3)
-        if t > 0.7:
-            return top + (zq - top) * _smooth((t - 0.7) / 0.3)
-        return top
-    if phase == "home":
-        return zq + (top - zq) * _smooth(t / 0.5)
-    return top
-
-
 def dynamic_state(config: SimulatorConfig, views: Sequence, sim_time: float = 0.0, version: int = 0) -> dict:
     lh = level_height(config)
     lifts = {i: e for i, e in enumerate(config.elevators)}
@@ -195,14 +224,13 @@ def dynamic_state(config: SimulatorConfig, views: Sequence, sim_time: float = 0.
             return elevator.position * lh + BELT_TOP if elevator is not None else BELT_TOP
         return surface_z(config, level, lh)
 
+    # Robots: the six joints (the viewer builds the arm from them) and the
+    # gripper's state; a gripped part hangs from the tool centre point.
     robots: Dict[str, list] = {}
     tools = {}
     for r in config.robots:
-        zp = surface_z(config, r.pickLevel, lh) + (PALLET_H if _pallet_under(views, r.pickX, r.pickY) else 0.0)
-        zq = surface_z(config, r.placeLevel, lh) + (PALLET_H if _pallet_under(views, r.placeX, r.placeY) else 0.0)
-        z = tool_z(r, zp, zq)
-        tools[(round(r.toolX, 6), round(r.toolY, 6))] = z
-        robots[r.id] = [_r(r.toolX), _r(r.toolY), _r(z), bool(r.holding), 0.0]
+        tools[(round(r.tcpX, 6), round(r.tcpY, 6))] = r.tcpZ
+        robots[r.id] = [_r(r.j1), _r(r.j2), _r(r.j3), _r(r.j4), _r(r.j5), _r(r.j6), bool(r.holding), bool(r.fault)]
 
     bodies = []
     for v in views:
@@ -215,10 +243,8 @@ def dynamic_state(config: SimulatorConfig, views: Sequence, sim_time: float = 0.
         kind, carrier = v.kind, getattr(v, "carrier", "")
         h = PALLET_H if kind == "pallet" else parcel_height(v.id)
         if carrier == "held":
-            z = tools.get((round(v.x, 6), round(v.y, 6)), base_z(v.level))
-            for rid, row in robots.items():
-                if row[3] and abs(row[0] - v.x) < 1e-3 and abs(row[1] - v.y) < 1e-3:
-                    row[4] = _r(h)
+            tcp_z = tools.get((round(v.x, 6), round(v.y, 6)))
+            z = tcp_z - h if tcp_z is not None else base_z(v.level)
         elif carrier == "load":
             z = base_z(v.level) + PALLET_H
         else:

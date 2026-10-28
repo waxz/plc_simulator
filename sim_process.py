@@ -35,7 +35,9 @@ BELT_FIELDS = ("speed", "run", "reverse", "actualSpeed", "running", "fault", "at
 MACHINE_FIELDS = {
     "pallets": ("loadCount",),
     "stoppers": ("isUp", "occupied", "release"),
-    "robots": ("busy", "holding", "partAtPick", "placeReady", "cycles", "toolX", "toolY", "start", "phase", "phaseT"),
+    "robots": ("busy", "holding", "partAtPick", "placeReady", "cycles", "toolX", "toolY", "start", "phase", "phaseT",
+               "ready", "atHome", "inPosition", "fault", "faultCode", "j1", "j2", "j3", "j4", "j5", "j6",
+               "tcpX", "tcpY", "tcpZ"),
     "elevators": ("level", "moving", "atLevel", "occupied", "position", "targetLevel"),
 }
 SNAPSHOT_TIMEOUT_S = 5.0

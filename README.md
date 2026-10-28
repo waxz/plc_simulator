@@ -29,6 +29,9 @@ The Python simulation runs as a standalone process that:
   impulse application, parcel collision, and sensor state evaluation.
 - `machines.py` - Pallets, stoppers, robot arms and elevators, and floor
   levels (see [Machines](#machines-pallets-stoppers-robot-arms-elevators)).
+- `robot6.py` - 6-axis robot kinematics (FANUC-style geometry, closed-form
+  inverse for a downward tool); `heights.py` - floor levels, conveyor and
+  part heights shared by the robots and the 3D view.
 - `scene3d.py`, `view3d.py`, `view3d_web/` - The 3D view of the running
   simulation in the browser (see [3D view](#3d-view)).
 - `visualizer.py` - The Pygame rendering loop. Draws belts, sensors, parcels, and
@@ -617,8 +620,59 @@ Its feedback fields go to the PLC either way.
 |---|---|---|---|
 | Pallet | `width` (along travel) x `height`, `mass`, `capacity`, `level` | Rides the belts like a parcel (same drive, sensors, collisions) and is never taken by a sink or Clear Parcels; Reset puts it back at its start. Its **load** rides on it: parcels a robot puts on it, or that a source makes right above it. A sink it crosses takes the load (counted as delivered) and lets the pallet go on. | - |
 | Stopper | `width` across the belt, `depth`, `rotation` = the travel it stops, `actuationTime`; auto: `holdTime`, `releaseTime` | While up, a bar across the belt holds whatever arrives - typically a pallet before an intersection, a robot or a lift. It never rises under a pallet. Auto: holds an arrival for `holdTime`, then lowers for `releaseTime`. | `release` BOOL / `isUp`, `occupied` (something waiting) BOOLs |
-| Robot arm | base at `x, y`, `reach`, `pickX/Y`, `placeX/Y`, `pickRadius`, `cycleTime`, `pickLevel`, `placeLevel`, `placeTarget` "any" / "pallet" | A cycle: reach to the pick point, grip the part there (a pallet's load first, else a parcel), carry it to the place point and let go - onto a pallet with room there, else (`placeTarget` "any") onto the belt / floor. Auto: starts when a part waits and there is somewhere to put it. The designer shows its reach and the pick (green) / place (orange) points; dropping or pasting a robot moves them along. | `start` BOOL (rising edge) / `busy`, `holding`, `partAtPick`, `placeReady` BOOLs, `cycles` WORD |
+| Robot arm | 6-axis robot on a pedestal at `x, y`: `reach`, `mountHeight`, `toolLength`, `pickX/Y`, `placeX/Y`, `pickRadius`, `cycleTime`, `speedOverride`, `pickLevel`, `placeLevel`, `placeTarget` "any" / "pallet" | A FANUC-style articulated arm (see [6-axis robot](#6-axis-robot) below). A cycle: above the pick point, straight down onto the part's top, grip (a pallet's load first, else a parcel), lift, carry, down onto the place point and let go - onto a pallet with room there, else (`placeTarget` "any") onto the belt / floor - and back to its perch. Auto: starts when a part waits and there is somewhere to put it. The designer shows its reach and the pick (green) / place (orange) points; dropping or pasting a robot moves them along. | see below |
 | Elevator | footprint `width` x `height`, `beltId` (its platform belt: an ordinary belt on the footprint), `levels`, `levelHeight`, `liftSpeed`; auto: `autoFrom`, `autoTo` | A lift between floor levels. Whatever is on the platform - and the platform belt - travels with it and arrives on the new level. Auto: runs its belt until a part is on board at `autoFrom`, lifts it to `autoTo`, runs the belt until the platform is empty, and comes back. | `targetLevel` BYTE / `moving`, `atLevel`, `occupied` BOOLs, `level` BYTE |
+
+#### 6-axis robot
+
+The robot arm is a 6-axis vertical articulated robot with a spherical wrist,
+like a FANUC M-10iA / M-20iA, scaled to its `reach` (`robot6.py`). Joints
+use FANUC conventions: J1 heading, J2 upper arm from vertical, J3 forearm
+from horizontal (absolute, the J2/J3 interaction), J4 to J6 the wrist, in
+degrees. Inverse kinematics is closed form for the case conveyor robots
+work in: the gripper pointing straight down, any yaw (elbow up, no wrist
+flip).
+
+The pick-and-place cycle (program 1) is a sequence of moves:
+- a joint move to above the pick point;
+- a straight-line move down onto the part's top, then grip;
+- a straight lift, a joint move over the place point, and a straight move
+  down onto the surface, then let go;
+- a straight lift and a joint move back to the perch.
+
+It takes `cycleTime` at 100 % `speedOverride`, gripping at 1/3 and letting
+go at 2/3 of the cycle. A part's height comes from `heights.py`, the same
+heights the 3D view draws, so the gripper meets each part's top.
+
+PLC interface, like a FANUC controller's UOP signals:
+
+| Direction | Signals |
+|---|---|
+| PLC -> robot | `enable` (ENBL), `start` (rising edge runs `program`), `hold` (*HOLD: motion pauses), `faultReset`, `gripperClose` (grip / let go under the tool, outside program 1) BOOLs; `program` BYTE (PNS: 1 pick and place, 2 go to the perch, 3 move the tool to the target), `speedOverride` BYTE (1..100 %), `targetX`, `targetY`, `targetZ`, `targetYaw` REALs (world m, deg) |
+| robot -> PLC | `ready` (CMDENBL: enabled, no fault, idle), `busy`, `atHome` (ATPERCH), `inPosition`, `holding`, `partAtPick`, `placeReady`, `fault` BOOLs; `cycles` WORD; `faultCode` BYTE (1 out of reach); `j1`..`j6` (deg) and `tcpX`, `tcpY`, `tcpZ` (m) REALs |
+
+`plc_logic.py` runs program 1 whenever a part and a place are ready, and
+resets a fault with the line's Start / Reset.
+
+Scripts (tests, scenarios) drive a robot directly. Moves are queued and run
+in simulated time:
+
+```python
+arm = engine.machines.robot("robot_1")
+(arm.move_to(1.2, 0.0, 1.4, yaw=0)            # joint move, tool down
+    .move_to(1.2, 0.0, 1.05, linear=True)      # straight down
+    .grip()
+    .move_to(1.2, 0.0, 1.4, linear=True)
+    .move_to(0.0, -1.2, 1.4, yaw=90)
+    .move_to(0.0, -1.2, 1.05, linear=True)
+    .release()
+    .home())
+engine.run_for(arm.remaining())
+arm.joints, arm.tcp, arm.busy, arm.holding
+```
+
+`move_joints(q)` moves to joint angles. `move_to` raises
+`robot6.Unreachable` for a point out of reach.
 
 **Floor levels.** Belts, sensors, sources, pallets and stoppers have a
 `level` (0 = ground):
@@ -688,16 +742,29 @@ The layout is built from what the designer placed on the 2D floor plan:
 belts are their outlines extruded at conveyor height (0.75 m) on stands,
 straight belts show chevrons that move at the belt's actual speed. The DXF
 background lies on the floor. Sensors show their beams (red when blocked),
-operator panels are pedestals with lamps and buttons; click a button to
-press it, like in the 2D window. Stoppers rise and drop, robot arms reach
-with two links to their gripper, and elevators lift their platform belt
-between floor levels (`levelHeight` apart).
+and stoppers rise and drop.
+
+- **Control panels:** a line's operator buttons and lamps form one
+  floor-standing console with a sloped desk. They are grouped when they
+  are close together, or within 4 m and labelled for the same line ("L1
+  START", "L1 AUTO"). Pilot lamps sit on the top row and pushbuttons below,
+  with selectors and the emergency stop (a red mushroom on a yellow plate)
+  at the bottom. Each device has a legend plate. The console faces the
+  aisle. Click a button to press it, like in the 2D window.
+- **Pallets** are EUR pallets (1200 x 800 x 144 mm, scaled to the pallet's
+  size), with 5 deck boards, 3 cross boards, 9 blocks, 3 bottom boards and
+  the fork openings between them.
+- **Robots** are yellow 6-axis arms: a pedestal, the turret with its J1 and
+  J2 motors, the upper arm, the elevated forearm, the wrist and a parallel
+  gripper, moved by the robot's own joint angles. A beacon on the pedestal
+  turns red on a fault.
+- **Elevators** lift their platform belt between floor levels
+  (`levelHeight` apart).
 
 The physics stays 2D: belts move parcels on the floor plane exactly as in
 the 2D window. The view adds the height. A parcel or pallet sits on its
 level's belt top, a pallet's load on the pallet deck, a lift's riders on the
-platform, and a gripped part follows the robot's tool up and down between
-pick and place. Every moving part is sent with a full 3D pose (x, y, z, yaw)
+platform, and a gripped part hangs from the robot's tool centre point. Every moving part is sent with a full 3D pose (x, y, z, yaw)
 and size, so machines that will really lift or carry things later (mobile
 robots, lifting arms) only report a z; the viewer draws what it gets.
 

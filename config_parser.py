@@ -272,23 +272,36 @@ class Stopper(BaseModel):
 
 
 class RobotArm(BaseModel):
-    """A pick-and-place robot on a base at (x, y): each cycle it reaches to
-    the pick point, grips the parcel there (a pallet's load first, else a
-    parcel on the belt), carries it to the place point and lets go - onto a
-    pallet with room there as its load, else onto the belt / floor. Both
-    points must be within `reach` of the base. One cycle takes
-    `cycleTime` s (reach, carry, return: a third each).
+    """A 6-axis industrial robot (FANUC M-10iA / M-20iA style, robot6.py) on
+    a pedestal at (x, y), with a gripper pointing down. Each pick-and-place
+    cycle (program 1) it moves above the pick point, straight down, grips
+    the parcel there (a pallet's load first, else a parcel on the belt),
+    lifts it, carries it over the place point, sets it down - onto a pallet
+    with room there as its load, else onto the belt / floor - and goes back
+    to its perch above the middle. Both points must be within `reach`. One
+    cycle takes `cycleTime` s at `speedOverride` 100 % (reach, carry,
+    return: a third each).
 
     `placeTarget` "pallet": it only sets parts down on a pallet (waits for
     one with room at the place point); "any": on a pallet if there is one,
     else wherever the place point is.
 
-    Command (control "plc"): `start` - a cycle begins when it turns on.
-    Feedback: `busy`, `holding`, `partAtPick` (something to pick now),
-    `placeReady` (somewhere to put it now) and `cycles` (finished cycles,
-    UINT16, wraps).
-    control "auto": it starts a cycle whenever a part is at the pick point
-    and the place point is ready."""
+    PLC interface (control "plc"), like a FANUC robot's UOP signals:
+      commands  `enable` (ENBL), `start` (a program begins when it turns
+                on), `hold` (*HOLD: motion pauses), `faultReset`,
+                `program` (BYTE, PNS: 1 pick and place, 2 go to the perch,
+                3 move the tool to targetX/Y/Z/Yaw), `speedOverride` (BYTE,
+                1..100 %), `gripperClose` (grip / let go where the tool is,
+                outside program 1) and the target (REALs, world metres,
+                yaw deg)
+      feedback  `ready` (CMDENBL: enabled, no fault, idle), `busy`,
+                `atHome` (ATPERCH), `inPosition`, `holding`, `partAtPick`,
+                `placeReady`, `fault` + `faultCode` (BYTE: 1 out of reach,
+                2 joint limit), `cycles` (UINT16, wraps), the joints j1..j6
+                (deg) and the tool centre point tcpX/Y/Z (m) as REALs
+    control "auto": a cycle starts whenever a part is at the pick point and
+    the place point is ready. Scripts drive it through
+    machines.MachineRuntime.robot(id) (RobotHandle: move_to, grip, ...)."""
     id: str
     x: float
     y: float
@@ -306,12 +319,40 @@ class RobotArm(BaseModel):
     placeLevel: int = 0
     placeTarget: Literal["any", "pallet"] = "any"
     control: ControlMode = "auto"
-    start: bool = False                                    # command
-    busy: bool = Field(default=False, exclude=True)        # feedback
+    mountHeight: float = 0.3  # m: pedestal under the arm
+    toolLength: float = 0.18  # m: flange to the gripper pads (TCP)
+    # Commands (PLC -> robot)
+    start: bool = False
+    enable: bool = True
+    hold: bool = False
+    faultReset: bool = False
+    gripperClose: bool = False
+    program: int = 1
+    speedOverride: int = 100
+    targetX: float = 0.0
+    targetY: float = 0.0
+    targetZ: float = 1.2
+    targetYaw: float = 0.0
+    # Feedback (robot -> PLC)
+    busy: bool = Field(default=False, exclude=True)
     holding: bool = Field(default=False, exclude=True)
     partAtPick: bool = Field(default=False, exclude=True)
     placeReady: bool = Field(default=False, exclude=True)
     cycles: int = Field(default=0, exclude=True)
+    ready: bool = Field(default=False, exclude=True)
+    atHome: bool = Field(default=False, exclude=True)
+    inPosition: bool = Field(default=True, exclude=True)
+    fault: bool = Field(default=False, exclude=True)
+    faultCode: int = Field(default=0, exclude=True)
+    j1: float = Field(default=0.0, exclude=True)
+    j2: float = Field(default=0.0, exclude=True)
+    j3: float = Field(default=0.0, exclude=True)
+    j4: float = Field(default=0.0, exclude=True)
+    j5: float = Field(default=90.0, exclude=True)
+    j6: float = Field(default=0.0, exclude=True)
+    tcpX: float = Field(default=0.0, exclude=True)
+    tcpY: float = Field(default=0.0, exclude=True)
+    tcpZ: float = Field(default=0.0, exclude=True)
     # Runtime pose for drawing: the tool (gripper) position.
     toolX: float = Field(default=0.0, exclude=True)
     toolY: float = Field(default=0.0, exclude=True)

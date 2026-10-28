@@ -415,9 +415,20 @@ def known_component_ids(config: SimulatorConfig) -> "set[str]":
 MACHINE_FIELDS = {
     "stoppers": {"in": ([(ByteType.BIT, "release")], []),
                  "out": ([(ByteType.BIT, "isUp"), (ByteType.BIT, "occupied")], [])},
-    "robots": {"in": ([(ByteType.BIT, "start")], []),
+    # A 6-axis robot, FANUC UOP style (config_parser.RobotArm): enable,
+    # start, hold, fault reset, gripper + program (PNS), speed override and
+    # a target pose in; status bits, cycle count, fault code, the six
+    # joints and the tool centre point out.
+    "robots": {"in": ([(ByteType.BIT, "start"), (ByteType.BIT, "enable"), (ByteType.BIT, "hold"),
+                       (ByteType.BIT, "faultReset"), (ByteType.BIT, "gripperClose")],
+                      [(ByteType.BYTE, "program"), (ByteType.BYTE, "speedOverride"), (ByteType.FLOAT, "targetX"),
+                       (ByteType.FLOAT, "targetY"), (ByteType.FLOAT, "targetZ"), (ByteType.FLOAT, "targetYaw")]),
                "out": ([(ByteType.BIT, "busy"), (ByteType.BIT, "holding"), (ByteType.BIT, "partAtPick"),
-                        (ByteType.BIT, "placeReady")], [(ByteType.UINT16, "cycles")])},
+                        (ByteType.BIT, "placeReady"), (ByteType.BIT, "ready"), (ByteType.BIT, "atHome"),
+                        (ByteType.BIT, "inPosition"), (ByteType.BIT, "fault")],
+                       [(ByteType.UINT16, "cycles"), (ByteType.BYTE, "faultCode"),
+                        *[(ByteType.FLOAT, f"j{i}") for i in range(1, 7)],
+                        (ByteType.FLOAT, "tcpX"), (ByteType.FLOAT, "tcpY"), (ByteType.FLOAT, "tcpZ")])},
     "elevators": {"in": ([], [(ByteType.BYTE, "targetLevel")]),
                   "out": ([(ByteType.BIT, "moving"), (ByteType.BIT, "atLevel"), (ByteType.BIT, "occupied")],
                           [(ByteType.BYTE, "level")])},

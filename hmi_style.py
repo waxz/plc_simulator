@@ -139,7 +139,8 @@ PROPERTY_GROUPS = {
     # Machines (machines.py) and floor levels.
     "level": "Position", "depth": "Geometry", "reach": "Geometry", "pickRadius": "Geometry",
     "mass": "Geometry", "capacity": "Geometry", "levels": "Geometry", "levelHeight": "Geometry",
-    "liftSpeed": "Motion", "cycleTime": "Motion", "actuationTime": "Motion",
+    "liftSpeed": "Motion", "cycleTime": "Motion", "actuationTime": "Motion", "speedOverride": "Motion",
+    "mountHeight": "Geometry", "toolLength": "Geometry",
     "pickX": "Operation", "pickY": "Operation", "placeX": "Operation", "placeY": "Operation",
     "pickLevel": "Operation", "placeLevel": "Operation", "placeTarget": "Operation", "control": "Operation",
     "holdTime": "Operation", "releaseTime": "Operation", "beltId": "Operation", "autoFrom": "Operation",
@@ -172,6 +173,7 @@ PROPERTY_UNITS = {
     "speed": " m/s", "transition_momentum_duration": " s", "interval": " s", "onDelay": " s", "offDelay": " s",
     "depth": " m", "reach": " m", "pickRadius": " m", "levelHeight": " m", "pickX": " m", "pickY": " m",
     "placeX": " m", "placeY": " m", "mass": " kg", "liftSpeed": " m/s", "cycleTime": " s", "actuationTime": " s",
+    "speedOverride": " %", "mountHeight": " m", "toolLength": " m",
     "holdTime": " s", "releaseTime": " s",
 }
 

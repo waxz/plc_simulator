@@ -3602,6 +3602,9 @@ def _field_specs_for(item: PlacedItem):
                   ("float", "placeY", "Place Y", -1000.0, 1000.0, 0.05),
                   ("float", "pickRadius", "Pick radius", 0.05, 5.0, 0.05),
                   ("float", "cycleTime", "Cycle time", 0.3, 120.0, 0.1),
+                  ("int", "speedOverride", "Speed override", 1, 100),
+                  ("float", "mountHeight", "Pedestal height", 0.0, 5.0, 0.05),
+                  ("float", "toolLength", "Tool length", 0.0, 1.0, 0.01),
                   ("int", "pickLevel", "Pick level", 0, 20), ("int", "placeLevel", "Place level", 0, 20),
                   ("combo", "placeTarget", "Place on", ["any", "pallet"]),
                   ("combo", "control", "Control", ["auto", "plc"]), ("text", "label", "Label")]

@@ -8,6 +8,7 @@
 // yaw) and size, so whatever lifts or carries them only changes numbers.
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { buildConsole, buildPallet, buildRobot6, setDevice, setRobot6 } from "./models.js";
 
 THREE.Object3D.DEFAULT_UP.set(0, 0, 1);
 
@@ -24,6 +25,8 @@ renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
 container.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -46,7 +49,7 @@ scene.add(sun, sun.target);
 let layout = null;
 let sceneInfo = null;
 let sceneVersion = -1;
-const live = { belts: new Map(), sensors: new Map(), leds: new Map(), buttons: new Map(), stoppers: new Map(),
+const live = { belts: new Map(), sensors: new Map(), devices: new Map(), stoppers: new Map(),
                robots: new Map(), elevators: new Map(), bodies: new Map(), drawing: null, labels: [] };
 const ui = { drawing: true, labels: false };
 
@@ -233,34 +236,12 @@ function buildZone(z, color, height, floorZ, labelText) {
   layout.add(tagged(m, labelText));
 }
 
-function buildButton(b) {
-  const g = new THREE.Group();
-  g.position.set(b.x, b.y, 0);
-  g.rotation.z = deg(b.rot || 0);
-  g.add(post(0, 0, 0, 1.0, 0.12, mat(COLORS.dark)));
-  const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.05, 24).rotateX(Math.PI / 2),
-                             new THREE.MeshStandardMaterial({ color: b.color, roughness: 0.4 }));
-  cap.position.z = 1.025;
-  cap.userData.button = b.id;
-  g.add(cap);
-  layout.add(tagged(g, `Button ${b.label || b.id} - click to press`));
-  cap.userData.button = b.id;
-  live.buttons.set(b.id, cap);
-  layout.add(label(b.label || b.id, b.x, b.y, 1.3));
-}
-
-function buildLed(l) {
-  const g = new THREE.Group();
-  g.position.set(l.x, l.y, 0);
-  g.add(post(0, 0, 0, 1.1, 0.08, mat(COLORS.dark)));
-  const r = Math.min(0.12, Math.max(0.05, l.r));
-  const lamp = new THREE.Mesh(new THREE.SphereGeometry(r, 20, 14),
-                              new THREE.MeshStandardMaterial({ color: l.color, emissive: l.color, emissiveIntensity: 0 }));
-  lamp.position.z = 1.1 + r;
-  g.add(lamp);
-  layout.add(tagged(g, `Lamp ${l.label || l.id}`));
-  live.leds.set(l.id, lamp);
-  layout.add(label(l.label || l.id, l.x, l.y, 1.5));
+// Operator buttons and lamps on control consoles (scene3d.control_panels).
+function buildPanel(panel) {
+  const built = buildConsole(panel);
+  layout.add(built.group);
+  for (const [id, unit] of built.devices) live.devices.set(id, unit);
+  layout.add(label(panel.title || panel.id, panel.x, panel.y, 1.45));
 }
 
 function buildStopper(s) {
@@ -276,31 +257,16 @@ function buildStopper(s) {
 }
 
 function buildRobot(r) {
-  const base = levelZ(r.level);
-  const color = new THREE.Color(r.color).getHex();
-  const g = new THREE.Group();
-  const pedestal = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.3, 0.3, 28).rotateX(Math.PI / 2),
-                                  mat(COLORS.dark));
-  pedestal.position.set(r.x, r.y, base + 0.15);
-  pedestal.castShadow = true;
-  const shoulderZ = base + 1.0;
-  const column = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.16, 0.7, 24).rotateX(Math.PI / 2), mat(color));
-  column.position.set(r.x, r.y, base + 0.65);
-  column.castShadow = true;
-  const links = [box(1, 0.14, 0.14, mat(color)), box(1, 0.11, 0.11, mat(color))];
-  for (const l of links) l.geometry = new THREE.BoxGeometry(1, 1, 1).translate(0.5, 0, 0);
-  const wrist = box(0.08, 0.08, 1, mat(COLORS.metal, { metalness: 0.6 }));
-  const fingers = [box(0.03, 0.03, 0.12, mat(COLORS.metal)), box(0.03, 0.03, 0.12, mat(COLORS.metal))];
-  g.add(pedestal, column, ...links, wrist, ...fingers);
+  const robot = buildRobot6(r);
+  layout.add(robot.group);
+  // Taught pick / place points.
   for (const [p, c] of [[r.pick, COLORS.pick], [r.place, COLORS.place]]) {
-    const ring = new THREE.Mesh(new THREE.RingGeometry(0.16, 0.2, 32), new THREE.MeshBasicMaterial({ color: c }));
-    ring.position.set(p[0], p[1], p[2] + 0.005);
-    g.add(ring);
+    const ring = new THREE.Mesh(new THREE.RingGeometry(0.12, 0.15, 40), new THREE.MeshBasicMaterial({ color: c }));
+    ring.position.set(p[0], p[1], p[2] + 0.004);
+    layout.add(tagged(ring, `${c === COLORS.pick ? "Pick" : "Place"} point of ${r.label || r.id}`));
   }
-  layout.add(tagged(g, `Robot ${r.label || r.id}`));
-  const L = Math.max(0.6, r.reach * 0.55);
-  live.robots.set(r.id, { r, links, wrist, fingers, shoulder: new THREE.Vector3(r.x, r.y, shoulderZ), L });
-  layout.add(label(r.label || r.id, r.x, r.y, shoulderZ + 0.8));
+  live.robots.set(r.id, robot);
+  layout.add(label(r.label || r.id, r.x, r.y, r.z + r.geometry.d1 + r.geometry.a2 + 0.4));
 }
 
 function buildElevator(e) {
@@ -331,7 +297,9 @@ function buildElevator(e) {
 
 function buildLayout(info) {
   if (layout) scene.remove(layout);
-  for (const key of ["belts", "sensors", "leds", "buttons", "stoppers", "robots", "elevators", "bodies"]) live[key].clear();
+  for (const key of ["belts", "sensors", "devices", "stoppers", "robots", "elevators"]) live[key].clear();
+  for (const entry of live.bodies.values()) bodyGroup.remove(entry.mesh);
+  live.bodies.clear();
   live.labels = [];
   live.drawing = null;
   sceneInfo = info;
@@ -346,8 +314,7 @@ function buildLayout(info) {
   info.sensors.forEach(buildSensor);
   info.sources.forEach((s) => buildZone(s, COLORS.source, 0.04, beltTopZ(s.level), `Source ${s.label || s.id}`));
   info.sinks.forEach((s) => buildZone(s, COLORS.sink, 0.6, 0, `Sink ${s.label || s.id}`));
-  info.buttons.forEach(buildButton);
-  info.leds.forEach(buildLed);
+  (info.panels || []).forEach(buildPanel);
   info.stoppers.forEach(buildStopper);
   info.robots.forEach(buildRobot);
   info.elevators.forEach(buildElevator);
@@ -368,10 +335,18 @@ function updateBodies(rows) {
     kind === "pallet" ? pallets++ : parcels++;
     let entry = live.bodies.get(id);
     if (!entry) {
-      const material = kind === "pallet" ? mat(new THREE.Color(color).getHex(), { roughness: 0.95 })
-                                         : mat(new THREE.Color(color).getHex(), { roughness: 0.85 });
-      const mesh = box(1, 1, 1, material);
-      mesh.userData.label = `${kind === "pallet" ? "Pallet" : "Parcel"} ${id}`;
+      let mesh;
+      if (kind === "pallet") {
+        // EUR pallet; its deck boards along the longer side.
+        mesh = new THREE.Group();
+        const pallet = buildPallet(color);
+        if (l > w) pallet.rotation.z = Math.PI / 2;
+        mesh.add(pallet);
+        tagged(mesh, `Pallet ${id}`);
+      } else {
+        mesh = box(1, 1, 1, mat(new THREE.Color(color).getHex(), { roughness: 0.85 }));
+        mesh.userData.label = `Parcel ${id}`;
+      }
       bodyGroup.add(mesh);
       entry = { mesh, target: new THREE.Vector3(x, y, z), yaw: deg(yaw) };
       mesh.position.copy(entry.target);
@@ -392,35 +367,6 @@ function updateBodies(rows) {
   document.getElementById("pallets").textContent = pallets;
 }
 
-function placeBetween(mesh, a, b) {
-  const d = new THREE.Vector3().subVectors(b, a);
-  mesh.position.copy(a);
-  mesh.scale.x = Math.max(0.001, d.length());
-  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), d.normalize());
-}
-
-function updateRobot(entry, [tx, ty, tz, holding, heldH]) {
-  const { shoulder: S, L, links, wrist, fingers } = entry;
-  const gripZ = tz + (holding ? heldH : 0.3);          // the gripper touches the part's top
-  const W = new THREE.Vector3(tx, ty, gripZ + 0.25);    // the wrist above it
-  const dx = tx - S.x, dy = ty - S.y;
-  const yaw = Math.atan2(dy, dx);
-  const horiz = Math.hypot(dx, dy), vert = W.z - S.z;
-  const D = Math.min(Math.max(Math.hypot(horiz, vert), 0.05), 2 * L - 1e-3);
-  const a = Math.atan2(vert, horiz) + Math.acos(Math.min(1, D / (2 * L)));   // elbow up
-  const E = new THREE.Vector3(S.x + Math.cos(yaw) * Math.cos(a) * L, S.y + Math.sin(yaw) * Math.cos(a) * L,
-                              S.z + Math.sin(a) * L);
-  placeBetween(links[0], S, E);
-  placeBetween(links[1], E, W);
-  wrist.scale.set(0.08, 0.08, 0.25);
-  wrist.position.set(tx, ty, gripZ);
-  const open = holding ? 0.12 : 0.18;
-  fingers.forEach((f, i) => {
-    f.position.set(tx + Math.cos(yaw + Math.PI / 2) * (i ? open : -open), ty + Math.sin(yaw + Math.PI / 2) * (i ? open : -open),
-                   gripZ - 0.08);
-  });
-}
-
 function applyState(state) {
   if (state.layout !== sceneVersion) {
     loadScene();
@@ -436,15 +382,9 @@ function applyState(state) {
       beam.material.color.setHex(on ? COLORS.sensorOn : COLORS.sensorOff);
     });
   }
-  for (const [id, lamp] of live.leds) lamp.material.emissiveIntensity = state.leds[id] ? 2.2 : 0;
-  for (const [id, cap] of live.buttons) {
-    const pressed = state.buttons[id];
-    cap.position.z = pressed ? 1.005 : 1.025;
-    cap.material.emissive = cap.material.color;
-    cap.material.emissiveIntensity = pressed ? 0.6 : 0;
-  }
+  for (const [id, unit] of live.devices) setDevice(unit, unit.kind === "led" ? state.leds[id] : state.buttons[id]);
   for (const [id, s] of live.stoppers) s.target = state.stoppers[id] ? 1 : 0;
-  for (const [id, entry] of live.robots) if (state.robots[id]) updateRobot(entry, state.robots[id]);
+  for (const [id, robot] of live.robots) if (state.robots[id]) setRobot6(robot, state.robots[id]);
   for (const [id, e] of live.elevators) {
     const row = state.elevators[id];
     if (row) e.platform.position.z = row[0] + sceneInfo.beltTop - sceneInfo.beltThickness - 0.05;

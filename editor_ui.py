@@ -238,8 +238,13 @@ class EditorUI:
         if isinstance(item, Stopper):
             return {"Bar": "UP" if item.isUp else "down", "Waiting": "yes" if item.occupied else "no"}
         if isinstance(item, RobotArm):
-            state = "holding a part" if item.holding else ("moving" if item.busy else "idle")
-            return {"Robot": state, "Cycles": str(item.cycles)}
+            if item.fault:
+                state = f"FAULT {item.faultCode}"
+            else:
+                state = "holding a part" if item.holding else ("moving" if item.busy else "idle")
+            return {"Robot": state, "Cycles": str(item.cycles),
+                    "Joints": " ".join(f"{getattr(item, f'j{i}'):.0f}" for i in range(1, 7)),
+                    "TCP": f"{item.tcpX:.2f}, {item.tcpY:.2f}, {item.tcpZ:.2f}"}
         if isinstance(item, Elevator):
             where = f"to level {item.targetLevel}" if item.moving else f"at level {item.level}"
             return {"Lift": where, "Platform": "loaded" if item.occupied else "empty"}

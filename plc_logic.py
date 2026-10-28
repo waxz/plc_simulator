@@ -110,6 +110,7 @@ class MachineControl:
         self._stoppers: Dict[str, dict] = {}
         self._elevators: Dict[str, dict] = {}
         self._last: Optional[float] = None
+        self.reset_requested = False    # Start / Reset pressed this scan: robot fault reset
 
     def step(self, now: float, running: bool, speeds: Dict[str, float], events: List[str]) -> None:
         dt = 0.0 if self._last is None else max(0.0, now - self._last)
@@ -125,7 +126,12 @@ class MachineControl:
             stopper.release = release
         for robot in cfg.robots:
             if robot.control == "plc":
-                robot.start = running and not robot.busy and robot.partAtPick and robot.placeReady
+                # Program 1 (pick and place) whenever a part and a place are ready;
+                # a fault (e.g. a point out of reach) is reset with the line's reset.
+                robot.enable, robot.program = True, 1
+                robot.start = running and robot.ready and robot.partAtPick and robot.placeReady
+                robot.faultReset = robot.fault and self.reset_requested
+        self.reset_requested = False
         belts = {b.id: b for b in cfg.belts}
         for elevator in cfg.elevators:
             if elevator.control != "plc":
@@ -234,11 +240,13 @@ class DeliveryController:
                 self._set_running(not self.running, button.id, events)
             elif button is self.start_button:
                 self._clear_jam(button.id, events)
+                self.machines.reset_requested = True
                 self._set_running(True, button.id, events)
             elif button is self.stop_button:
                 self._set_running(False, button.id, events)
             elif button is self.reset_button:
                 self._clear_jam(button.id, events)
+                self.machines.reset_requested = True
             else:
                 events.append(f"button {button.id} pressed")
 
@@ -508,6 +516,7 @@ class LineController:
                     self._stop(target, button.id, events)
                 elif "reset" in text or "ack" in text:
                     self._clear_jam(target, button.id, events)
+                    self.machines.reset_requested = True
                 else:
                     events.append(f"button {button.id} pressed")
                     break
