@@ -238,12 +238,21 @@ class PathToolbar(QToolBar):
         self.osnap_button.setToolTip("Snap to drawing and component points (endpoint, center, midpoint, nearest)")
         self.addWidget(self.osnap_button)
         self.input = QLineEdit()
-        self.input.setPlaceholderText("x,y   @dx,dy   len<angle   len   (Enter)")
-        self.input.setMinimumWidth(240)
+        self.input.setPlaceholderText("x,y  @dx,dy  len<angle  len")
+        self.input.setToolTip("Type a point and press Enter: x,y  @dx,dy (relative)  len<angle  len (along the cursor)")
+        self.input.setMinimumWidth(170)
         self.input.returnPressed.connect(lambda: on_input(self.input.text()))
         self.addWidget(self.input)
-        for action in self.pick_actions + self.sides_actions:
-            action.setVisible(False)
+        self.idle()
+
+    def idle(self):
+        """No tool active: no options shown - just OSNAP and the input, greyed."""
+        for actions in (self.segment_actions, self.width_actions, self.corner_actions, self.distance_actions,
+                        self.keep_actions, self.split_actions, self.arc_method_actions, self.pick_actions,
+                        self.sides_actions):
+            for action in actions:
+                action.setVisible(False)
+        self.mode_label.setText("  ")
         self.setEnabled(False)
 
     @property
@@ -340,7 +349,7 @@ class _PointTool:
             self.view.tool = None
         self.view.setDragMode(self.view.DragMode.RubberBandDrag)
         self.view.viewport().unsetCursor()
-        self.toolbar.setEnabled(False)
+        self.toolbar.idle()
         self.toolbar.mode_label.setText("  ")
         self.toolbar.input.clear()
 
@@ -1145,7 +1154,7 @@ class PickFromDrawingTool:
         self.view.setDragMode(self.view.DragMode.RubberBandDrag)
         self.view.viewport().unsetCursor()
         self.toolbar.on_options_changed = None
-        self.toolbar.setEnabled(False)
+        self.toolbar.idle()
         self.toolbar.mode_label.setText("  ")
 
     def _options_changed(self):

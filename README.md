@@ -223,12 +223,22 @@ The Qt layout editor is where belt shapes and positions are designed:
 
 ![Sketch and connect into belts](docs/sketch_tools.png)
 
-The **Sketch** tool bar (second row, under the main one) has every sketch
-tool and, after **Belts**, the tools that make belts (Belt from Sketch, Belt
-Path, Curved Belt, Outline Belt) - the same commands as Tools > Sketch / Belts,
-with the same shortcuts (shown in each button's tooltip). The drawing options
-(Width, Corner R, Arc method, coordinate input, ...) appear on the first row,
-showing only what the active tool uses.
+Tool bars - the commands used all the time, one click away (the same
+actions as the menus, with the same shortcuts in each tooltip):
+
+- **Row 1**: **File** - Open, Save, Undo, Redo, Import DXF, Export DXF;
+  Pan / Measure; Run in Simulator and the theme.
+- **Row 2**: **Sketch** - Line, Arc, Rectangle, Circle, Polygon, Clear;
+  **Belts** - Belt from Sketch, Belt Path, Curved Belt, Outline Belt;
+  **Layout** - Connect, Disconnect, Check (layout check), Ports (show belt
+  inlets / outlets), Fit (zoom to the whole layout, `Z`).
+- **Left**: **Modify** (below).
+- **Bottom**, full width like a CAD command line: the active tool's options
+  (Width, Corner R, Arc method, Distance, ...) and the coordinate input -
+  only what the tool uses, nothing while no tool is active.
+
+Rarely used commands (Save As, background settings, cropped DXF export,
+theme choice, panels) stay in the menus.
 
 **Modify** (the vertical tool bar left of the canvas, or Tools > Modify)
 edits sketch lines like a CAD tool; arcs stay exact, every action is one

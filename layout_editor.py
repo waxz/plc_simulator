@@ -4128,11 +4128,11 @@ class MainWindow(QMainWindow):
         # a path the first time); the simulator runs it with
         # `python main.py <layout.json>`.
         file_menu = self.menuBar().addMenu("File")
-        open_action = QAction("Open...", self)
+        self.open_action = open_action = QAction("Open...", self)
         open_action.setShortcut(QKeySequence.Open)
         open_action.triggered.connect(self._open_config)
         file_menu.addAction(open_action)
-        save_action = QAction("Save", self)
+        self.save_action = save_action = QAction("Save", self)
         save_action.setShortcut(QKeySequence.Save)
         save_action.triggered.connect(self._save_config)
         file_menu.addAction(save_action)
@@ -4145,10 +4145,10 @@ class MainWindow(QMainWindow):
         # actions whose text ("Undo Move Component", "Redo Delete
         # Component", ...) and enabled state track the stack automatically.
         edit_menu = self.menuBar().addMenu("Edit")
-        undo_action = self.undo_stack.createUndoAction(self, "Undo")
+        self.undo_action = undo_action = self.undo_stack.createUndoAction(self, "Undo")
         undo_action.setShortcut(QKeySequence.Undo)
         edit_menu.addAction(undo_action)
-        redo_action = self.undo_stack.createRedoAction(self, "Redo")
+        self.redo_action = redo_action = self.undo_stack.createRedoAction(self, "Redo")
         redo_action.setShortcut(QKeySequence.Redo)
         edit_menu.addAction(redo_action)
 
@@ -4230,6 +4230,7 @@ class MainWindow(QMainWindow):
             theme_menu.addAction(action)
             self.theme_actions[name] = action
         self._sync_theme_controls()
+        self._build_quick_access(view_toolbar)
         # View > Panels: show / hide every dock and toolbar.
         panels = self.cad.view_menu.addMenu("Panels")
         for dock in (library_dock, manager_dock, props_dock, check_dock):
@@ -4321,10 +4322,61 @@ class MainWindow(QMainWindow):
             self.cad.closing = True
         super().closeEvent(event)
 
+    def _build_quick_access(self, first_toolbar):
+        """The commands used all the time, one click away - the menus' own
+        actions (same shortcuts, same enabled state): a File group in front
+        of row 1, a Layout group after the belt tools on row 2. The rest
+        (Save As, background settings, theme, panels) stays in the menus."""
+        cad = self.cad
+        fit = QAction("Zoom to Fit", self)
+        fit.setShortcut(QKeySequence("Z"))
+        fit.triggered.connect(self._frame_all_items)
+        cad.view_menu.insertAction(cad.show_ports_action, fit)
+        self.zoom_fit_action = fit
+
+        def describe(action, text, tip):
+            action.setIconText(text)
+            key = action.shortcut().toString()
+            action.setToolTip(f"{tip} ({key})" if key else tip)
+
+        file_bar = QToolBar("File", self)
+        file_bar.setObjectName("fileToolbar")
+        self.insertToolBar(first_toolbar, file_bar)
+        for entry in ((self.open_action, "Open", "Open a layout"),
+                                  (self.save_action, "Save", "Save the layout"),
+                                  None,
+                                  (self.undo_action, "Undo", "Undo"),
+                                  (self.redo_action, "Redo", "Redo"),
+                                  None,
+                                  (cad.import_bg_action, "Import DXF", "Import a DXF drawing as the background"),
+                      (cad.export_dxf_action, "Export DXF", "Export the layout (and its drawing) as DXF")):
+            if entry is None:
+                file_bar.addSeparator()
+                continue
+            action, text, tip = entry
+            if action in (self.undo_action, self.redo_action):
+                # A fixed label; the tooltip keeps following the undo stack
+                # ("Undo Move Component").
+                action.setIconText(text)
+            else:
+                describe(action, text, tip)
+            file_bar.addAction(action)
+
+        bar = cad.sketch_toolbar
+        bar.addSeparator()
+        bar.addWidget(QLabel("  Layout "))
+        for action, text, tip in ((cad.connect_action, "Connect", "Connect the two selected belts"),
+                                  (cad.disconnect_action, "Disconnect", "Disconnect the selected belts"),
+                                  (cad.check_action, "Check", "Check the layout: overlaps, gaps, broken connections"),
+                                  (cad.show_ports_action, "Ports", "Show belt inlets / outlets"),
+                                  (fit, "Fit", "Zoom to fit the whole layout")):
+            describe(action, text, tip)
+            bar.addAction(action)
+
     def _frame_all_items(self):
         rect = self.scene.itemsBoundingRect()
-        if rect.isEmpty():
-            return
+        if rect.width() <= 0 and rect.height() <= 0:
+            return              # nothing there (a single straight line is flat, not empty: the margin gives it room)
         margin = max(rect.width(), rect.height()) * 0.1 or 50.0
         self.view.fitInView(rect.adjusted(-margin, -margin, margin, margin), Qt.KeepAspectRatio)
 

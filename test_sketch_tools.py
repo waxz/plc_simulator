@@ -239,7 +239,7 @@ class EditorWorkflowTest(unittest.TestCase):
         bar = self.window.findChild(QToolBar, "sketchToolbar")
         self.assertTrue(bar.isVisible())
         labels = [a.iconText() for a in bar.actions() if a.text()]
-        for name in ("Line", "Arc", "Rectangle", "Circle", "Polygon", "Clear Sketch",
+        for name in ("Line", "Arc", "Rectangle", "Circle", "Polygon", "Clear",
                      "Belt from Sketch", "Belt Path", "Curved Belt", "Outline Belt"):
             self.assertIn(name, labels)
         arc = next(a for a in bar.actions() if a.iconText() == "Arc")
@@ -252,6 +252,45 @@ class EditorWorkflowTest(unittest.TestCase):
         self.assertTrue(self.cad.sketch_line_tool.active)
         self.assertFalse(self.cad.sketch_arc_tool.active)
         self.assertFalse(any(a.isVisible() for a in self.cad.draw_toolbar.arc_method_actions))
+
+    def test_quick_access_tool_bars(self):
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QToolBar
+        file_bar = self.window.findChild(QToolBar, "fileToolbar")
+        labels = [a.iconText() for a in file_bar.actions() if a.text()]
+        self.assertEqual(labels, ["Open", "Save", "Undo", "Redo", "Import DXF", "Export DXF"])
+        button = lambda bar, text: bar.widgetForAction(next(a for a in bar.actions() if a.iconText() == text))
+        # Undo / Redo buttons: fixed labels, the tooltip names the step.
+        self.sketch_line((0, 0), (4, 0))
+        undo = button(file_bar, "Undo")
+        self.assertEqual(undo.text(), "Undo")
+        QTest.mouseClick(undo, Qt.LeftButton)
+        self.assertEqual(self.window.config.sketch, [])
+        QTest.mouseClick(button(file_bar, "Redo"), Qt.LeftButton)
+        self.assertEqual(len(self.window.config.sketch), 1)
+        QTest.mouseClick(button(file_bar, "Save"), Qt.LeftButton)
+        self.assertTrue(self.window.undo_stack.isClean())
+        self.assertEqual(len(load_config(self.path).sketch), 1)
+        # Layout group on the sketch row.
+        bar = self.window.findChild(QToolBar, "sketchToolbar")
+        for name in ("Connect", "Disconnect", "Check", "Ports", "Fit"):
+            self.assertIn(name, [a.iconText() for a in bar.actions()])
+        ports = next(a for a in bar.actions() if a.iconText() == "Ports")
+        QTest.mouseClick(bar.widgetForAction(ports), Qt.LeftButton)
+        self.assertTrue(ports.isChecked() and self.cad.ports.visible)
+        before = self.view.transform().m11()
+        fit = next(a for a in bar.actions() if a.iconText() == "Fit")
+        self.assertEqual(fit.shortcut().toString(), "Z")
+        fit.trigger()          # (at this test window's width + fallback font the last button sits in the overflow)
+        self.assertNotAlmostEqual(self.view.transform().m11(), before)
+        # Tool options + coordinate input along the bottom; nothing shown idle.
+        draw = self.cad.draw_toolbar
+        self.assertEqual(self.window.toolBarArea(draw), Qt.BottomToolBarArea)
+        self.assertFalse(any(a.isVisible() for a in draw.width_actions + draw.pick_actions))
+        self.cad.path_tool.start()
+        self.assertTrue(all(a.isVisible() for a in draw.width_actions))
+        self.key(Qt.Key_Escape)
+        self.assertFalse(any(a.isVisible() for a in draw.width_actions))
 
     # -- center, start, end arcs ----------------------------------------------------
 

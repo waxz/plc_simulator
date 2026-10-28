@@ -259,7 +259,10 @@ class CadController:
         self.snap = SnapEngine(window, to_scene_pos=to_scene_pos, from_scene_pos=from_scene_pos,
                                snap_free_point=snap_free_point, scale=scale)
         self.draw_toolbar = PathToolbar(window, self._typed_input)
-        window.addToolBar(Qt.TopToolBarArea, self.draw_toolbar)
+        # The active tool's options and the coordinate input along the bottom,
+        # full width (like a CAD command line): the top rows hold the commands.
+        self.draw_toolbar.setObjectName("drawToolbar")
+        window.addToolBar(Qt.BottomToolBarArea, self.draw_toolbar)
         self.path_tool = PathDrawTool(window, self.draw_toolbar, self.snap, belt_item_cls=belt_item_cls)
         self.outline_tool = OutlineDrawTool(window, self.draw_toolbar, self.snap, belt_item_cls=belt_item_cls)
         self.curved_tool = CurvedBeltDrawTool(window, self.draw_toolbar, self.snap, belt_item_cls=belt_item_cls)
@@ -537,12 +540,12 @@ class CadController:
 
         file_menu.addSeparator()
         background = file_menu.addMenu("Background (DXF)")
-        add(background, "Import DXF Background...", self.import_background)
+        self.import_bg_action = add(background, "Import DXF Background...", self.import_background)
         add(background, "Background Settings...", self.background_settings)
         add(background, "Export Cropped DXF...", self.export_cropped_background)
         background.addSeparator()
         add(background, "Remove Background", self.remove_background)
-        add(file_menu, "Export DXF...", self.export_dxf)
+        self.export_dxf_action = add(file_menu, "Export DXF...", self.export_dxf)
 
         tools = w.menuBar().addMenu("Tools")
         sketch = tools.addMenu("Sketch")
@@ -587,7 +590,7 @@ class CadController:
         w.addToolBarBreak(Qt.TopToolBarArea)     # its own row: never folded into an overflow menu
         w.addToolBar(Qt.TopToolBarArea, bar)
         bar.addWidget(QLabel("  Sketch "))
-        short = {"Belt from Sketch/Drawing": "Belt from Sketch", "Draw Belt Path": "Belt Path",
+        short = {"Clear Sketch": "Clear", "Belt from Sketch/Drawing": "Belt from Sketch", "Draw Belt Path": "Belt Path",
                  "Draw Curved Belt": "Curved Belt", "Draw Belt Outline": "Outline Belt"}
         for group in (sketch_actions + [clear_action], belt_actions):
             if group is belt_actions:
@@ -614,13 +617,13 @@ class CadController:
             mbar.addAction(action)
         self.modify_toolbar = mbar
         connections = tools.addMenu("Connections")
-        add(connections, "Connect Belts", self.connect_selected, "Ctrl+J")
+        self.connect_action = add(connections, "Connect Belts", self.connect_selected, "Ctrl+J")
         add(connections, "Fillet Belts...", self.fillet_selected, "Ctrl+Shift+F")
-        add(connections, "Disconnect Belts", self.disconnect_selected, "Ctrl+Shift+J")
+        self.disconnect_action = add(connections, "Disconnect Belts", self.disconnect_selected, "Ctrl+Shift+J")
         connections.addSeparator()
         add(connections, "Solve Connections", self.solve_all, "F6")
         tools.addSeparator()
-        add(tools, "Check Layout", self.run_check, "F7")
+        self.check_action = add(tools, "Check Layout", self.run_check, "F7")
 
         view = w.menuBar().addMenu("View")
         self.view_menu = view
@@ -629,6 +632,7 @@ class CadController:
         show_ports.setChecked(False)
         show_ports.toggled.connect(self._set_ports_visible)
         view.addAction(show_ports)
+        self.show_ports_action = show_ports
 
     def _set_ports_visible(self, visible: bool):
         self.ports.visible = visible
