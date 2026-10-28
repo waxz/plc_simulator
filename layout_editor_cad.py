@@ -37,6 +37,7 @@ from cad.checks import check_layout
 from cad.constraints import (
     GEOMETRY_FIELDS, ConstraintError, connect_belts, fillet_belts, solve_layout,
 )
+from cad.belts import belt_chain_connections
 from cad.ports import belt_ports
 from config_parser import BackgroundDrawing, BeltConnection, SketchEntity
 from id_utils import next_indexed_id
@@ -258,6 +259,7 @@ class CadController:
         self.path_tool = PathDrawTool(window, self.draw_toolbar, self.snap, belt_item_cls=belt_item_cls)
         self.outline_tool = OutlineDrawTool(window, self.draw_toolbar, self.snap, belt_item_cls=belt_item_cls)
         self.curved_tool = CurvedBeltDrawTool(window, self.draw_toolbar, self.snap, belt_item_cls=belt_item_cls)
+        self.path_tool.on_belts = self.add_belt_chain
         self.pick_tool = PickFromDrawingTool(window, self.draw_toolbar, self.snap, belt_item_cls=belt_item_cls)
         self.sketch_line_tool = SketchLineTool(window, self.draw_toolbar, self.snap, belt_item_cls=belt_item_cls)
         self.sketch_arc_tool = SketchArcTool(window, self.draw_toolbar, self.snap, belt_item_cls=belt_item_cls)
@@ -537,6 +539,20 @@ class CadController:
         cmd = self._geometry_command(geometry, "Keep Connections")
         if cmd is not None:
             self.window.undo_stack.push(cmd)
+
+    def add_belt_chain(self, belts, closed: bool, text: str):
+        """Add belts drawn as one conveyor line, each joined to the next
+        (cad.belts.belt_chain_connections) - one undo step."""
+        stack = self.window.undo_stack
+        stack.beginMacro(text)
+        items = [self.window.view._add_item(self.belt_item_cls(b), text=text) for b in belts]
+        before = list(self.config.connections)
+        stack.push(ConnectionsCommand(self, before, before + belt_chain_connections(belts, closed),
+                                      "Add connections"))
+        stack.endMacro()
+        self.window.scene.clearSelection()
+        for item in items:
+            item.setSelected(True)
 
     def connect_selected(self):
         selected = self.selected_belt_items()

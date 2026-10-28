@@ -42,6 +42,7 @@ class PathToolTest(unittest.TestCase):
         self.view.resetTransform()
         self.view.centerOn(to_scene_pos(3, 2))
         self.tool = self.window.cad.path_tool
+        self.tool.toolbar.split_check.setChecked(False)   # these tests: one path belt
         self.addCleanup(self._close)
 
     def _close(self):
@@ -289,6 +290,100 @@ class PathToolTest(unittest.TestCase):
             self.assertLess(surface.distance(cpath.Polygon([(p.x, p.y), (p.x + 1e-6, p.y), (p.x, p.y + 1e-6)])),
                             1e-3, f"parcel left the loop at ({p.x:.2f}, {p.y:.2f})")
         self.assertAlmostEqual(parcel.body.velocity.length, 1.0, delta=0.02)
+
+
+class SeparateBeltsTest(unittest.TestCase):
+    """Draw Belt Path with "Separate belts" (the default): a belt - and a
+    motor - per straight run and per curve, joined in flow order."""
+
+    # Same editor fixture and mouse / key input as PathToolTest.
+    _close, _mouse, click, key = PathToolTest._close, PathToolTest._mouse, PathToolTest.click, PathToolTest.key
+
+    def setUp(self):
+        PathToolTest.setUp(self)
+        self.tool.toolbar.split_check.setChecked(True)
+
+    def belts(self):
+        return [i.model for i in self.window.items_list]
+
+    def assert_joined(self, belts, closed=False):
+        connections = [(c.fromBelt, c.toBelt) for c in self.window.config.connections]
+        expected = [(a.id, b.id) for a, b in zip(belts, belts[1:])]
+        if closed:
+            expected.append((belts[-1].id, belts[0].id))
+        self.assertEqual(connections, expected)
+        self.assertEqual(self.window.cad.broken_connection_ids(), set())   # outlet meets inlet, same heading
+
+    def test_a_bent_line_becomes_straight_curved_straight_belts(self):
+        self.tool.toolbar.corner_spin.setValue(1.0)
+        self.tool.start()
+        for x, y in ((0, 0), (6, 0), (12, -6)):
+            self.click(x, y)
+        self.key(Qt.Key_Return)
+        belts = self.belts()
+        self.assertEqual([b.type for b in belts], ["linear", "curved", "linear"])
+        self.assertEqual(len({b.id for b in belts}), 3)                   # each its own belt / motor
+        self.assertAlmostEqual(belts[1].radius, 1.0, places=6)
+        self.assertLess(belts[1].directionAngle, 0)                       # turning right: clockwise
+        self.assert_joined(belts)
+        self.assertIn("3 belts", self.window.statusBar().currentMessage())
+        self.window.undo_stack.undo()                                     # one step removes it all
+        self.assertEqual(self.belts(), [])
+        self.assertEqual(self.window.config.connections, [])
+        self.window.undo_stack.redo()
+        self.assertEqual(len(self.belts()), 3)
+        self.assert_joined(self.belts())
+
+    def test_sharp_corners_give_straight_belts_only(self):
+        self.tool.toolbar.corner_spin.setValue(0.0)
+        self.tool.start()
+        for x, y in ((0, 0), (6, 0), (6, 4)):
+            self.click(x, y)
+        self.key(Qt.Key_Return)
+        self.assertEqual([b.type for b in self.belts()], ["linear", "linear"])
+        self.assertEqual(len(self.window.config.connections), 1)
+
+    def test_a_loop_is_joined_all_the_way_round(self):
+        self.tool.toolbar.corner_spin.setValue(1.0)
+        self.tool.start()
+        for x, y in ((0, 0), (8, 0), (8, 5), (0, 5), (0, 0)):
+            self.click(x, y)
+        belts = self.belts()
+        types = [b.type for b in belts]
+        self.assertEqual(sorted(types), ["curved"] * 4 + ["linear"] * 4)   # 4 sides, 4 rounded corners
+        self.assertTrue(all(x != y for x, y in zip(types, types[1:])))    # straight / curve alternate
+        self.assert_joined(belts, closed=True)
+
+    def test_a_curve_too_tight_for_the_width_keeps_drawing(self):
+        self.tool.toolbar.width_spin.setValue(1.0)
+        self.tool.toolbar.corner_spin.setValue(0.2)
+        self.tool.start()
+        for x, y in ((0, 0), (6, 0), (6, 4)):
+            self.click(x, y)
+        self.key(Qt.Key_Return)
+        self.assertEqual(self.belts(), [])
+        self.assertTrue(self.tool.active)
+        self.assertIn("too tight", self.window.statusBar().currentMessage())
+        self.tool.toolbar.corner_spin.setValue(0.5)
+        self.key(Qt.Key_Return)
+        self.assertEqual([b.type for b in self.belts()], ["linear", "curved", "linear"])
+
+    def test_parcels_ride_from_belt_to_belt(self):
+        self.tool.toolbar.corner_spin.setValue(1.5)
+        self.tool.start()
+        for x, y in ((0, 0), (6, 0), (6, 6)):
+            self.click(x, y)
+        self.key(Qt.Key_Return)
+        self.assertTrue(self.window._save_config())
+        config = load_config(self.path)
+        config.tractionModel = "friction"
+        self.assertEqual(len(config.belts), 3)
+        engine = PhysicsEngine(config)
+        parcel = engine.add_parcel(0.5, 0.0, 0.4, 0.4)
+        engine.run_for(14.0)                         # ~11 m of conveyor at 1 m/s
+        p = parcel.body.position
+        self.assertAlmostEqual(p.x, 6.0, delta=0.3)  # carried round the curve, up the last belt
+        self.assertGreater(p.y, 3.0)
 
 
 if __name__ == "__main__":

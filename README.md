@@ -320,7 +320,19 @@ Shift+click to insert a corner, Alt+click to delete one.
 | Backspace / Esc | remove the last anchor / cancel |
 
 The live preview shows the belt surface, the current segment's length and
-angle, and the total length. Sharp corners are rounded with the toolbar's
+angle, and the total length.
+
+With **Separate belts** (toolbar, on by default) the finished line becomes
+one belt per section, each with its own motor (drive, VFD channels): a
+linear belt for every straight run and a curved belt for every curve -
+tangent arcs and rounded corners alike. They are joined in flow order (a
+loop all the way round), so Check Layout and the editor keep them connected,
+and parcels ride from one to the next. A curve tighter than half the belt
+width is refused with a hint (raise Corner R or narrow the belt) and you
+keep drawing. Undo removes the whole line in one step. Turn it off for a
+single path belt with one motor:
+
+Sharp corners are rounded with the toolbar's
 **Corner R** (0 = keep them sharp, mitred). The rounding is part of the belt
 (`cornerRadius`, also in Properties), not baked into extra anchors: the
 anchors stay the corners you clicked, so dragging one re-rounds that corner

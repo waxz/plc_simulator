@@ -19,8 +19,8 @@ from typing import List, Optional, Sequence, Tuple
 
 from shapely.geometry import Point as ShapelyPoint, Polygon
 
-from cad.path import belt_world_path, recenter, segments
-from config_parser import Belt, PathNode
+from cad.path import belt_world_path, fillet_corners, recenter, segments
+from config_parser import Belt, BeltConnection, PathNode
 
 Point = Tuple[float, float]
 
@@ -128,6 +128,58 @@ def curved_belt(belt_id: str, center: Point, radius: float, width: float, start_
     return Belt(id=belt_id, type="curved", shape="arc", x=center[0], y=center[1], radius=radius,
                 beltWidth=width, rotation=0.0, startAngle=start, endAngle=end, speed=speed,
                 directionAngle=90.0 if ccw else -90.0, color=color)
+
+
+def curved_belt_from_segment(belt_id: str, seg, width: float, speed: float = 1.0,
+                             color: str = "#3b82f6") -> Belt:
+    """The curved belt along an arc segment (cad/path.Segment), parcels
+    running from its p0 to its p1 (CCW for a positive sweep, else CW)."""
+    sweep = math.degrees(seg.sweep)
+    if sweep > 0:      # CCW from p0
+        first = math.degrees(seg.start_angle)
+    else:              # CW: the same arc is CCW from p1; parcels run CW
+        first = math.degrees(math.atan2(seg.p1[1] - seg.center[1], seg.p1[0] - seg.center[0]))
+    first %= 360.0
+    if first > 360.0 - 1e-9:    # -0.0000001 deg, not 359.9999999
+        first = 0.0
+    return curved_belt(belt_id, seg.center, seg.radius, width, first, abs(sweep), ccw=sweep > 0,
+                       speed=speed, color=color)
+
+
+def segment_belts(new_id, points: Sequence[Point], bulges: Sequence[float], closed: bool, width: float,
+                  corner_radius: float = 0.0, speed: float = 1.0, color: str = "#3b82f6") -> List[Belt]:
+    """A drawn conveyor line as separate belts, each with its own drive: a
+    linear belt per straight run and a curved belt per arc (sharp corners
+    first rounded by `corner_radius`), in flow order (parcels run from the
+    first point to the last). `new_id()` gives each belt its id. Connect
+    them with belt_chain_connections. ValueError with a user-facing reason
+    when a curve is too tight for the width."""
+    pts, bul = list(points), list(bulges)
+    if corner_radius > 0:
+        pts, bul = fillet_corners(pts, bul, closed, corner_radius)
+    belts: List[Belt] = []
+    for seg in segments(pts, bul, closed):
+        if seg.length < 1e-6:
+            continue
+        if seg.kind == "line":
+            belts.append(linear_belt(new_id(), seg.p0, seg.p1, width, speed=speed, color=color))
+            continue
+        if width > 2 * seg.radius + 1e-9:
+            raise ValueError(f"A curve of radius {seg.radius:.3f} m is too tight for a {width:.3f} m belt: "
+                             f"use a Corner R of at least {width / 2:.3f} m, or a narrower belt.")
+        belts.append(curved_belt_from_segment(new_id(), seg, width, speed=speed, color=color))
+    if not belts:
+        raise ValueError("The path has no length.")
+    return belts
+
+
+def belt_chain_connections(belts: Sequence[Belt], closed: bool = False) -> List[BeltConnection]:
+    """Each belt's outlet joined to the next one's inlet (and the last to the
+    first for a loop)."""
+    pairs = list(zip(belts, belts[1:]))
+    if closed and len(belts) > 1:
+        pairs.append((belts[-1], belts[0]))
+    return [BeltConnection(fromBelt=a.id, toBelt=b.id) for a, b in pairs]
 
 
 def straight_chain(points: Sequence[Point], bulges: Sequence[float], closed: bool,

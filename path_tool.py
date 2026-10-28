@@ -51,14 +51,16 @@ from PySide6.QtGui import QBrush, QColor, QFont, QPainterPath, QPen, QPolygonF, 
 from PySide6.QtWidgets import (
     QButtonGroup, QComboBox, QDoubleSpinBox, QGraphicsEllipseItem,
     QGraphicsItem, QGraphicsPathItem, QGraphicsRectItem, QGraphicsSimpleTextItem, QLabel, QLineEdit,
-    QSpinBox, QToolBar, QToolButton,
+    QCheckBox, QSpinBox, QToolBar, QToolButton,
 )
 from shapely.geometry import Polygon
 
 from cad import path as cpath
 from shapely.ops import unary_union
 
-from cad.belts import belt_from_target, curved_belt, flow_arrows, outline_belt, path_belt
+from cad.belts import (
+    belt_from_target, curved_belt_from_segment, flow_arrows, outline_belt, path_belt, segment_belts,
+)
 from cad.checks import belt_footprint
 from cad.snap import DrawingPicker, Snap, SnapIndex, best_snap, join_shapes
 from config_parser import Belt, PathNode, SketchEntity
@@ -172,6 +174,13 @@ class PathToolbar(QToolBar):
         self.corner_spin = QDoubleSpinBox(minimum=0.0, maximum=50.0, singleStep=0.25, value=1.0, decimals=3, suffix=" m")
         self.corner_spin.setToolTip("Path: sharp corners are rounded with this radius when finished (0 = sharp)")
         self.addWidget(self.corner_spin)
+        # Draw Belt Path: one belt (and motor) per straight run / curve, or one path belt.
+        self.split_check = QCheckBox("Separate belts")
+        self.split_check.setChecked(True)
+        self.split_check.setToolTip("Path: a linear belt for each straight run and a curved belt for each "
+                                    "curve or rounded corner, each with its own motor, joined in flow order.\n"
+                                    "Off: one path belt (one motor) along the whole path.")
+        self.split_actions = [self.addWidget(self.split_check)]
         self.sides_actions = [self.addWidget(QLabel(" Sides "))]
         self.sides_spin = QSpinBox(minimum=3, maximum=64, value=6)
         self.sides_actions.append(self.addWidget(self.sides_spin))
@@ -237,7 +246,7 @@ class PathToolbar(QToolBar):
             self.on_options_changed()
 
     def configure(self, title: str, *, segments: bool, width: bool, corner: bool, points: bool,
-                  belt_type: bool = False, sides: bool = False):
+                  belt_type: bool = False, sides: bool = False, split: bool = False):
         self.setEnabled(True)
         self.mode_label.setText(f"  {title}  ")
         for w in (self.line_button, self.arc_button):
@@ -249,6 +258,8 @@ class PathToolbar(QToolBar):
             action.setVisible(belt_type)
         for action in self.sides_actions:
             action.setVisible(sides)
+        for action in self.split_actions:
+            action.setVisible(split)
         self.on_options_changed = None  # the tool that wants live updates sets it after configure()
 
 
@@ -511,8 +522,11 @@ class PathDrawTool(_PointTool):
     hint = ("Draw Belt Path: click anchors (OSNAP). L/A line/arc, Shift = 15 deg, type coordinates, "
             "click the first anchor to close, Enter/right-click to finish, Esc to cancel.")
 
+    # Set by the CAD controller: adds belts + their connections as one undo step.
+    on_belts: Optional[Callable[[List[Belt], bool, str], None]] = None
+
     def _configure_toolbar(self):
-        self.toolbar.configure("Path", segments=True, width=True, corner=True, points=True)
+        self.toolbar.configure("Path", segments=True, width=True, corner=True, points=True, split=True)
 
     def _incoming_heading(self) -> Optional[float]:
         if len(self.anchors) < 2:
@@ -548,6 +562,9 @@ class PathDrawTool(_PointTool):
             self.stop()
             return
         pts, bulges = list(self.anchors), list(self.bulges)
+        if self.toolbar.split_check.isChecked() and self.on_belts is not None:
+            self._finish_separate(pts, bulges, closed)
+            return
         # The anchors stay the corners you clicked; the belt rounds them
         # (Belt.cornerRadius), so dragging one later re-rounds it.
         belt = path_belt(self._new_id(), pts, bulges, closed, self.toolbar.width_spin.value(),
@@ -557,6 +574,26 @@ class PathDrawTool(_PointTool):
         length = cpath.path_length(cpath.segments(*cpath.belt_local_path(belt), closed))
         self._status(f"Drew {belt.id}: {'loop' if closed else 'open path'}, {len(pts)} anchors, "
                      f"{length:.2f} m centerline.", 8000)
+
+    def _finish_separate(self, pts, bulges, closed: bool):
+        """One belt per straight run / curve, each with its own motor."""
+        taken = [i.model.id for i in self.window.items_list]
+
+        def new_id():
+            taken.append(next_indexed_id(taken, "belt"))
+            return taken[-1]
+        try:
+            belts = segment_belts(new_id, pts, bulges, closed, self.toolbar.width_spin.value(),
+                                  corner_radius=self.toolbar.corner_spin.value())
+        except ValueError as exc:
+            self._status(str(exc), 8000)   # keep drawing: fix Corner R / Width, then finish again
+            return
+        self.stop()
+        self.on_belts(belts, closed, "Draw Belt Path")
+        kinds = [b.type for b in belts]
+        self._status(f"Drew {len(belts)} belts ({kinds.count('linear')} straight, {kinds.count('curved')} curved), "
+                     f"each with its own motor, joined {belts[0].id} -> {belts[-1].id}"
+                     f"{' -> ' + belts[0].id if closed and len(belts) > 1 else ''}.", 8000)
 
     def _update_preview(self):
         self._clear_preview()
@@ -681,15 +718,7 @@ def curved_belt_through(belt_id: str, start, end, through, width: float) -> Belt
     seg = cpath.bulge_to_segment(start, end, cpath.three_point_bulge(start, end, through))
     if seg.kind != "arc":
         raise ValueError("The three points are in a line - click a point off the chord to bend the belt.")
-    sweep = math.degrees(seg.sweep)
-    if sweep > 0:      # CCW from the start point
-        first = math.degrees(seg.start_angle)
-    else:              # CW: the same arc is CCW from the end point; parcels run CW
-        first = math.degrees(math.atan2(end[1] - seg.center[1], end[0] - seg.center[0]))
-    first %= 360.0
-    if first > 360.0 - 1e-9:    # -0.0000001 deg, not 359.9999999
-        first = 0.0
-    return curved_belt(belt_id, seg.center, seg.radius, width, first, abs(sweep), ccw=sweep > 0)
+    return curved_belt_from_segment(belt_id, seg, width)
 
 
 class CurvedBeltDrawTool(SketchArcTool):
