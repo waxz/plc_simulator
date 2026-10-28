@@ -182,9 +182,11 @@ The Qt layout editor is where belt shapes and positions are designed:
   button contact and key, ...). Selecting in the tree selects on the canvas
   and the other way round; double-click centres the view; filter box above;
   right-click to select, duplicate, delete or add to the library.
-- Menus grouped like a CAD tool's: **File > Background (DXF)**, **Tools >
-  Sketch / Belts / Connections**, **Tools > Check Layout**, **View > Show
-  Ports** and **View > Panels** (show / hide every dock and toolbar).
+- Every command is an icon button on a tool bar (below); the menus hold the
+  same actions: **File > Background (DXF)**, a flat **Tools** menu in
+  sections (Sketch, Modify, Belts, Connections, then Check Layout - no
+  sub-menus), **View > Show Ports** and **View > Panels** (show / hide
+  every dock and toolbar).
 - Undo/redo, copy/paste, rubber-band multi-select.
 - The Properties dock is a property grid: a header with the kind, id and a
   one-line summary, then foldable sections (Identity, Position, Geometry,
@@ -214,6 +216,7 @@ The Qt layout editor is where belt shapes and positions are designed:
 | Tools > Solve Connections | F6 | Re-attaches every connection, holding the selected belts fixed | planegcs |
 | Tools > Check Layout | F7 | Belt overlaps (transfer zones at belt ends are allowed), outlets leading nowhere, broken connections, sensors/sources not over a belt; double-click an issue to select it | Shapely |
 | File > Import DXF Background... | | Floor plan as a locked background, via a dialog: units (prefilled from `$INSUNITS`, cross-checked against the drawing's dimensions), import only a window or one sheet of a drawing set, place it at the origin, leave out dimensions / hatches / leaders / layers | ezdxf |
+| File > Background (DXF) > Place Background | Shift+B | Move the drawing: click its anchor point (snaps to the drawing), then where it goes (snaps to the layout and sketch, or type `x,y` / `@dx,dy`); the drawing follows the cursor. Or drag the **anchor** (the blue crosshair at the drawing's lower-left corner). One undo step; the file is not read again | |
 | File > Background Settings... | | Change the background's units, window, offset and layers later (undoable) | ezdxf |
 | File > Background (DXF) > Export Cropped DXF... | | Write the background's window, without what is left out, as a small DXF and optionally switch the background to it (undoable) | ezdxf |
 | File > Export DXF... | | Layout in metres, one layer per kind (BELTS, BELT_CENTERLINES, FLOW, SENSORS, ...), with the background drawing as placed (window, filters, scale, offset) on BACKGROUND. Curved belt outlines keep true arcs, so a CAD tool - or a reimport - sees arcs; `test_dxf_workflow.py` checks the whole round trip (import, crop, draw, export, reimport, rebuild each belt from its outline) | ezdxf |
@@ -223,22 +226,25 @@ The Qt layout editor is where belt shapes and positions are designed:
 
 ![Sketch and connect into belts](docs/sketch_tools.png)
 
-Tool bars - the commands used all the time, one click away (the same
-actions as the menus, with the same shortcuts in each tooltip):
+Tool bars - every command one click away, as an icon button; hover it for
+its name and shortcut (the same actions as the menus). The icons are drawn
+in code (`toolbar_icons.py`) and follow the dark / light theme:
 
 - **Row 1**: **File** - Open, Save, Undo, Redo, Import DXF, Export DXF;
-  Pan / Measure; Run in Simulator and the theme.
+  **Background** - Place (move the drawing by its anchor, `Shift+B`),
+  Settings, Crop (export the cropped DXF), Remove; **View** - Pan,
+  Measure, Clear Measurements, Fit (zoom to the whole layout, `Z`), Ports
+  (show belt inlets / outlets); **Run** in the simulator (`F5`) and the theme.
 - **Row 2**: **Sketch** - Line, Arc, Rectangle, Circle, Polygon, Clear;
   **Belts** - Belt from Sketch, Belt Path, Curved Belt, Outline Belt;
-  **Layout** - Connect, Disconnect, Check (layout check), Ports (show belt
-  inlets / outlets), Fit (zoom to the whole layout, `Z`).
+  **Connections** - Connect, Fillet Belts, Disconnect, Solve, Check
+  (layout check, `F7`).
 - **Left**: **Modify** (below).
 - **Bottom**, full width like a CAD command line: the active tool's options
   (Width, Corner R, Arc method, Distance, ...) and the coordinate input -
   only what the tool uses, nothing while no tool is active.
 
-Rarely used commands (Save As, background settings, cropped DXF export,
-theme choice, panels) stay in the menus.
+Only Save As, the theme choice and the panels list are menu-only.
 
 **Modify** (the vertical tool bar left of the canvas, or Tools > Modify)
 edits sketch lines like a CAD tool; arcs stay exact, every action is one

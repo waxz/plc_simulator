@@ -44,6 +44,7 @@ from config_parser import BackgroundDrawing, BeltConnection, SketchEntity
 from id_utils import next_indexed_id
 from sketch_grips import SketchGripManager
 from modify_tool import (
+    PlaceBackgroundTool,
     BreakTool, CopyTool, ExtendTool, FilletTool, MirrorTool, MoveTool, OffsetTool, RotateTool, ScaleTool, TrimTool,
 )
 from path_tool import (
@@ -200,6 +201,71 @@ class BackgroundItem(QGraphicsPathItem):
         _inert(self)
 
 
+class BackgroundAnchor(QGraphicsPathItem):
+    """The background drawing's placement anchor (its lower-left corner):
+    drag it to move the whole drawing - it snaps to the layout and the
+    sketch - one undo step on the drop. A child of the BackgroundItem, so
+    it rides along with the Place Background preview too."""
+
+    SIZE = 9.0
+
+    def __init__(self, controller, home):
+        path = QPainterPath()
+        r = self.SIZE
+        path.addEllipse(QPointF(0, 0), r * 0.55, r * 0.55)
+        path.moveTo(-r, 0)
+        path.lineTo(r, 0)
+        path.moveTo(0, -r)
+        path.lineTo(0, r)
+        super().__init__(path, controller.background_item)
+        self.controller = controller
+        self.home = home
+        self.setPos(controller.to_scene_pos(*home))
+        self.setFlag(QGraphicsPathItem.GraphicsItemFlag.ItemIgnoresTransformations, True)
+        self.setAcceptedMouseButtons(Qt.LeftButton)
+        self.setZValue(1)
+        pen = QPen(QColor("#38bdf8"), 2)
+        self.setPen(pen)
+        self.setCursor(Qt.SizeAllCursor)
+        self.setToolTip("Background anchor: drag to move the drawing (snaps to the layout and sketch). "
+                        "Shift+B places it by two points.")
+        self._dragging = False
+        self._delta = (0.0, 0.0)
+
+    def shape(self) -> QPainterPath:
+        hit = QPainterPath()
+        hit.addEllipse(QPointF(0, 0), self.SIZE + 3, self.SIZE + 3)
+        return hit
+
+    def mousePressEvent(self, event):
+        c = self.controller
+        self._dragging, self._delta = True, (0.0, 0.0)
+        c.snap.set_background_shapes(list(c.config.sketch))     # not the drawing being moved
+        event.accept()
+
+    def mouseMoveEvent(self, event):
+        if not self._dragging:
+            return
+        c = self.controller
+        hit = c.snap.snap(event.scenePos())
+        self._delta = (hit.x - self.home[0], hit.y - self.home[1])
+        c.background_item.setPos(c.to_scene_pos(*self._delta) - c.to_scene_pos(0, 0))
+        c._status(f"Background anchor to ({hit.x:.3f}, {hit.y:.3f})" + (f"  [{hit.kind}]" if hit.kind else ""), 2000)
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if not self._dragging:
+            return
+        self._dragging = False
+        c = self.controller
+        dx, dy = self._delta
+        c.background_item.setPos(0, 0)
+        c._refresh_snap_shapes()
+        event.accept()
+        # After the event: the step rebuilds the background (and this anchor).
+        QTimer.singleShot(0, lambda: c.move_background(dx, dy))
+
+
 @contextlib.contextmanager
 def _busy():
     """Wait cursor while reading a big drawing."""
@@ -286,8 +352,11 @@ class CadController:
             tool = cls(window, self.draw_toolbar, self.snap, belt_item_cls=belt_item_cls)
             tool.cad = self
             self.modify_tools[name] = tool
+        self.place_tool = PlaceBackgroundTool(window, self.draw_toolbar, self.snap, belt_item_cls=belt_item_cls)
+        self.place_tool.cad = self
         self.sketch_items: List[SketchItem] = []
         self._background_shapes = []
+        self._background_cache = None       # (file/filter key, geometry): re-placing doesn't re-read the DXF
         window.view.on_delete_extra = self._delete_selected_sketch
         window.view.on_copy_extra = self.selected_sketch_entities
         window.view.on_paste_extra = self.paste_sketch
@@ -296,6 +365,7 @@ class CadController:
         self.ports = PortOverlay(self)
         self.closing = False  # set by MainWindow.closeEvent: stop touching the scene
         self.background_item: Optional[BackgroundItem] = None
+        self.background_anchor: Optional[BackgroundAnchor] = None
         self.check_panel = LayoutCheckPanel(self)
         self._build_actions(file_menu)
         panel = getattr(window, "properties_panel", None)
@@ -372,6 +442,7 @@ class CadController:
         if self.background_item is not None:
             self.window.scene.removeItem(self.background_item)
             self.background_item = None
+        self.background_anchor = None
         self.config.background = background
         self._background_shapes = []
         self._refresh_snap_shapes()
@@ -379,9 +450,15 @@ class CadController:
             return
         path = self._resolve(background.path)
         try:
-            with _busy():
-                geom = dxf_io.read_background(path, clip=background.clip, skip_types=background.skipTypes,
-                                              hidden_layers=background.hiddenLayers)
+            key = (os.path.abspath(path), os.path.getmtime(path), background.clip, tuple(background.skipTypes),
+                   tuple(background.hiddenLayers))
+            if self._background_cache is not None and self._background_cache[0] == key:
+                geom = self._background_cache[1]
+            else:
+                with _busy():
+                    geom = dxf_io.read_background(path, clip=background.clip, skip_types=background.skipTypes,
+                                                  hidden_layers=background.hiddenLayers)
+                self._background_cache = (key, geom)
         except (OSError, IOError, ValueError, ezdxf.DXFError) as exc:
             message = f"Could not load background {path}: {exc}"
             if quiet_errors:
@@ -395,6 +472,10 @@ class CadController:
         scene_lines = [[self.to_scene_pos(x, y) for x, y in pl] for pl in polylines]
         self.background_item = BackgroundItem(scene_lines)
         self.window.scene.addItem(self.background_item)
+        points = [p for pl in polylines for p in pl]
+        if points:
+            home = (min(x for x, _ in points), min(y for _, y in points))      # the drawing's lower-left corner
+            self.background_anchor = BackgroundAnchor(self, home)
         rect = self.background_item.boundingRect()
         margin = max(rect.width(), rect.height()) * 0.1
         self.window.scene.setSceneRect(self.window.scene.sceneRect().united(rect.adjusted(-margin, -margin, margin, margin)))
@@ -637,81 +718,97 @@ class CadController:
     # -- actions ---------------------------------------------------------------
 
     def _build_actions(self, file_menu):
-        """Menus grouped like a CAD tool's: File > Background, Tools >
-        Sketch / Belts / Connections, View > Show Ports (+ Panels, added by
-        MainWindow)."""
+        """Commands like a CAD tool's: every one is a tool bar button (icon +
+        tooltip with its shortcut; MainWindow gives the icons from
+        `self.icon_names`) and a menu entry - File > Background, a flat Tools
+        menu in sections (no sub-menus), View > Show Ports (+ Panels, added
+        by MainWindow)."""
         w = self.window
+        self.icon_names = []        # (action, toolbar_icons name, short label)
 
-        def add(menu, text, slot, shortcut=""):
+        def add(menu, text, slot, shortcut="", icon="", label=""):
             action = QAction(text, w)
             if shortcut:
                 action.setShortcut(QKeySequence(shortcut))
             action.triggered.connect(slot)
             menu.addAction(action)
+            if icon:
+                self.icon_names.append((action, icon, label or text))
             return action
 
         file_menu.addSeparator()
         background = file_menu.addMenu("Background (DXF)")
         self.import_bg_action = add(background, "Import DXF Background...", self.import_background)
-        add(background, "Background Settings...", self.background_settings)
-        add(background, "Export Cropped DXF...", self.export_cropped_background)
+        self.place_bg_action = add(background, "Place Background", self.place_tool.start, "Shift+B", "bg_place",
+                                   "Place")
+        self.bg_settings_action = add(background, "Background Settings...", self.background_settings, "",
+                                      "bg_settings", "Settings")
+        self.crop_bg_action = add(background, "Export Cropped DXF...", self.export_cropped_background, "",
+                                  "bg_crop", "Crop")
         background.addSeparator()
-        add(background, "Remove Background", self.remove_background)
+        self.remove_bg_action = add(background, "Remove Background", self.remove_background, "", "bg_remove",
+                                    "Remove")
         self.export_dxf_action = add(file_menu, "Export DXF...", self.export_dxf)
 
         tools = w.menuBar().addMenu("Tools")
-        sketch = tools.addMenu("Sketch")
+        tools.addSection("Sketch")
         sketch_actions = [
-            add(sketch, "Line", self.sketch_line_tool.start, "S"),
-            add(sketch, "Arc", self.sketch_arc_tool.start, "Shift+S"),
-            add(sketch, "Rectangle", self.sketch_rect_tool.start, "Shift+R"),
-            add(sketch, "Circle", self.sketch_circle_tool.start, "Shift+C"),
-            add(sketch, "Polygon", self.sketch_polygon_tool.start, "Shift+G"),
+            add(tools, "Line", self.sketch_line_tool.start, "S", "line"),
+            add(tools, "Arc", self.sketch_arc_tool.start, "Shift+S", "arc"),
+            add(tools, "Rectangle", self.sketch_rect_tool.start, "Shift+R", "rectangle"),
+            add(tools, "Circle", self.sketch_circle_tool.start, "Shift+C", "circle"),
+            add(tools, "Polygon", self.sketch_polygon_tool.start, "Shift+G", "polygon"),
+            add(tools, "Clear Sketch", self.clear_sketch, "", "clear", "Clear"),
         ]
-        sketch.addSeparator()
-        clear_action = add(sketch, "Clear Sketch", self.clear_sketch)
-        modify_menu = tools.addMenu("Modify")
+        tools.addSection("Modify")
         mt = self.modify_tools
         modify_actions = [
-            add(modify_menu, "Trim", mt["trim"].start, "T"),
-            add(modify_menu, "Extend", mt["extend"].start, "E"),
-            add(modify_menu, "Break", mt["break"].start, "K"),
-            add(modify_menu, "Offset", mt["offset"].start, "Shift+O"),
-            add(modify_menu, "Fillet", mt["fillet"].start, "F"),
-            add(modify_menu, "Join", self.join_selected_sketch, "J"),
-            add(modify_menu, "Explode", self.explode_selected_sketch, "X"),
+            add(tools, "Trim", mt["trim"].start, "T", "trim"),
+            add(tools, "Extend", mt["extend"].start, "E", "extend"),
+            add(tools, "Break", mt["break"].start, "K", "break"),
+            add(tools, "Offset", mt["offset"].start, "Shift+O", "offset"),
+            add(tools, "Fillet", mt["fillet"].start, "F", "fillet"),
+            add(tools, "Join", self.join_selected_sketch, "J", "join"),
+            add(tools, "Explode", self.explode_selected_sketch, "X", "explode"),
             None,
-            add(modify_menu, "Move", mt["move"].start, "M"),
-            add(modify_menu, "Copy", mt["copy"].start, "Shift+M"),
-            add(modify_menu, "Rotate", mt["rotate"].start, "R"),
-            add(modify_menu, "Mirror", mt["mirror"].start, "I"),
-            add(modify_menu, "Scale", mt["scale"].start),
+            add(tools, "Move", mt["move"].start, "M", "move"),
+            add(tools, "Copy", mt["copy"].start, "Shift+M", "copy"),
+            add(tools, "Rotate", mt["rotate"].start, "R", "rotate"),
+            add(tools, "Mirror", mt["mirror"].start, "I", "mirror"),
+            add(tools, "Scale", mt["scale"].start, "", "scale"),
         ]
-        modify_menu.insertSeparator(modify_actions[8])
-        belts = tools.addMenu("Belts")
+        tools.addSection("Belts")
         belt_actions = [
-            add(belts, "Belt from Sketch/Drawing", self.pick_tool.start, "B"),
-            add(belts, "Draw Belt Path", self.path_tool.start, "P"),
-            add(belts, "Draw Curved Belt", self.curved_tool.start, "U"),
-            add(belts, "Draw Belt Outline", self.outline_tool.start, "O"),
+            add(tools, "Belt from Sketch/Drawing", self.pick_tool.start, "B", "belt_pick", "Belt from Sketch"),
+            add(tools, "Draw Belt Path", self.path_tool.start, "P", "belt_path", "Belt Path"),
+            add(tools, "Draw Curved Belt", self.curved_tool.start, "U", "curved_belt", "Curved Belt"),
+            add(tools, "Draw Belt Outline", self.outline_tool.start, "O", "outline_belt", "Outline Belt"),
         ]
-        # The same actions as buttons on a top-level tool bar: sketch first,
-        # then the tools that turn sketch / drawing / clicks into belts.
+        tools.addSection("Connections")
+        self.connect_action = add(tools, "Connect Belts", self.connect_selected, "Ctrl+J", "connect", "Connect")
+        self.fillet_belts_action = add(tools, "Fillet Belts...", self.fillet_selected, "Ctrl+Shift+F",
+                                       "fillet_belts", "Fillet Belts")
+        self.disconnect_action = add(tools, "Disconnect Belts", self.disconnect_selected, "Ctrl+Shift+J",
+                                     "disconnect", "Disconnect")
+        self.solve_action = add(tools, "Solve Connections", self.solve_all, "F6", "solve", "Solve")
+        tools.addSeparator()
+        self.check_action = add(tools, "Check Layout", self.run_check, "F7", "check", "Check")
+        layout_actions = [self.connect_action, self.fillet_belts_action, self.disconnect_action, self.solve_action,
+                          self.check_action]
+        for action, _icon, label in self.icon_names:
+            action.setIconText(label)
+            key = action.shortcut().toString()
+            action.setToolTip(f"{action.text()} ({key})" if key else action.text())
+
+        # Sketch, belts and connections on one top-level tool bar row.
         bar = QToolBar("Sketch", w)
         bar.setObjectName("sketchToolbar")
         w.addToolBarBreak(Qt.TopToolBarArea)     # its own row: never folded into an overflow menu
         w.addToolBar(Qt.TopToolBarArea, bar)
-        bar.addWidget(QLabel("  Sketch "))
-        short = {"Clear Sketch": "Clear", "Belt from Sketch/Drawing": "Belt from Sketch", "Draw Belt Path": "Belt Path",
-                 "Draw Curved Belt": "Curved Belt", "Draw Belt Outline": "Outline Belt"}
-        for group in (sketch_actions + [clear_action], belt_actions):
-            if group is belt_actions:
+        for i, group in enumerate((sketch_actions, belt_actions, layout_actions)):
+            if i:
                 bar.addSeparator()
-                bar.addWidget(QLabel("  Belts "))
             for action in group:
-                action.setIconText(short.get(action.text(), action.text()))
-                key = action.shortcut().toString()
-                action.setToolTip(f"{action.text()} ({key})" if key else action.text())
                 bar.addAction(action)
         self.sketch_toolbar = bar
         # Modify: a vertical tool bar beside the canvas, as in a CAD tool.
@@ -719,7 +816,6 @@ class CadController:
         mbar.setObjectName("modifyToolbar")
         mbar.setOrientation(Qt.Vertical)
         w.addToolBar(Qt.LeftToolBarArea, mbar)
-        mbar.addWidget(QLabel(" Modify"))
         for action in modify_actions:
             if action is None:
                 mbar.addSeparator()
@@ -728,14 +824,12 @@ class CadController:
             action.setToolTip(f"{action.text()} ({key}) - sketch lines" if key else f"{action.text()} - sketch lines")
             mbar.addAction(action)
         self.modify_toolbar = mbar
-        connections = tools.addMenu("Connections")
-        self.connect_action = add(connections, "Connect Belts", self.connect_selected, "Ctrl+J")
-        add(connections, "Fillet Belts...", self.fillet_selected, "Ctrl+Shift+F")
-        self.disconnect_action = add(connections, "Disconnect Belts", self.disconnect_selected, "Ctrl+Shift+J")
-        connections.addSeparator()
-        add(connections, "Solve Connections", self.solve_all, "F6")
-        tools.addSeparator()
-        self.check_action = add(tools, "Check Layout", self.run_check, "F7")
+        # Background: placement and the drawing's settings (row 1, after File).
+        bgbar = QToolBar("Background", w)
+        bgbar.setObjectName("backgroundToolbar")
+        for action in (self.place_bg_action, self.bg_settings_action, self.crop_bg_action, self.remove_bg_action):
+            bgbar.addAction(action)
+        self.background_toolbar = bgbar
 
         view = w.menuBar().addMenu("View")
         self.view_menu = view
@@ -966,6 +1060,16 @@ class CadController:
         after = bg.model_copy(update={"path": stored})
         self._push("Use cropped background", [BackgroundCommand(self, bg.model_copy(), after, "Background")])
         self._status(f"Background is now {stored} ({len(self._background_shapes):,} entities).")
+
+    def move_background(self, dx: float, dy: float, text: str = "Place background"):
+        """Shift the background drawing by (dx, dy) metres - one undo step."""
+        bg = self.config.background
+        if bg is None or (abs(dx) < 1e-12 and abs(dy) < 1e-12):
+            return
+        after = bg.model_copy(update={"offsetX": bg.offsetX + dx, "offsetY": bg.offsetY + dy})
+        self._push(text, [BackgroundCommand(self, bg.model_copy(), after, "Background")])
+        self._status(f"Background moved by ({dx:.4g}, {dy:.4g}) m; offset now ({after.offsetX:.4g}, "
+                     f"{after.offsetY:.4g}) m.")
 
     def remove_background(self):
         if self.config.background is None:

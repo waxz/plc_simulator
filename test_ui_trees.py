@@ -139,20 +139,24 @@ class EditorTreesTest(unittest.TestCase):
         return menu
 
     def test_menus_are_grouped_and_keep_their_shortcuts(self):
-        sketch = {a.text(): a.shortcut().toString() for a in self.menu("Tools", "Sketch").actions() if a.text()}
-        self.assertEqual(sketch["Line"], "S")
-        self.assertEqual(sketch["Polygon"], "Shift+G")
-        belts = {a.text(): a.shortcut().toString() for a in self.menu("Tools", "Belts").actions()}
-        self.assertEqual(belts["Belt from Sketch/Drawing"], "B")
-        connections = [a.text() for a in self.menu("Tools", "Connections").actions() if a.text()]
-        self.assertEqual(connections, ["Connect Belts", "Fillet Belts...", "Disconnect Belts", "Solve Connections"])
+        tools = self.menu("Tools")
+        self.assertFalse([a for a in tools.actions() if a.menu() is not None], "Tools has no sub-menus")
+        sections = [a.text() for a in tools.actions() if a.isSeparator() and a.text()]
+        self.assertEqual(sections, ["Sketch", "Modify", "Belts", "Connections"])
+        keys = {a.text(): a.shortcut().toString() for a in tools.actions() if a.text() and not a.isSeparator()}
+        self.assertEqual(keys["Line"], "S")
+        self.assertEqual(keys["Polygon"], "Shift+G")
+        self.assertEqual(keys["Belt from Sketch/Drawing"], "B")
+        self.assertEqual(keys["Trim"], "T")
+        for name in ("Connect Belts", "Fillet Belts...", "Disconnect Belts", "Solve Connections"):
+            self.assertIn(name, keys)
+        self.assertEqual(keys["Check Layout"], "F7")
         background = [a.text() for a in self.menu("File", "Background (DXF)").actions() if a.text()]
         self.assertIn("Import DXF Background...", background)
+        self.assertIn("Place Background", background)
         panels = [a.text() for a in self.menu("View", "Panels").actions() if a.text()]
         for dock in ("Component Library", "Component Manager", "Properties", "Layout Check"):
             self.assertIn(dock, panels)
-        check = next(a for a in self.menu("Tools").actions() if a.text() == "Check Layout")
-        self.assertEqual(check.shortcut(), QKeySequence("F7"))
 
 
 class SimulatorTreesTest(unittest.TestCase):

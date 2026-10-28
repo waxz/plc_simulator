@@ -271,10 +271,11 @@ class EditorWorkflowTest(unittest.TestCase):
         QTest.mouseClick(button(file_bar, "Save"), Qt.LeftButton)
         self.assertTrue(self.window.undo_stack.isClean())
         self.assertEqual(len(load_config(self.path).sketch), 1)
-        # Layout group on the sketch row.
+        # Connections on the sketch row, Fit / Ports on the View bar.
         bar = self.window.findChild(QToolBar, "sketchToolbar")
-        for name in ("Connect", "Disconnect", "Check", "Ports", "Fit"):
+        for name in ("Connect", "Fillet Belts", "Disconnect", "Solve", "Check"):
             self.assertIn(name, [a.iconText() for a in bar.actions()])
+        bar = self.window.findChild(QToolBar, "viewToolbar")
         ports = next(a for a in bar.actions() if a.iconText() == "Ports")
         QTest.mouseClick(bar.widgetForAction(ports), Qt.LeftButton)
         self.assertTrue(ports.isChecked() and self.cad.ports.visible)

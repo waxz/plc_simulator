@@ -74,7 +74,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
-from PySide6.QtCore import Qt, QPointF, QMimeData, QRectF, QTimer
+from PySide6.QtCore import Qt, QPointF, QMimeData, QRectF, QSize, QTimer
 from PySide6.QtGui import (
     QBrush, QColor, QPen, QPainter, QPainterPath, QDrag, QPolygonF, QTransform, QKeySequence, QAction,
     QUndoStack, QUndoCommand, QFont, QFontMetricsF, QIcon, QPixmap, QActionGroup,
@@ -4168,6 +4168,8 @@ class MainWindow(QMainWindow):
         # (see CanvasView.mousePressEvent) for anyone who'd rather not
         # switch tools at all.
         view_toolbar = QToolBar("View", self)
+        view_toolbar.setObjectName("viewToolbar")
+        self.view_toolbar = view_toolbar
         self.addToolBar(view_toolbar)
         self.pan_action = QAction("Pan Tool", self)
         self.pan_action.setCheckable(True)
@@ -4195,7 +4197,7 @@ class MainWindow(QMainWindow):
         self.pan_action.toggled.connect(lambda checked: self.measure_action.setChecked(False) if checked else None)
         view_toolbar.addAction(self.measure_action)
 
-        clear_measure_action = QAction("Clear Measurements", self)
+        self.clear_measure_action = clear_measure_action = QAction("Clear Measurements", self)
         clear_measure_action.setToolTip("Remove all marker points/lines drawn by the measure tool.")
         clear_measure_action.triggered.connect(self.scene.clear_measurements)
         view_toolbar.addAction(clear_measure_action)
@@ -4204,7 +4206,7 @@ class MainWindow(QMainWindow):
         sim_toolbar = QToolBar("Simulation", self)
         sim_toolbar.setObjectName("simToolbar")
         self.addToolBar(sim_toolbar)
-        self.run_sim_action = QAction("\u25b6  Run in Simulator", self)
+        self.run_sim_action = QAction("Run in Simulator", self)
         self.run_sim_action.setShortcut("F5")
         self.run_sim_action.setToolTip("Save the layout and open it in the simulator window (F5)")
         self.run_sim_action.triggered.connect(self.run_simulation)
@@ -4267,6 +4269,8 @@ class MainWindow(QMainWindow):
         self.view.viewport().update()
         if getattr(self, "properties_panel", None) is not None:
             self.properties_panel._on_selection_changed()
+        if getattr(self, "icons", None) is not None:
+            self.icons.refresh()
         self._sync_theme_controls()
 
     def _sync_theme_controls(self):
@@ -4333,10 +4337,12 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def _build_quick_access(self, first_toolbar):
-        """The commands used all the time, one click away - the menus' own
-        actions (same shortcuts, same enabled state): a File group in front
-        of row 1, a Layout group after the belt tools on row 2. The rest
-        (Save As, background settings, theme, panels) stays in the menus."""
+        """Every command one click away, as icon buttons with a tooltip
+        (name + shortcut) - the menus' own actions, so the shortcuts and the
+        enabled state are shared. Row 1: File, Background, View, Simulation;
+        row 2: Sketch, Belts, Connections; left: Modify; bottom: the active
+        tool's options. Icons: toolbar_icons.py, redrawn on a theme change."""
+        from toolbar_icons import IconBinder
         cad = self.cad
         fit = QAction("Zoom to Fit", self)
         fit.setShortcut(QKeySequence("Z"))
@@ -4353,12 +4359,12 @@ class MainWindow(QMainWindow):
         file_bar.setObjectName("fileToolbar")
         self.insertToolBar(first_toolbar, file_bar)
         for entry in ((self.open_action, "Open", "Open a layout"),
-                                  (self.save_action, "Save", "Save the layout"),
-                                  None,
-                                  (self.undo_action, "Undo", "Undo"),
-                                  (self.redo_action, "Redo", "Redo"),
-                                  None,
-                                  (cad.import_bg_action, "Import DXF", "Import a DXF drawing as the background"),
+                      (self.save_action, "Save", "Save the layout"),
+                      None,
+                      (self.undo_action, "Undo", "Undo"),
+                      (self.redo_action, "Redo", "Redo"),
+                      None,
+                      (cad.import_bg_action, "Import DXF", "Import a DXF drawing as the background"),
                       (cad.export_dxf_action, "Export DXF", "Export the layout (and its drawing) as DXF")):
             if entry is None:
                 file_bar.addSeparator()
@@ -4371,17 +4377,33 @@ class MainWindow(QMainWindow):
             else:
                 describe(action, text, tip)
             file_bar.addAction(action)
+        cad.background_toolbar.setParent(self)
+        self.insertToolBar(first_toolbar, cad.background_toolbar)
 
-        bar = cad.sketch_toolbar
-        bar.addSeparator()
-        bar.addWidget(QLabel("  Layout "))
-        for action, text, tip in ((cad.connect_action, "Connect", "Connect the two selected belts"),
-                                  (cad.disconnect_action, "Disconnect", "Disconnect the selected belts"),
-                                  (cad.check_action, "Check", "Check the layout: overlaps, gaps, broken connections"),
-                                  (cad.show_ports_action, "Ports", "Show belt inlets / outlets"),
-                                  (fit, "Fit", "Zoom to fit the whole layout")):
-            describe(action, text, tip)
-            bar.addAction(action)
+        describe(self.pan_action, "Pan", "Pan the view - left-drag pans; middle-drag always does")
+        describe(self.measure_action, "Measure", "Measure: click a point, then another for length and angle")
+        describe(self.clear_measure_action, "Clear Measurements", "Clear the measurements")
+        describe(cad.show_ports_action, "Ports", "Show belt inlets / outlets")
+        describe(fit, "Fit", "Zoom to fit the whole layout")
+        first_toolbar.addSeparator()
+        first_toolbar.addAction(fit)
+        first_toolbar.addAction(cad.show_ports_action)
+        describe(self.run_sim_action, "Run", "Save the layout and run it in the simulator")
+
+        self.icons = IconBinder()
+        for action, name in ((self.open_action, "open"), (self.save_action, "save"), (self.undo_action, "undo"),
+                             (self.redo_action, "redo"), (cad.import_bg_action, "import_dxf"),
+                             (cad.export_dxf_action, "export_dxf"), (self.pan_action, "pan"),
+                             (self.measure_action, "measure"), (self.clear_measure_action, "clear_measure"),
+                             (fit, "fit"), (cad.show_ports_action, "ports"), (self.run_sim_action, "run"),
+                             (self.theme_action, "theme")):
+            self.icons.bind(action, name)
+        for action, name, _label in cad.icon_names:
+            self.icons.bind(action, name)
+        for bar in self.findChildren(QToolBar):
+            if bar is not cad.draw_toolbar:
+                bar.setToolButtonStyle(Qt.ToolButtonIconOnly)
+                bar.setIconSize(QSize(22, 22))
 
     def _frame_all_items(self):
         rect = self.scene.itemsBoundingRect()

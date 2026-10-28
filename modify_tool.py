@@ -18,6 +18,8 @@ undo step (SketchCommand).
                   the factor's distance, or type the factor; Mirror: two
                   points of the mirror line, tool bar Keep originals)
   Join (J) / Explode (X)   the selected sketch lines, at once
+  Place Background (Shift+B)   move the imported DXF drawing: its anchor
+                  point, then where it goes
 """
 import math
 from typing import List, Optional, Sequence, Tuple
@@ -486,3 +488,52 @@ class ScaleTool(_NumberAfterBaseTool):
     def transform(self, shape, points):
         (cx, cy), (x, y) = points[:2]
         return modify.scale(shape, (cx, cy), math.hypot(x - cx, y - cy))
+
+
+class PlaceBackgroundTool(_ModifyTool):
+    """Place Background (Shift+B): click the anchor point on the imported
+    drawing (snaps to its corners, ends, centres), then where that point
+    goes (snaps to the layout and sketch, or type x,y / @dx,dy). The drawing
+    follows the cursor; the drop moves BackgroundDrawing.offsetX/Y - one
+    undo step."""
+
+    title = "Place Background"
+    hint = ("Place Background: click the anchor point on the drawing (OSNAP), then where it goes "
+            "(x,y or @dx,dy). Esc to cancel.")
+
+    def start(self):
+        if self.cad.background_item is None:
+            self._status("Place Background: import a DXF background first (File > Background).", 6000)
+            return
+        super().start()
+
+    def stop(self):
+        super().stop()
+        if self.cad.background_item is not None:
+            self.cad.background_item.setPos(0, 0)
+        self.cad._refresh_snap_shapes()
+
+    def add_anchor(self, p):
+        super().add_anchor(p)
+        if len(self.anchors) == 1:
+            # Where it goes: the layout and sketch, not the drawing being moved.
+            self.snapper.set_background_shapes(list(self.cad.config.sketch))
+            self._status("Place Background: click (or type) where the anchor point goes. Esc to cancel.")
+            return
+        (x0, y0), (x1, y1) = self.anchors[:2]
+        self.stop()
+        self.cad.move_background(x1 - x0, y1 - y0)
+
+    def _update_preview(self):
+        self._clear_preview()
+        if not self.active:
+            return
+        if self.anchors and self.cursor is not None:
+            (x0, y0), (x1, y1) = self.anchors[0], self.cursor
+            self.cad.background_item.setPos(self.to_scene(x1 - x0, y1 - y0) - self.to_scene(0, 0))
+            line = QPainterPath()
+            line.moveTo(self.to_scene(x0, y0))
+            line.lineTo(self.to_scene(x1, y1))
+            self._add_preview(QGraphicsPathItem(line)).setPen(QPen(QColor(148, 163, 184), 0, Qt.DotLine))
+        self._draw_anchor_markers()
+        self._draw_snap_marker()
