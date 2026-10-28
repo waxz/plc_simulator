@@ -210,7 +210,7 @@ The Qt layout editor is where belt shapes and positions are designed:
 | File > Import DXF Background... | | Floor plan as a locked background, via a dialog: units (prefilled from `$INSUNITS`, cross-checked against the drawing's dimensions), import only a window or one sheet of a drawing set, place it at the origin, leave out dimensions / hatches / leaders / layers | ezdxf |
 | File > Background Settings... | | Change the background's units, window, offset and layers later (undoable) | ezdxf |
 | File > Background (DXF) > Export Cropped DXF... | | Write the background's window, without what is left out, as a small DXF and optionally switch the background to it (undoable) | ezdxf |
-| File > Export DXF... | | Layout in metres, one layer per kind (BELTS, BELT_CENTERLINES, FLOW, SENSORS, ...) | ezdxf |
+| File > Export DXF... | | Layout in metres, one layer per kind (BELTS, BELT_CENTERLINES, FLOW, SENSORS, ...), with the background drawing as placed (window, filters, scale, offset) on BACKGROUND. Curved belt outlines keep true arcs, so a CAD tool - or a reimport - sees arcs; `test_dxf_workflow.py` checks the whole round trip (import, crop, draw, export, reimport, rebuild each belt from its outline) | ezdxf |
 | View > Show Ports | | Inlet (green ring), outlet (orange arrow), connection (cyan ring; red = broken) | |
 
 ### CAD workflow: sketch (or import), then connect into belts

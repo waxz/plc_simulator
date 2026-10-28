@@ -773,7 +773,7 @@ class CadController:
         if not path:
             return
         try:
-            dxf_io.export_layout(self.window._build_export_config(), path)
+            dxf_io.export_layout(self.window._build_export_config(), path, background=self._background_shapes)
         except OSError as exc:
             self._error("Export DXF", f"Could not write {path}:\n{exc}")
             return

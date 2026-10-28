@@ -224,8 +224,16 @@ class DrawingPicker:
 
 def polygon_vertices(polygon, tolerance: float = 1e-6) -> List[Tuple[float, float]]:
     """Exterior vertices of a picked area, without the repeated closing point
-    and without collinear in-between points that noding adds."""
-    coords = list(polygon.exterior.coords)[:-1]
+    and without collinear in-between points that noding adds. Points closer
+    than `tolerance` (rounding noise where two shapes meet, e.g. 40.6 and
+    40.599999999999994) are merged first - otherwise a corner next to its
+    own near-copy looks collinear and is dropped with it."""
+    coords = []
+    for p in list(polygon.exterior.coords)[:-1]:
+        if not coords or math.hypot(p[0] - coords[-1][0], p[1] - coords[-1][1]) > tolerance:
+            coords.append(p)
+    while len(coords) > 1 and math.hypot(coords[0][0] - coords[-1][0], coords[0][1] - coords[-1][1]) <= tolerance:
+        coords.pop()
     out = []
     n = len(coords)
     for i in range(n):

@@ -21,6 +21,7 @@ from PySide6.QtWidgets import QApplication, QDialog  # noqa: E402
 
 from cad import dxf_io, path as cpath  # noqa: E402
 from cad.belts import default_flow_heading, outline_belt  # noqa: E402
+from cad.checks import belt_footprint  # noqa: E402
 from cad.dxf_io import DrawingShape  # noqa: E402
 from cad.snap import DrawingPicker, SnapIndex, chain_from, polygon_vertices  # noqa: E402
 from config_parser import SimulatorConfig, SketchEntity, load_config  # noqa: E402
@@ -42,6 +43,16 @@ class CoreGeometryTest(unittest.TestCase):
         self.assertAlmostEqual(cpath.three_point_bulge((0, 0), (2, 0), (1, -1)), 1.0)    # CCW semicircle
         self.assertAlmostEqual(cpath.three_point_bulge((0, 0), (2, 0), (1, 1)), -1.0)    # CW semicircle
         self.assertEqual(cpath.three_point_bulge((0, 0), (2, 0), (1, 0)), 0.0)          # collinear
+
+    def test_area_corners_survive_rounding_noise(self):
+        # Where a neighbouring outline starts, the picked area can carry a
+        # near-copy of a corner (40.6 vs 40.599999999999994): still 4 corners.
+        from shapely.geometry import Polygon
+        area = Polygon([(127.0, 39.4), (70.0, 39.4), (70.0, 40.6), (127.0, 40.6),
+                        (127.0, 40.599999999999994), (126.99999999999999, 40.599999999999994)])
+        self.assertEqual(polygon_vertices(area), [(127.0, 39.4), (70.0, 39.4), (70.0, 40.6), (127.0, 40.6)])
+        belt = outline_belt("b", polygon_vertices(area))
+        self.assertAlmostEqual(belt_footprint(belt).area, 57 * 1.2, places=6)
 
     def test_reversing_a_polyline_keeps_its_shape(self):
         pts, bul = [(0, 0), (4, 0), (6, 2)], [0.0, math.tan(math.pi / 8), 0.0]

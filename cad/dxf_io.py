@@ -11,7 +11,8 @@ inspect_drawing(path)  - what the import dialog needs: header units checked
                          against the dimensions, layers, paper sheets found
                          in modelspace, and a quick preview.
 export_layout(config, path) - write the layout as a DXF in metres, one layer
-                         per component kind, for CAD / documentation.
+                         per component kind, for CAD / documentation; with
+                         the background drawing (as placed) on BACKGROUND.
 export_cropped(src, dst, clip, ...) - write one window of a big drawing (with
                          the same filters as the background) as a small DXF:
                          blocks expanded, edges cut at the window, same units,
@@ -58,6 +59,7 @@ LAYERS = {
     "CONNECTIONS": (140, "belt connections"),
     "LABELS": (7, "component ids"),
     "SKETCH": (4, "construction geometry"),
+    "BACKGROUND": (8, "the imported floor plan, as placed in the layout"),
 }
 
 
@@ -789,16 +791,53 @@ def _add_arrow(msp, x: float, y: float, heading: float, size: float) -> None:
     msp.add_lwpolyline([left, tip, right], dxfattribs={"layer": "FLOW"})
 
 
-def export_layout(config: SimulatorConfig, path: str) -> None:
+def _curved_outline(msp, belt) -> None:
+    """A curved belt's outline with true arcs (outer arc, radial edge, inner
+    arc back, radial edge), so CAD tools - and a reimport - see arcs, not a
+    flattened polygon. A full ring is two circles; a disc / sector with no
+    inner radius closes at the center."""
+    start, end = arc_angles(belt)
+    sweep = end - start
+    r_out = belt.radius + belt.beltWidth / 2.0
+    r_in = max(0.0, belt.radius - belt.beltWidth / 2.0)
+    cx, cy = belt.x, belt.y
+    attribs = {"layer": "BELTS"}
+
+    def at(r, deg):
+        return cx + r * math.cos(math.radians(deg)), cy + r * math.sin(math.radians(deg))
+    if sweep >= 360.0 - 1e-9:
+        for r in (r_out, r_in):
+            if r > 1e-9:
+                msp.add_circle((cx, cy), r, dxfattribs=attribs)
+        return
+    b = math.tan(math.radians(sweep) / 4.0)
+    if r_in <= 1e-9:
+        pts = [(*at(r_out, start), b), (*at(r_out, end), 0.0), (cx, cy, 0.0)]
+    else:
+        pts = [(*at(r_out, start), b), (*at(r_out, end), 0.0), (*at(r_in, end), -b), (*at(r_in, start), 0.0)]
+    msp.add_lwpolyline(pts, format="xyb", close=True, dxfattribs=attribs)
+
+
+def export_layout(config: SimulatorConfig, path: str, background: Iterable[DrawingShape] = ()) -> None:
+    """`background`: the background drawing's shapes in layout metres (as
+    the editor shows them: window, filters, scale and offset applied)."""
     doc = ezdxf.new("R2010", setup=True)
     doc.units = units.M
     for name, (color, description) in LAYERS.items():
         doc.layers.add(name, color=color).description = description
     msp = doc.modelspace()
 
+    for shape in background:
+        bulges = list(shape.bulges) + [0.0] * (len(shape.points) - len(shape.bulges))
+        msp.add_lwpolyline([(x, y, b) for (x, y), b in zip(shape.points, bulges)], format="xyb",
+                           close=shape.closed, dxfattribs={"layer": "BACKGROUND"})
+
     for belt in config.belts:
-        outline = list(belt_footprint(belt).exterior.coords)
-        msp.add_lwpolyline(outline, close=True, dxfattribs={"layer": "BELTS"})
+        if belt.type == "curved":
+            _curved_outline(msp, belt)
+        else:
+            outline = list(belt_footprint(belt).exterior.coords)
+            msp.add_lwpolyline(outline, close=True, dxfattribs={"layer": "BELTS"})
         if belt.type == "path":
             # Native DXF polyline with bulges: exact arcs, editable in any CAD tool.
             pts, bulges = belt_world_path(belt)
