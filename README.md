@@ -86,7 +86,13 @@ The Python simulation runs as a standalone process that:
   PLC program in `plc_logic.py` (Start/Stop buttons, parcel tracking, jam
   detection, belt speeds, LEDs) and reports its own measured performance as
   metrics - useful for exercising the Live Data tab below without real PLC
-  hardware.
+  hardware. Per-line control with feeder merges for multi-line layouts;
+  `--bridge` also reports to the Foxglove middleware.
+- `plc_foxglove_bridge.py` - Middleware: TCP server for the PLC's raw binary
+  frames, decoded with the layout and published as JSON on a Foxglove
+  WebSocket server (see "PLC data in Foxglove").
+- `foxglove_ws_probe.py` - A minimal Foxglove WebSocket client (standard
+  library) that prints what a Foxglove server publishes.
 
 **Tests**
 - `test_*.py` - One file per module above (`unittest`-based). Run the whole suite
@@ -506,17 +512,107 @@ performance as metrics for the web dashboard:
 python plc_mock.py test_config.json
 ```
 
-The PLC program, every `--scan` (default 50 ms):
+The PLC program runs every `--scan` (default 50 ms). Which one depends on
+the layout (`plc_logic.make_controller`, printed as `[PLC] Program: ...`):
+
+**Line control** (`LineController`) for a layout with several lines - lines
+are found from the names: labels like `L2 START` / `L2 BANNER`, or ids like
+`belt_1_2_3` (station 1, line 2). `test_config.json` has a main line L1 to
+the outfeed and feeders L2 and L3 merging into it, each with its own panel.
+- **Per line**: START / STOP / RESET act on that line only. A feeder can only
+  start while the line it feeds runs ("start L1 first").
+- **Merging**: a feeder brings parcels up to its end sensor (the one nearest
+  the main line) and **holds** them there - its belts stop - while the main
+  line is stopped, jammed or faulted, or while the main line's sensor at the
+  merge sees a parcel (the main line has priority). The hold latches (a
+  parcel coasting past the sensor doesn't release it) and releases on its
+  own when the main line moves and the merge is free. A held parcel is not a
+  jam. Routine give-ways are counted (`L2 RUN (gave way 5x)`), not logged.
+- **Jams and faults** stop only their line: a sensor blocked longer than
+  `--jam-time` (default 5 s) while its line moves, or a tripped drive. Clear
+  the parcel, then RESET and START.
+- **Lamps** per line, by label: AUTO/RUN/OK = running, MANUAL/STOP/IDLE =
+  stopped, ERROR/JAM/FAULT/ALARM = jam or drive fault, HOLD (if there is
+  one) = holding at the merge.
+
+**One line** (`DeliveryController`) otherwise:
 - **Buttons** by label: START runs the belts, STOP stops them, RESET clears a
   jam (unlabelled: one button toggles; with two, the first starts and the
   second stops).
 - **Sensors**: every parcel passing a sensor is counted; the sensor nearest a
-  sink counts deliveries. A sensor blocked longer than `--jam-time`
-  (default 5 s) is a jam: belts stop until the parcel is gone and Start or
-  Reset is pressed.
+  sink counts deliveries. A sensor blocked longer than `--jam-time` is a jam:
+  belts stop until the parcel is gone and Start or Reset is pressed.
 - **Belts** run at their speed from the layout file (1 m/s where it is 0)
   while running. **LEDs** by label: RUN (else the first LED) shows running,
-  JAM/FAULT/ALARM (else the second) a jam. `--autostart` runs without Start.
+  JAM/FAULT/ALARM (else the second) a jam.
+
+Both: `--autostart` runs without pressing Start; belts run at their design
+speed from the layout file (1 m/s where it is 0).
+
+### PLC data in Foxglove (middleware)
+
+`plc_foxglove_bridge.py` is a TCP server for the PLC: it receives the PLC's
+raw binary frames (the same framing as the simulator link), decodes them
+with the PLC's I/O layout (the layout JSON) and publishes JSON messages on a
+[Foxglove](https://foxglove.dev) WebSocket server (`foxglove-sdk`), so you can
+plot and inspect the PLC live.
+
+```
+simulator (main.py) <--TCP 5001--> PLC (plc_mock.py / AX PLC) --TCP 5002--> plc_foxglove_bridge.py --ws 8765--> Foxglove
+```
+
+| Topic | Content |
+|---|---|
+| `/plc/outputs` | per belt `speed`, `run`, `moving` (`reverse` for VFD belts); per lamp `on` + label |
+| `/plc/inputs` | per sensor `blocked` (+ `beams`, `beams_blocked` for a laser banner); per button `pressed` (an NC contact already inverted); `image_age_ms` |
+| `/plc/lines` | per line `state` RUN / HOLD / STOP / ERROR (`state_code` 2 / 1 / 0 / 3 for plots), `belts_moving`, `sensors_blocked` |
+| `/plc/metrics/<layout>` | the PLC's metric frames (scan time, cycle time, ...) by group |
+| `/plc/events` | `foxglove.Log`: layout check, line state changes, PLC sending / quiet |
+| `/bridge/stats` | frames per type and node, frames/s, bytes, malformed frames, layout check per node |
+
+Frames from the PLC (frame type byte in the header): `IO_MAPPING` = its
+output image, `INPUT_IMAGE` (8) = the input image it works on (same layout
+as the simulator's input frame), `METRIC_LAYOUT_n` = metrics, `LAYOUT_CHECK`
+= answered like the simulator does. A real PLC sends its output STRUCT and
+input STRUCT with frame types 1 and 8 (`python io_layout.py <layout> --st`
+prints them).
+
+**Run it** - in this order, each in its own terminal (PowerShell or bash):
+
+```bash
+# 1. the middleware: TCP 5002 for the PLC, Foxglove WebSocket on 8765
+python plc_foxglove_bridge.py test_config.json --exchange-config tcp_exchange_config.json
+```
+
+```bash
+# 2. the mock PLC, reporting to the middleware (no simulator needed: it keeps scanning)
+python plc_mock.py test_config.json --exchange-config tcp_exchange_config.json --bridge 127.0.0.1:5002 --autostart
+```
+
+```bash
+# 3. optional: the simulator, so sensors and buttons are live (start it before or after the PLC)
+python main.py test_config.json --exchange-config tcp_exchange_config.json
+```
+
+Then in Foxglove: **Open connection** -> **Foxglove WebSocket** ->
+`ws://localhost:8765`. Useful panels: **Plot** with
+`/plc/lines.lines.L2.state_code`, `/plc/outputs.belts.belt_1_1_1.speed` or
+`/plc/inputs.sensors.sensor_1_2_1.beams_blocked`; **State Transitions** with
+`/plc/lines.lines.L1.state`; **Raw Messages** on any topic; **Log** on
+`/plc/events`.
+
+Without Foxglove, `foxglove_ws_probe.py` connects like Foxglove does and
+prints what is published:
+
+```bash
+python foxglove_ws_probe.py ws://127.0.0.1:8765 --topic /plc/lines --seconds 5
+```
+
+Options: `plc_foxglove_bridge.py --listen 0.0.0.0:5002 --foxglove 127.0.0.1:8765`
+(use `--foxglove 0.0.0.0:8765` to reach it from another machine);
+`plc_mock.py --bridge HOST:PORT --bridge-interval 0.1 --node-id N`. On Git
+Bash, topics starting with `/` are rewritten as paths before Python sees
+them; the probe copes, or write `--topic plc/lines`.
 
 ### I/O frame layout
 

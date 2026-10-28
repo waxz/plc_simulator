@@ -16,4 +16,5 @@ dependencies = [
     "ezdxf>=1.4.5",
     "shapely>=2.2.0",
     "planegcs>=0.9.6",
+    "foxglove-sdk>=0.30.3",
 ]

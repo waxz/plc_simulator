@@ -32,8 +32,14 @@ Behaviour, once per scan (step()):
     drive fault.
 
 step() returns the events of that scan as text, for logs.
+
+LineController (below) does the same per line for layouts with several
+lines - a main line and feeders merging into it, each with its own panel -
+and holds feeder parcels at the merge; make_controller() picks the one that
+fits a layout.
 """
 import math
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
@@ -244,3 +250,324 @@ class DeliveryController:
         else:
             state = "RUN" if self.running else "STOP"
         return f"{state} | parcels: {counts} | delivered {self.delivered}"
+
+
+# ---------------------------------------------------------------------------
+# Line control: several conveyor lines in one layout
+# ---------------------------------------------------------------------------
+#
+# A plant layout usually has more than one line: a main line to the outfeed
+# and feeder lines merging into it, each with its own operator panel (START /
+# STOP / RESET buttons, AUTO / MANUAL / ERROR lamps) and sensors. Lines are
+# found from the names: a label like "L2 START" / "L2 BANNER", or an id like
+# belt_1_2_3 (station 1, line 2, item 3).
+#
+# LineController, once per scan:
+#   per line   START / STOP / RESET act on that line only; a jam (a sensor
+#              blocked longer than jam_time) or a drive fault stops that line.
+#   main line  the line that reaches a sink. Feeders can only be started while
+#              it runs.
+#   merging    a feeder brings its parcels up to its end sensor (the one nearest
+#              the main line) and HOLDS them there - its belts stop - while the
+#              main line isn't moving parcels (stopped, jammed, fault) or while
+#              the main line's merge sensor sees a parcel (the main line has
+#              priority at the merge). The hold latches (a parcel coasting past
+#              the sensor doesn't release it) and releases on its own once the
+#              main line moves and the merge is free. A held parcel is not a jam.
+#   lamps      AUTO/RUN/OK/GREEN = running, MANUAL/STOP/IDLE = stopped without
+#              an error, ERROR/JAM/FAULT/ALARM = jam or drive fault, HOLD (if a
+#              lamp is named so) = holding at the merge.
+
+_LINE_LABEL = re.compile(r"\bL(\d+)\b", re.IGNORECASE)
+_LINE_ID = re.compile(r"_(\d+)_(\d+)_\d+$")
+DELIVERY_SENSOR_RANGE = 5.0  # m: a main-line sensor this close to a sink counts deliveries
+MERGE_SENSOR_RANGE = 8.0  # m: a main-line sensor this close to a feeder's end sensor watches the merge
+
+
+def line_of(component) -> Optional[str]:
+    """"L<n>" from a label like "L2 START", else from an id like belt_1_2_3."""
+    label = getattr(component, "label", "") or ""
+    m = _LINE_LABEL.search(label)
+    if m:
+        return f"L{int(m.group(1))}"
+    m = _LINE_ID.search(component.id)
+    return f"L{int(m.group(2))}" if m else None
+
+
+def find_lines(config: SimulatorConfig) -> Dict[str, Dict[str, list]]:
+    """{line: {"belts": [...], "sensors": [...], "buttons": [...], "leds": [...]}}
+    for every line named in the layout."""
+    lines: Dict[str, Dict[str, list]] = {}
+    for kind in ("belts", "sensors", "buttons", "leds"):
+        for component in getattr(config, kind):
+            key = line_of(component)
+            if key is not None:
+                lines.setdefault(key, {"belts": [], "sensors": [], "buttons": [], "leds": []})[kind].append(component)
+    return dict(sorted(lines.items(), key=lambda kv: int(kv[0][1:])))
+
+
+@dataclass
+class Line:
+    name: str
+    belts: list
+    sensors: list
+    buttons: list
+    leds: list
+    running: bool = False
+    jammed: Optional[str] = None
+    faulted: Set[str] = field(default_factory=set)
+    holding: bool = False
+    yields: int = 0                        # feeder: times it gave way to a parcel on the main line
+    hold_logged: bool = False              # feeder: its current hold was reported (main line not moving)
+    feeds: Optional[str] = None            # the line it merges into (feeders)
+    hold_sensor: Optional[str] = None      # feeder: its end sensor, where parcels wait
+    merge_sensor: Optional[str] = None     # feeder: the main line's sensor at the merge
+
+    @property
+    def state(self) -> str:
+        if self.faulted:
+            return "FAULT"
+        if self.jammed:
+            return "JAM"
+        if not self.running:
+            return "STOP"
+        return "HOLD" if self.holding else "RUN"
+
+    @property
+    def moving(self) -> bool:
+        """Its belts run (parcels move on it)."""
+        return self.running and not self.jammed and not self.faulted and not self.holding
+
+
+def _distance_to_belts(x: float, y: float, belts) -> float:
+    return min((math.hypot(b.x - x, b.y - y) for b in belts), default=math.inf)
+
+
+class LineController:
+    """Per-line control with feeder merges - see the comment above. Same
+    interface as DeliveryController (step / roles / summary / speeds)."""
+
+    def __init__(self, config: SimulatorConfig, jam_time: float = 5.0, autostart: bool = False):
+        self.config = config
+        self.jam_time = jam_time
+        self.delivered = 0
+        groups = find_lines(config)
+        if not groups:
+            raise ValueError("No lines found (labels like 'L1 START' or ids like belt_1_1_1).")
+        self.lines: Dict[str, Line] = {name: Line(name, **parts) for name, parts in groups.items()}
+        self.main = self._main_line()
+        for line in self.lines.values():
+            if line.name != self.main.name:
+                self._plan_merge(line)
+        self.speeds = {b.id: _design_speed(b) for b in config.belts}
+        self.sensors = {s.id: SensorTrack() for s in config.sensors}
+        self.delivery_sensor = self._delivery_sensor()
+        self._pressed = {b.id: False for b in config.buttons}
+        for line in self.lines.values():
+            line.running = autostart
+        self._write_outputs()
+
+    # -- structure -----------------------------------------------------------------
+
+    def _main_line(self) -> Line:
+        """The line whose belts come nearest a sink (else the first line)."""
+        best, best_d = None, math.inf
+        for line in self.lines.values():
+            for sink in self.config.sinks:
+                d = _distance_to_belts(sink.x, sink.y, line.belts)
+                if d < best_d:
+                    best, best_d = line, d
+        return best or next(iter(self.lines.values()))
+
+    def _delivery_sensor(self) -> Optional[str]:
+        """A main-line sensor near a sink counts deliveries (none if there is no such sensor)."""
+        best, best_d = None, DELIVERY_SENSOR_RANGE
+        for sensor in self.main.sensors:
+            for sink in self.config.sinks:
+                d = math.hypot(sensor.x - sink.x, sensor.y - sink.y)
+                if d <= best_d:
+                    best, best_d = sensor.id, d
+        return best
+
+    def _plan_merge(self, feeder: Line):
+        feeder.feeds = self.main.name
+        if not feeder.sensors:
+            return
+        end = min(feeder.sensors, key=lambda s: _distance_to_belts(s.x, s.y, self.main.belts))
+        feeder.hold_sensor = end.id
+        near = [s for s in self.main.sensors if math.hypot(s.x - end.x, s.y - end.y) <= MERGE_SENSOR_RANGE]
+        if near:
+            feeder.merge_sensor = min(near, key=lambda s: math.hypot(s.x - end.x, s.y - end.y)).id
+
+    def line_of(self, component) -> Optional[Line]:
+        key = line_of(component)
+        return self.lines.get(key) if key else None
+
+    def roles(self) -> Dict[str, Optional[str]]:
+        out = {"main_line": self.main.name, "delivery_sensor": self.delivery_sensor}
+        for line in self.lines.values():
+            if line.feeds:
+                out[f"{line.name} merge"] = (f"into {line.feeds}, holds at {line.hold_sensor}"
+                                             + (f", yields to {line.merge_sensor}" if line.merge_sensor else ""))
+        return out
+
+    # -- the scan ------------------------------------------------------------------
+
+    def step(self, now: Optional[float] = None) -> List[str]:
+        now = time.monotonic() if now is None else now
+        events: List[str] = []
+        # Sensors and drives first, so a Reset pressed in the scan a jam
+        # clears sees the sensor clear.
+        self._sensors(now, events)
+        self._drive_faults(events)
+        self._buttons(events)
+        self._merges(events)
+        self._write_outputs()
+        return events
+
+    def _buttons(self, events: List[str]):
+        for button in self.config.buttons:
+            pressed = devices.is_pressed_signal(button, button.sensor_states)
+            edge = pressed and not self._pressed.get(button.id, False)
+            self._pressed[button.id] = pressed
+            if not edge:
+                continue
+            line = self.line_of(button)
+            text = f"{getattr(button, 'label', '')} {button.id}".lower()
+            targets = [line] if line is not None else list(self.lines.values())
+            for target in targets:
+                if "start" in text:
+                    self._clear_jam(target, button.id, events)
+                    self._start(target, button.id, events)
+                elif "stop" in text:
+                    self._stop(target, button.id, events)
+                elif "reset" in text or "ack" in text:
+                    self._clear_jam(target, button.id, events)
+                else:
+                    events.append(f"button {button.id} pressed")
+                    break
+
+    def _start(self, line: Line, by: str, events: List[str]):
+        if line.running:
+            return
+        if line.jammed is not None:
+            events.append(f"{line.name} ({by}): can't start, sensor {line.jammed} is still jammed")
+        elif line.faulted:
+            events.append(f"{line.name} ({by}): can't start, drive fault on {', '.join(sorted(line.faulted))}")
+        elif line.feeds and not self.lines[line.feeds].running:
+            events.append(f"{line.name} ({by}): can't start - start {line.feeds}, the line it feeds, first")
+        else:
+            line.running = True
+            events.append(f"{line.name} START ({by})")
+
+    def _stop(self, line: Line, by: str, events: List[str]):
+        if line.running:
+            line.running = False
+            events.append(f"{line.name} STOP ({by})")
+
+    def _clear_jam(self, line: Line, by: str, events: List[str]):
+        if line.jammed is None:
+            return
+        if self.sensors[line.jammed].occupied:
+            events.append(f"{line.name} ({by}): jam at {line.jammed} not cleared - remove the parcel first")
+            return
+        events.append(f"{line.name}: jam at {line.jammed} cleared ({by})")
+        line.jammed = None
+
+    def _sensors(self, now: float, events: List[str]):
+        for sensor in self.config.sensors:
+            track = self.sensors.setdefault(sensor.id, SensorTrack())
+            blocked = occupied(sensor)
+            if blocked and not track.occupied:
+                track.count += 1
+                track.since = now
+                if sensor.id == self.delivery_sensor:
+                    self.delivered += 1
+                    events.append(f"parcel at {sensor.id} (#{track.count}) - delivered {self.delivered}")
+                else:
+                    events.append(f"parcel at {sensor.id} (#{track.count})")
+            elif blocked and not self._moving_past(sensor):
+                track.since = now   # waiting on purpose (holding / stopped): not a jam
+            track.occupied = blocked
+            line = self.line_of(sensor)
+            if (line is not None and blocked and line.jammed is None and line.moving
+                    and now - track.since > self.jam_time):
+                line.jammed = sensor.id
+                events.append(f"{line.name} JAM at {sensor.id}: blocked for {now - track.since:.1f} s - line stopped")
+
+    def _moving_past(self, sensor) -> bool:
+        line = self.line_of(sensor)
+        return line is None or line.moving
+
+    def _drive_faults(self, events: List[str]):
+        for line in self.lines.values():
+            for belt in line.belts:
+                if belt.fault and belt.id not in line.faulted:
+                    line.faulted.add(belt.id)
+                    line.running = False
+                    events.append(f"{line.name} FAULT on {belt.id}: drive tripped - line stopped")
+                elif not belt.fault and belt.id in line.faulted:
+                    line.faulted.discard(belt.id)
+                    events.append(f"{line.name}: drive {belt.id} fault cleared - press Start")
+
+    def _merges(self, events: List[str]):
+        for line in self.lines.values():
+            if not line.feeds:
+                continue
+            target = self.lines[line.feeds]
+            at_merge = line.hold_sensor is not None and self.sensors[line.hold_sensor].occupied
+            busy = line.merge_sensor is not None and self.sensors[line.merge_sensor].occupied
+            # A hold latches: the parcel coasts on past the sensor while the
+            # belts run down, and must not be pushed on when the sensor clears -
+            # only when the main line moves and the merge is free again.
+            waiting = line.running and (at_merge or line.holding)
+            blocked_target = waiting and not target.moving
+            hold = blocked_target or (waiting and busy)
+            if hold == line.holding:
+                continue
+            line.holding = hold
+            # Giving way to a parcel at the merge is routine (counted, not logged);
+            # holding because the main line stopped is worth a line in the log.
+            if hold and not blocked_target:
+                line.yields += 1
+            elif hold:
+                events.append(f"{line.name} HOLD at {line.hold_sensor} ({target.name} {target.state.lower()})")
+            elif line.hold_logged:
+                events.append(f"{line.name} released into {target.name}")
+            line.hold_logged = hold and blocked_target
+
+    def _write_outputs(self):
+        for line in self.lines.values():
+            for belt in line.belts:
+                nominal = self.speeds.get(belt.id, DEFAULT_SPEED)
+                if belt.commandFormat == "vfd":
+                    belt.run = line.moving
+                    belt.reverse = nominal < 0
+                    belt.speed = abs(nominal)
+                else:
+                    belt.speed = nominal if line.moving else 0.0
+            for led in line.leds:
+                text = f"{getattr(led, 'label', '')} {led.id}".lower()
+                error = line.jammed is not None or bool(line.faulted)
+                if any(w in text for w in ("error", "jam", "fault", "alarm")):
+                    led.isOn = error
+                elif "hold" in text:
+                    led.isOn = line.holding
+                elif any(w in text for w in ("manual", "stop", "idle")):
+                    led.isOn = not line.running and not error
+                elif any(w in text for w in ("auto", "run", "ok", "green")):
+                    led.isOn = line.running and not error
+
+    def summary(self) -> str:
+        lines = " | ".join(f"{line.name} {line.state}" + (f" (gave way {line.yields}x)" if line.yields else "")
+                           for line in self.lines.values())
+        counts = ", ".join(f"{sid} {t.count}" for sid, t in self.sensors.items()) or "no sensors"
+        return f"{lines} | parcels: {counts} | delivered {self.delivered}"
+
+
+def make_controller(config: SimulatorConfig, jam_time: float = 5.0, autostart: bool = False):
+    """LineController for a layout with two or more lines, else the one-line
+    DeliveryController."""
+    if len(find_lines(config)) >= 2:
+        return LineController(config, jam_time=jam_time, autostart=autostart)
+    return DeliveryController(config, jam_time=jam_time, autostart=autostart)

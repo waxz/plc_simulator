@@ -16,15 +16,24 @@ header - see FrameType/ParsedFrame in tcp_framed_transport.py. Over MQTT
 there is no such header, so each layout is disambiguated by its own topic
 (metrics vs metric3); node id / frame type only apply to the TCP path.
 
-Control: every --scan seconds the PLC program in plc_logic.py
-(DeliveryController) runs on the latest inputs - Start/Stop/Reset buttons,
-parcel triggers on every sensor, jam detection - and the resulting belt
-speeds and LED states are sent back. It works with any layout: the I/O
-channels come from mqtt_data_exchange.io_topics(), the same function the
-simulator uses, so a layout designed in the editor needs no channel setup.
+Control: every --scan seconds the PLC program in plc_logic.py runs on the
+latest inputs and the resulting belt speeds and LED states are sent back -
+LineController for a layout with several lines (per-line Start/Stop/Reset,
+feeders holding parcels at the merge), else DeliveryController (one line).
+It works with any layout: the I/O channels come from
+mqtt_data_exchange.io_topics(), the same function the simulator uses, so a
+layout designed in the editor needs no channel setup.
+
+Monitoring: with --bridge HOST:PORT it also sends, over a second TCP
+connection, what a real PLC would report to the Foxglove middleware
+(plc_foxglove_bridge.py): its output image (IO_MAPPING), the input image it
+works on (INPUT_IMAGE), its metrics frames and a LAYOUT_CHECK. Without a
+simulator it keeps scanning (inputs stay as they are) as long as the bridge
+is there.
 
     python main.py my_layout.json --exchange-config tcp_exchange_config.json
-    python plc_mock.py my_layout.json --exchange-config tcp_exchange_config.json
+    python plc_foxglove_bridge.py my_layout.json
+    python plc_mock.py my_layout.json --exchange-config tcp_exchange_config.json --bridge 127.0.0.1:5002
 """
 import time
 import argparse
@@ -43,7 +52,7 @@ from mqtt_data_exchange import (
     apply_exchange_config,
     io_topics,
 )
-from plc_logic import DeliveryController
+from plc_logic import make_controller
 import io_layout
 from struct_utils import print_byte_by_byte
 from tcp_framed_transport import FrameType, ParsedFrame, TcpFramedClient
@@ -213,6 +222,10 @@ def main():
     )
     parser.add_argument("--print-feedback", action="store_true",
                         help="Print every received belt feedback frame (needs mqttSettings.beltFeedback on the simulator)")
+    parser.add_argument("--bridge", metavar="HOST:PORT",
+                        help="Also send this PLC's I/O images and metrics to plc_foxglove_bridge.py (e.g. 127.0.0.1:5002)")
+    parser.add_argument("--bridge-interval", type=float, default=0.1,
+                        help="Seconds between I/O image frames to the bridge (default 0.1)")
     args = parser.parse_args()
     if not (0 <= args.node_id <= 0xFF):
         parser.error("--node-id must be between 0 and 255")
@@ -246,9 +259,10 @@ def main():
     # The PLC program: reads buttons/sensors from `config` (filled by
     # input_msg.deserialize), writes belt speeds/LEDs into it (sent by
     # output_msg.serialize).
-    controller = DeliveryController(config, jam_time=args.jam_time, autostart=args.autostart)
+    controller = make_controller(config, jam_time=args.jam_time, autostart=args.autostart)
     print(f"[PLC] Inputs: {', '.join(i for i in input_ids if i != 'clock')}")
     print(f"[PLC] Outputs: {', '.join(output_ids)}")
+    print(f"[PLC] Program: {type(controller).__name__}")
     print(f"[PLC] Roles: " + ", ".join(f"{k}={v}" for k, v in controller.roles().items() if v))
     print(f"[PLC] Input  frame: {io_layout.describe(input_mapping)}")
     print(f"[PLC] Output frame: {io_layout.describe(output_mapping)}")
@@ -365,6 +379,25 @@ def main():
                     print(f"[<- RECV {feedback_topic}] {belt.id} actual {belt.actualSpeed:.3f} m/s "
                           f"(cmd {belt.speed:.2f}) encoder {belt.encoderCount}")
 
+    bridge = None
+    if args.bridge:
+        bridge_host, _, bridge_port = args.bridge.rpartition(":")
+        if not bridge_host or not bridge_port.isdigit():
+            parser.error("--bridge must be HOST:PORT, e.g. 127.0.0.1:5002")
+
+        def handle_bridge_frame(frame):
+            if frame.frame_type == FrameType.LAYOUT_CHECK:
+                reply = io_layout.unpack_layout_check(frame.payload, endian)
+                problems = io_layout.compare_layout_check(mine, reply[:4]) if reply else ["bad reply"]
+                print("[PLC] Bridge layout check: " + ("OK" if not problems else "MISMATCH - " + "; ".join(problems)))
+
+        bridge = TcpFramedClient(bridge_host, int(bridge_port), handle_bridge_frame,
+                                 length_endianness=config.mqttSettings.endianness)
+        bridge.start()
+        print(f"[PLC] Reporting to the Foxglove bridge at {bridge_host}:{bridge_port}")
+    bridge_checked = False
+    next_bridge_send = 0.0
+
     print(f"Starting Mock PLC Client...")
     if transport == "mqtt":
         mqtt = FlexibleProtocolMQTTManager(broker_url=broker_url, port=broker_port)
@@ -399,19 +432,18 @@ def main():
     while not is_connected() and time.time() < deadline:
         time.sleep(0.1)
 
-    if not is_connected():
+    if not is_connected() and bridge is None:
         print("[ERROR] Could not connect. Exiting.")
         if mqtt is not None:
             mqtt.stop()
         if tcp is not None:
             tcp.stop()
         return
-
-    print("Connected! Press Ctrl+C to exit.")
-    if tcp is not None:
-        # Ask the simulator to compare I/O layouts (answered in handle_layout_check).
-        tcp.send(io_layout.pack_layout_check(input_mapping, output_mapping, endianness=endian),
-                 frame_type=FrameType.LAYOUT_CHECK, node_id=args.node_id)
+    if not is_connected():
+        print("[PLC] No simulator yet - scanning anyway and reporting to the bridge (still trying to connect).")
+    else:
+        print("Connected! Press Ctrl+C to exit.")
+    sim_checked = False   # LAYOUT_CHECK sent on this simulator connection
     print(f"Listening on: {input_topic}")
     print(f"Publishing to: {output_topic}")
     print(f"Reporting metrics on: {metrics_topic} (layout 1), {metric3_topic} (layout 3)")
@@ -436,6 +468,9 @@ def main():
                 led_2_on = bool(config.leds[1].isOn) if len(config.leds) > 1 else False
                 payload = output_msg.serialize(config)
                 status = controller.summary()
+                # The I/O image this scan worked on, for the bridge (the
+                # simulator's input frame layout, as the PLC last saw it).
+                input_image = input_msg.serialize(config) if bridge is not None else b""
 
             if mqtt is not None:
                 mqtt.publish(output_topic, payload)
@@ -450,6 +485,25 @@ def main():
                 sent = False
             send_elapsed_us = (time.perf_counter() - send_start) * 1_000_000.0
             metrics.record_tx(len(payload), sent)
+
+            if tcp is not None and tcp.connected and not sim_checked:
+                # Ask the simulator to compare I/O layouts (answered in handle_layout_check).
+                sim_checked = tcp.send(io_layout.pack_layout_check(input_mapping, output_mapping, endianness=endian),
+                                       frame_type=FrameType.LAYOUT_CHECK, node_id=args.node_id)
+            elif tcp is not None and not tcp.connected:
+                sim_checked = False
+
+            if bridge is not None and bridge.connected:
+                if not bridge_checked:
+                    bridge.send(io_layout.pack_layout_check(input_mapping, output_mapping, endianness=endian),
+                                frame_type=FrameType.LAYOUT_CHECK, node_id=args.node_id)
+                    bridge_checked = True
+                if time.monotonic() >= next_bridge_send:
+                    next_bridge_send = time.monotonic() + args.bridge_interval
+                    bridge.send(payload, frame_type=FrameType.IO_MAPPING, node_id=args.node_id)
+                    bridge.send(input_image, frame_type=FrameType.INPUT_IMAGE, node_id=args.node_id)
+            elif bridge is not None:
+                bridge_checked = False   # check again after a reconnect
 
             for event in events:
                 print(f"[PLC] {event}")
@@ -478,6 +532,8 @@ def main():
                     mqtt.publish(metrics_topic, metrics_payload)
                 elif tcp is not None:
                     tcp.send(metrics_payload, frame_type=FrameType.METRIC_LAYOUT_1, node_id=args.node_id)
+                if bridge is not None:
+                    bridge.send(metrics_payload, frame_type=FrameType.METRIC_LAYOUT_1, node_id=args.node_id)
 
                 # The second layout (METRIC_LAYOUT_3) - its own topic over MQTT,
                 # its own frame_type over TCP.
@@ -488,6 +544,8 @@ def main():
                     mqtt.publish(metric3_topic, metric3_payload)
                 elif tcp is not None:
                     tcp.send(metric3_payload, frame_type=FrameType.METRIC_LAYOUT_3, node_id=args.node_id)
+                if bridge is not None:
+                    bridge.send(metric3_payload, frame_type=FrameType.METRIC_LAYOUT_3, node_id=args.node_id)
 
             metrics.maybe_report()
             time.sleep(max(0.0, args.scan - (time.perf_counter() - loop_start)))
@@ -500,6 +558,8 @@ def main():
             mqtt.stop()
         if tcp is not None:
             tcp.stop()
+        if bridge is not None:
+            bridge.stop()
 
 if __name__ == "__main__":
     main()
