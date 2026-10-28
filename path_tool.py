@@ -6,6 +6,9 @@ Three tools (Tools menu), sharing one input model:
 
   Draw Belt Path    (P)  a centerline through anchors (lines / tangent arcs),
                          offset by the belt width -> path belt (cad/path.py)
+  Draw Curved Belt  (U)  start, end, then a point on the arc -> a curved
+                         belt (parcels turn about the arc's center), as wide
+                         as the toolbar's Width, running start -> end
   Draw Belt Outline (O)  the belt's outline itself, corner by corner - any
                          polygon, e.g. a skewed quad feeding a merge ->
                          polygon belt (shape "quadrilateral")
@@ -55,7 +58,7 @@ from shapely.geometry import Polygon
 from cad import path as cpath
 from shapely.ops import unary_union
 
-from cad.belts import belt_from_target, flow_arrows, outline_belt, path_belt
+from cad.belts import belt_from_target, curved_belt, flow_arrows, outline_belt, path_belt
 from cad.checks import belt_footprint
 from cad.snap import DrawingPicker, Snap, SnapIndex, best_snap, join_shapes
 from config_parser import Belt, PathNode, SketchEntity
@@ -667,6 +670,80 @@ class SketchArcTool(_PointTool):
             self._add_preview(QGraphicsPathItem(line)).setPen(QPen(QColor("#22d3ee"), 2))
             if len(pts) >= 3 and seg.kind == "arc":
                 self._draw_readout(f"R {seg.radius:.3f} m   {math.degrees(abs(seg.sweep)):.1f} deg")
+        self._draw_anchor_markers()
+        self._draw_snap_marker()
+
+
+def curved_belt_through(belt_id: str, start, end, through, width: float) -> Belt:
+    """The curved belt whose centerline is the arc start -> end passing
+    through `through`; parcels run from start to end. ValueError (with a
+    user-facing reason) when the points don't make an arc."""
+    seg = cpath.bulge_to_segment(start, end, cpath.three_point_bulge(start, end, through))
+    if seg.kind != "arc":
+        raise ValueError("The three points are in a line - click a point off the chord to bend the belt.")
+    sweep = math.degrees(seg.sweep)
+    if sweep > 0:      # CCW from the start point
+        first = math.degrees(seg.start_angle)
+    else:              # CW: the same arc is CCW from the end point; parcels run CW
+        first = math.degrees(math.atan2(end[1] - seg.center[1], end[0] - seg.center[0]))
+    first %= 360.0
+    if first > 360.0 - 1e-9:    # -0.0000001 deg, not 359.9999999
+        first = 0.0
+    return curved_belt(belt_id, seg.center, seg.radius, width, first, abs(sweep), ccw=sweep > 0)
+
+
+class CurvedBeltDrawTool(SketchArcTool):
+    """3-point arc -> a curved belt (type "curved"): click the start, the
+    end, then a point on the arc. Width from the toolbar; parcels run from
+    the start to the end point."""
+
+    title = "Draw Curved Belt"
+    hint = ("Draw Curved Belt: click the start, the end, then a point on the arc (OSNAP, typed points work). "
+            "Parcels run start -> end; the toolbar's Width sets the belt width. Esc to cancel.")
+
+    def _configure_toolbar(self):
+        self.toolbar.configure("Curved belt", segments=False, width=True, corner=False, points=True)
+
+    def finish(self, closed: bool = False):
+        if len(self.anchors) < 3:
+            if not self.anchors:
+                self.stop()
+            return
+        start, end, through = self.anchors[:3]
+        try:
+            belt = curved_belt_through(self._new_id(), start, end, through, self.toolbar.width_spin.value())
+        except ValueError as exc:
+            del self.anchors[2:]            # keep start and end: click another point on the arc
+            self._status(str(exc), 6000)
+            self._update_preview()
+            return
+        self.stop()
+        self._add_belt(belt, "Draw Curved Belt")
+        sweep = (belt.endAngle - belt.startAngle) % 360.0 or 360.0
+        self._status(f"Drew {belt.id}: curved, R {belt.radius:.3f} m, {sweep:.1f} deg, "
+                     f"{'counter-clockwise' if belt.directionAngle > 0 else 'clockwise'}.", 8000)
+
+    def _update_preview(self):
+        self._clear_preview()
+        if not self.active:
+            return
+        pts = list(self.anchors) + ([self.cursor] if self.cursor is not None else [])
+        if len(pts) >= 2:
+            bulge = cpath.three_point_bulge(pts[0], pts[1], pts[2]) if len(pts) >= 3 else 0.0
+            width = self.toolbar.width_spin.value()
+            seg = cpath.bulge_to_segment(pts[0], pts[1], bulge)
+            if seg.kind != "arc" or seg.radius > width / 2.0:
+                surface = cpath.footprint([pts[0], pts[1]], [bulge, 0.0], False, width, tolerance=0.005)
+                body = self._add_preview(QGraphicsPathItem(_world_painter_path(surface, self.to_scene)))
+                body.setBrush(QBrush(QColor(59, 130, 246, 90)))
+                body.setPen(QPen(QColor(147, 197, 253), 0))
+            flat, _ = cpath.flatten([seg], tolerance=0.01)
+            line = QPainterPath()
+            line.addPolygon(QPolygonF([self.to_scene(x, y) for x, y in flat]))
+            self._add_preview(QGraphicsPathItem(line)).setPen(QPen(QColor(255, 140, 0), 0, Qt.DashLine))
+            if len(pts) >= 3 and seg.kind == "arc":
+                turn = "CCW" if seg.sweep > 0 else "CW"
+                self._draw_readout(f"R {seg.radius:.3f} m   {math.degrees(abs(seg.sweep)):.1f} deg   {turn}")
         self._draw_anchor_markers()
         self._draw_snap_marker()
 

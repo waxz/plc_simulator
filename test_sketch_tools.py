@@ -133,6 +133,34 @@ class CoreGeometryTest(unittest.TestCase):
             self.assertEqual([round(b, 6) for *_xy, b in line.get_points("xyb")], [1.0, 0.0])
 
 
+class CurvedBeltThroughTest(unittest.TestCase):
+    def test_ccw_and_cw_quarter_arcs(self):
+        from path_tool import curved_belt_through
+        h = math.sqrt(0.5)
+        ccw = curved_belt_through("b", (2, 0), (0, 2), (2 * h, 2 * h), 0.8)   # about (0, 0), R 2
+        self.assertEqual((ccw.type, ccw.shape), ("curved", "arc"))
+        self.assertAlmostEqual(ccw.x, 0.0)
+        self.assertAlmostEqual(ccw.y, 0.0)
+        self.assertAlmostEqual(ccw.radius, 2.0)
+        self.assertAlmostEqual(ccw.beltWidth, 0.8)
+        self.assertAlmostEqual(ccw.startAngle, 0.0)
+        self.assertAlmostEqual(ccw.endAngle, 90.0)
+        self.assertGreater(ccw.directionAngle, 0)                           # parcels run CCW
+        cw = curved_belt_through("b", (0, 2), (2, 0), (2 * h, 2 * h), 0.8)    # same arc, other way
+        self.assertAlmostEqual(cw.startAngle, 0.0)
+        self.assertAlmostEqual(cw.endAngle, 90.0)
+        self.assertLess(cw.directionAngle, 0)                               # parcels run CW
+
+    def test_more_than_half_a_turn_and_bad_input(self):
+        from path_tool import curved_belt_through
+        big = curved_belt_through("b", (1, 0), (0, -1), (-1, 0), 0.5)       # 270 deg CCW, R 1
+        self.assertAlmostEqual((big.endAngle - big.startAngle) % 360.0, 270.0)
+        with self.assertRaises(ValueError):
+            curved_belt_through("b", (0, 0), (4, 0), (2, 0), 0.5)           # collinear
+        with self.assertRaises(ValueError):
+            curved_belt_through("b", (1, 0), (-1, 0), (0, 1), 3.0)          # wider than the arc
+
+
 class EditorWorkflowTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -178,6 +206,48 @@ class EditorWorkflowTest(unittest.TestCase):
         for x, y in points:
             self.click(x, y)
         self.key(Qt.Key_Return)
+
+    # -- draw a curved belt directly ------------------------------------------------
+
+    def test_draw_curved_belt_from_the_menu_with_clicks(self):
+        from PySide6.QtGui import QAction
+        action = next(a for a in self.window.findChildren(QAction) if a.text() == "Draw Curved Belt")
+        self.assertEqual(action.shortcut().toString(), "U")
+        self.cad.draw_toolbar.width_spin.setValue(0.6)
+        action.trigger()
+        self.click(5, 2)                               # start
+        self.click(3, 4)                               # end
+        self.cad.curved_tool.typed_input(f"{3 + 2 * math.cos(math.pi / 4)!r},{2 + 2 * math.sin(math.pi / 4)!r}")
+        belts = self.belts()
+        self.assertEqual(len(belts), 1)
+        belt = belts[0]
+        self.assertEqual(belt.type, "curved")
+        self.assertAlmostEqual(belt.x, 3.0, places=2)    # free clicks are pixel-accurate
+        self.assertAlmostEqual(belt.y, 2.0, places=2)
+        self.assertAlmostEqual(belt.radius, 2.0, places=2)
+        self.assertAlmostEqual(belt.beltWidth, 0.6)
+        self.assertAlmostEqual((belt.endAngle - belt.startAngle) % 360.0, 90.0, places=1)
+        self.assertGreater(belt.directionAngle, 0)
+        self.assertTrue(self.window.items_list[0].is_curved())
+        # Parcels on it are carried round the curve by physics.
+        engine = PhysicsEngine(self.window._build_export_config())
+        self.assertEqual(len(engine.config.belts), 1)
+        self.window.undo_stack.undo()
+        self.assertEqual(self.belts(), [])
+
+    def test_collinear_third_point_keeps_drawing(self):
+        self.cad.curved_tool.start()
+        self.click(0, 0)
+        self.click(4, 0)
+        self.cad.curved_tool.typed_input("2,0")       # on the chord: no arc
+        self.assertEqual(self.belts(), [])
+        self.assertTrue(self.cad.curved_tool.active)
+        self.assertIn("in a line", self.window.statusBar().currentMessage())
+        self.cad.curved_tool.typed_input("2,-2")      # now a CW semicircle through (2, -2)
+        belt = self.belts()[0]
+        self.assertEqual(belt.type, "curved")
+        self.assertAlmostEqual(belt.radius, 2.0, places=2)
+        self.assertAlmostEqual((belt.endAngle - belt.startAngle) % 360.0, 180.0, places=1)
 
     # -- sketch, then connect into a belt --------------------------------------------
 

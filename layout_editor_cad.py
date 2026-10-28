@@ -41,7 +41,8 @@ from cad.ports import belt_ports
 from config_parser import BackgroundDrawing, BeltConnection, SketchEntity
 from id_utils import next_indexed_id
 from path_tool import (
-    AnchorGripManager, OutlineDrawTool, PathDrawTool, PathToolbar, PickFromDrawingTool, SketchArcTool,
+    AnchorGripManager, CurvedBeltDrawTool, OutlineDrawTool, PathDrawTool, PathToolbar, PickFromDrawingTool,
+    SketchArcTool,
     SketchCircleTool, SketchLineTool, SketchPolygonTool, SketchRectangleTool, SnapEngine,
 )
 from cad.path import flatten as path_flatten, segments as path_segments
@@ -256,6 +257,7 @@ class CadController:
         window.addToolBar(Qt.TopToolBarArea, self.draw_toolbar)
         self.path_tool = PathDrawTool(window, self.draw_toolbar, self.snap, belt_item_cls=belt_item_cls)
         self.outline_tool = OutlineDrawTool(window, self.draw_toolbar, self.snap, belt_item_cls=belt_item_cls)
+        self.curved_tool = CurvedBeltDrawTool(window, self.draw_toolbar, self.snap, belt_item_cls=belt_item_cls)
         self.pick_tool = PickFromDrawingTool(window, self.draw_toolbar, self.snap, belt_item_cls=belt_item_cls)
         self.sketch_line_tool = SketchLineTool(window, self.draw_toolbar, self.snap, belt_item_cls=belt_item_cls)
         self.sketch_arc_tool = SketchArcTool(window, self.draw_toolbar, self.snap, belt_item_cls=belt_item_cls)
@@ -495,6 +497,7 @@ class CadController:
         belts = tools.addMenu("Belts")
         add(belts, "Belt from Sketch/Drawing", self.pick_tool.start, "B")
         add(belts, "Draw Belt Path", self.path_tool.start, "P")
+        add(belts, "Draw Curved Belt", self.curved_tool.start, "U")
         add(belts, "Draw Belt Outline", self.outline_tool.start, "O")
         connections = tools.addMenu("Connections")
         add(connections, "Connect Belts", self.connect_selected, "Ctrl+J")

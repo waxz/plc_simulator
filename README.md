@@ -292,6 +292,10 @@ Sketch geometry is saved in the layout (`sketch`), exported to DXF on the
 SKETCH layer, and ignored by physics. Select a sketch line and press Delete
 to remove it, or use Tools > Clear Sketch. Shortcuts that skip the sketch
 step:
+- **Draw Curved Belt (U)**: click the start, the end, then a point on the
+  arc (or type it as `x,y`) for a real curved belt - parcels turn about the
+  arc's center, from the start towards the end. The toolbar's Width sets the
+  belt width; the preview shows the band with its radius, sweep and CW / CCW.
 - **Draw Belt Outline (O)**: click the corners of any polygon. The first edge
   sets the flow direction.
 - **Draw Belt Path (P)** (below).
