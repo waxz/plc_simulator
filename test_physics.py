@@ -284,3 +284,37 @@ class BeltHandoffWiringTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CrowdedLineSpeedupTest(unittest.TestCase):
+    """The per-step shortcuts (geometry looked up once per step, belts
+    pre-filtered by bounding box) give the same answers as testing every
+    belt the slow way."""
+
+    def test_belts_under_a_point_match_testing_every_belt(self):
+        import random
+        from config_parser import load_config
+        from surface import belt_bounds, belt_contains, geometry_frame
+        config = load_config("test_config.json")
+        engine = PhysicsEngine(config)
+        rng = random.Random(7)
+        points = [(rng.uniform(14.0, 22.0), rng.uniform(-21.0, 16.0)) for _ in range(3000)]
+        slow = [[b.id for b in config.belts if belt_contains(b, x, y)] for x, y in points]
+        with geometry_frame(config.belts):
+            engine._belt_boxes = [(b, *belt_bounds(b)) for b in config.belts]
+            fast = [[b.id for b in engine._belts_under(x, y)] for x, y in points]
+            framed = [[b.id for b in config.belts if belt_contains(b, x, y)] for x, y in points]
+        self.assertEqual(fast, slow)
+        self.assertEqual(framed, slow)
+        self.assertGreater(sum(1 for ids in slow if ids), 300)          # plenty of points on belts
+
+    def test_a_crowded_line_still_delivers(self):
+        from config_parser import load_config
+        config = load_config("test_config.json")
+        for belt in config.belts:
+            belt.speed = 2.0
+        engine = PhysicsEngine(config)
+        for _ in range(400):                                             # 20 s
+            engine.update(0.05)
+        self.assertGreater(len(engine.parcels), 20)
+        self.assertGreater(sum(engine.delivered.values()), 0)

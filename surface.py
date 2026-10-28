@@ -8,7 +8,9 @@ roller zone, ...) adds a branch here and nothing else needs to know.
 """
 import bisect
 import math
-from typing import Optional, Tuple
+import threading
+from contextlib import contextmanager
+from typing import Optional, Sequence, Tuple
 
 import shapely
 from shapely.geometry import Point as ShapelyPoint
@@ -73,10 +75,33 @@ class _PathGeometry:
         return v * dx, v * dy, 0.0
 
 
+_frame = threading.local()   # .geom: {id(belt): (bounds, polygon)} during one physics step
+
+
+@contextmanager
+def geometry_frame(belts: Sequence[Belt]):
+    """Within one physics step belts don't move: look each belt's geometry
+    up once here, and every point query in the step (thousands with a
+    crowded line - each parcel against each belt, several times) reuses it
+    instead of rebuilding the cache key from the belt's fields. Per thread:
+    the GUI thread keeps checking the belts as they are."""
+    previous = getattr(_frame, "geom", None)
+    _frame.geom = {id(b): _geometry(b) for b in belts}
+    try:
+        yield
+    finally:
+        _frame.geom = previous
+
+
 def _geometry(belt: Belt) -> Tuple[Tuple[float, float, float, float], Optional[list]]:
     """(bounds, polygon-or-None), cached on the belt and rebuilt only when its
     geometry fields change (the editors move/resize belts at runtime).
     Recomputing the rotated polygon per point query dominated step time."""
+    frame = getattr(_frame, "geom", None)
+    if frame is not None:
+        hit = frame.get(id(belt))
+        if hit is not None:
+            return hit
     sig = _geometry_signature(belt)
     cached = belt._geom
     if cached is not None and cached[0] == sig:

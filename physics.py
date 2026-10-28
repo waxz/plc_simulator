@@ -11,7 +11,7 @@ from config_parser import SimulatorConfig
 from math_utils import point_in_polygon, get_rect_vertices
 import devices
 from drive import step_drive
-from surface import belt_bounds, belt_contains, belt_surface_speed, curved_direction, surface_velocity
+from surface import belt_bounds, belt_contains, belt_surface_speed, curved_direction, geometry_frame, surface_velocity
 from traction import FrictionTraction
 
 class Parcel:
@@ -208,6 +208,17 @@ class PhysicsEngine:
         #     self.COLLISION_TYPE_WALL,
         #     pre_solve=_pre_solve_parcel_wall
         # )
+
+    def _belts_under(self, px: float, py: float, belts=None):
+        """The belts (of `belts`, default all) whose surface holds the point -
+        bounding box first, exact shape only for the few that pass."""
+        boxes = getattr(self, "_belt_boxes", None)
+        if boxes is None:
+            boxes = [(belt, *belt_bounds(belt)) for belt in self.config.belts]
+        wanted = None if belts is None else {id(b) for b in belts}
+        return [belt for belt, x0, y0, x1, y1 in boxes
+                if x0 <= px <= x1 and y0 <= py <= y1 and (wanted is None or id(belt) in wanted)
+                and belt_contains(belt, px, py)]
 
     def _is_point_on_belt(self, px: float, py: float, belt) -> bool:
         """Returns True if the point (px, py) is physically on the given belt."""
@@ -471,14 +482,16 @@ class PhysicsEngine:
     def handle_sinks(self):
         to_remove = []
         bounds = self._play_area_bounds()
+        # Sinks are axis-aligned rectangles (rotation 0): a box test, built once.
+        boxes = [(sink.id, sink.x - sink.width / 2.0, sink.y - sink.height / 2.0,
+                  sink.x + sink.width / 2.0, sink.y + sink.height / 2.0) for sink in self.config.sinks]
         for parcel in self.parcels:
             px, py = parcel.body.position
             in_a_sink = False
-            for sink in self.config.sinks:
-                verts = get_rect_vertices(sink.x, sink.y, sink.width, sink.height, 0)
-                if point_in_polygon(px, py, verts):
+            for sink_id, x0, y0, x1, y1 in boxes:
+                if x0 <= px <= x1 and y0 <= py <= y1:
                     in_a_sink = True
-                    self.delivered[sink.id] = self.delivered.get(sink.id, 0) + 1
+                    self.delivered[sink_id] = self.delivered.get(sink_id, 0) + 1
                     break
             if in_a_sink:
                 to_remove.append(parcel)
@@ -516,9 +529,8 @@ class PhysicsEngine:
             if getattr(self.config, 'useSurfaceVelocity', False):
                 touching_belts:Dict[str, Belt] = {}
                 for sp in sample_pts:
-                    for belt in self.config.belts:
-                        if self._is_point_on_belt(sp[0], sp[1], belt):
-                            touching_belts[belt.id] = belt
+                    for belt in self._belts_under(sp[0], sp[1]):
+                        touching_belts[belt.id] = belt
                 touching_ids = set(touching_belts.keys())
                 if len(touching_ids) > 1:
                     overlapping_ids = set()
@@ -816,16 +828,22 @@ class PhysicsEngine:
         (an IR sensor's footprint, or each laser banner beam as a segment
         across the sensor), then the sensor's output stage
         (devices.condition: on/off delay, invert, detection counter)."""
+        # Every parcel's position once (pymunk reads are not free), for all sensors.
+        self._parcel_positions = [(p, *p.body.position) for p in self.parcels]
         for sensor in self.config.sensors:
             raw = self._raw_beams(sensor)
             sensor.sensor_states = devices.condition(sensor, raw, h)
+        self._parcel_positions = None
 
     def _close_parcels(self, sensor, extent: float):
+        positions = getattr(self, "_parcel_positions", None)
+        if positions is None:
+            positions = [(p, *p.body.position) for p in self.parcels]
         out = []
-        for p in self.parcels:
-            dx = p.body.position.x - sensor.x
-            dy = p.body.position.y - sensor.y
-            if math.hypot(dx, dy) <= extent + p.max_extent:
+        for p, x, y in positions:
+            reach = extent + p.max_extent
+            dx, dy = x - sensor.x, y - sensor.y
+            if dx * dx + dy * dy <= reach * reach:
                 out.append(p)
         return out
 
@@ -844,7 +862,11 @@ class PhysicsEngine:
             return [False] * laser_count
         rad = math.radians(sensor.rotation)
         cos_a, sin_a = math.cos(rad), math.sin(rad)
-        polygons = [self._parcel_vertices(p) for p in close]
+        polygons = []
+        for p in close:
+            poly = self._parcel_vertices(p)
+            xs, ys = [v[0] for v in poly], [v[1] for v in poly]
+            polygons.append((min(xs), min(ys), max(xs), max(ys), poly))
         beams = []
         for i in range(laser_count):
             # Beam i: a segment across the sensor's width at offset `by`.
@@ -852,7 +874,12 @@ class PhysicsEngine:
             lx = sensor.width / 2.0
             start = (sensor.x - lx * cos_a - by * sin_a, sensor.y - lx * sin_a + by * cos_a)
             end = (sensor.x + lx * cos_a - by * sin_a, sensor.y + lx * sin_a + by * cos_a)
-            beams.append(any(self._segment_intersects_polygon(start, end, poly) for poly in polygons))
+            bx0, bx1 = min(start[0], end[0]), max(start[0], end[0])
+            by0, by1 = min(start[1], end[1]), max(start[1], end[1])
+            # Only parcels whose bounding box touches the beam's get the exact test.
+            beams.append(any(self._segment_intersects_polygon(start, end, poly)
+                             for x0, y0, x1, y1, poly in polygons
+                             if x0 <= bx1 and bx0 <= x1 and y0 <= by1 and by0 <= y1))
         return beams
 
     def _update_belt_loads(self):
@@ -864,14 +891,20 @@ class PhysicsEngine:
             belt.load = 0.0
         for parcel in self.parcels:
             px, py = parcel.body.position
-            for belt in watched:
-                if belt_contains(belt, px, py):
-                    belt.load += parcel.body.mass
+            for belt in self._belts_under(px, py, watched):
+                belt.load += parcel.body.mass
 
     def step(self, h: float):
         """One fixed physics step: drives, sources, traction, solver, sinks,
         sensors. Sensors run every step so a parcel crossing a narrow sensor
         between two GUI frames is still seen (and counted in risingEdges)."""
+        with geometry_frame(self.config.belts):
+            # Each belt's bounding box for this step: a point is only tested
+            # against the belts whose box holds it (one or two, not all).
+            self._belt_boxes = [(belt, *belt_bounds(belt)) for belt in self.config.belts]
+            self._step(h)
+
+    def _step(self, h: float):
         self._update_belt_loads()
         for belt in self.config.belts:
             step_drive(belt, h)
