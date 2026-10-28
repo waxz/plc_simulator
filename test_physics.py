@@ -16,7 +16,7 @@ import unittest
 import pymunk
 
 from config_parser import Belt, SimulatorConfig
-from physics import Parcel, PhysicsEngine, _smootherstep, dynamic_velocity_modifier
+from physics import Parcel, PhysicsEngine, _smootherstep, drive_toward_target, dynamic_velocity_modifier
 
 
 class SmootherstepTest(unittest.TestCase):
@@ -294,19 +294,59 @@ class CrowdedLineSpeedupTest(unittest.TestCase):
     def test_belts_under_a_point_match_testing_every_belt(self):
         import random
         from config_parser import load_config
-        from surface import belt_bounds, belt_contains, geometry_frame
+        from surface import BeltGrid, belt_contains, geometry_frame
         config = load_config("test_config.json")
         engine = PhysicsEngine(config)
         rng = random.Random(7)
         points = [(rng.uniform(14.0, 22.0), rng.uniform(-21.0, 16.0)) for _ in range(3000)]
         slow = [[b.id for b in config.belts if belt_contains(b, x, y)] for x, y in points]
         with geometry_frame(config.belts):
-            engine._belt_boxes = [(b, *belt_bounds(b)) for b in config.belts]
             fast = [[b.id for b in engine._belts_under(x, y)] for x, y in points]
             framed = [[b.id for b in config.belts if belt_contains(b, x, y)] for x, y in points]
+            grid = BeltGrid(config.belts, cell=0.37)                     # any cell size: same answers
+            gridded = [[b.id for b in grid.belts_at(x, y)] for x, y in points]
         self.assertEqual(fast, slow)
         self.assertEqual(framed, slow)
+        self.assertEqual(gridded, slow)
         self.assertGreater(sum(1 for ids in slow if ids), 300)          # plenty of points on belts
+
+    def test_banner_beams_match_testing_every_beam_segment(self):
+        import random
+        from config_parser import Sensor
+        rng = random.Random(11)
+        engine = PhysicsEngine(SimulatorConfig())
+        for trial in range(300):
+            sensor = Sensor(id="b", x=rng.uniform(-1, 1), y=rng.uniform(-1, 1), width=rng.uniform(0.05, 0.6),
+                            height=1.0, rotation=rng.uniform(-180, 180), sensorType="laser_banner",
+                            laserCount=rng.randint(4, 40), beamDistance=rng.uniform(0.01, 0.06), label="", color="#f00")
+            engine.parcels = []
+            for _ in range(rng.randint(1, 4)):
+                engine.add_parcel(sensor.x + rng.uniform(-0.8, 0.8), sensor.y + rng.uniform(-0.8, 0.8),
+                                  rng.uniform(0.1, 0.7), rng.uniform(0.1, 0.7), angle_deg=rng.uniform(0, 360))
+            fast = engine._raw_beams(sensor)
+            rad = math.radians(sensor.rotation)
+            c, s_ = math.cos(rad), math.sin(rad)
+            slow = []
+            for i in range(sensor.laserCount):                          # the segment-by-segment reference
+                by = (i - (sensor.laserCount - 1) / 2.0) * sensor.beamDistance
+                lx = sensor.width / 2.0
+                start = (sensor.x - lx * c - by * s_, sensor.y - lx * s_ + by * c)
+                end = (sensor.x + lx * c - by * s_, sensor.y + lx * s_ + by * c)
+                slow.append(any(engine._segment_intersects_polygon(start, end, engine._parcel_vertices(p))
+                                for p in engine.parcels))
+            self.assertEqual(fast, slow, f"trial {trial}")
+
+    def test_velocity_callback_fast_path_gives_the_full_path_result(self):
+        for momentum in (None, (0.5, -0.2)):
+            fast, full = (make_body(target_v_enable=True, target_v=(1.5, 0.25), target_w=0.3,
+                                    transition_momentum_v=momentum, transition_momentum_time=0.1 if momentum else 0.0,
+                                    transition_momentum_duration=0.4) for _ in range(2))
+            for body in (fast, full):
+                body.velocity, body.angular_velocity = (3.0, 1.0), 2.0
+            dynamic_velocity_modifier(fast, (0, 0), 0.1, 0.004)
+            pymunk.Body.update_velocity(full, (0, 0), 0.1, 0.004)        # what it used to do first
+            drive_toward_target(full, 0.004)
+            self.assertEqual((fast.velocity, fast.angular_velocity), (full.velocity, full.angular_velocity))
 
     def test_a_crowded_line_still_delivers(self):
         from config_parser import load_config

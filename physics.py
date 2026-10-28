@@ -7,12 +7,15 @@ import time
 import random
 import pymunk
 import threading
+import numpy as np
 from typing import List, Tuple, Optional
 from config_parser import SimulatorConfig
 from math_utils import point_in_polygon, get_rect_vertices
 import devices
 from drive import step_drive
-from surface import belt_bounds, belt_contains, belt_surface_speed, curved_direction, geometry_frame, surface_velocity
+from surface import (
+    BeltGrid, belt_bounds, belt_contains, belt_surface_speed, curved_direction, geometry_frame, surface_velocity,
+)
 from traction import FrictionTraction
 
 class Parcel:
@@ -81,35 +84,53 @@ def dynamic_velocity_modifier(body, gravity, damping, dt):
     linear blend weight, while still finishing exactly at
     `momentum_duration` either way.
     """
-    pymunk.Body.update_velocity(body, gravity, damping, dt)
+    if body.__dict__.get("target_v_enable", False):
+        # On a belt: velocity and spin are set outright below, so pymunk's own
+        # integration (damping - no forces are used in this mode) would only
+        # be thrown away. Skipping it saves a call per parcel per step.
+        drive_toward_target(body, dt)
+    else:
+        pymunk.Body.update_velocity(body, gravity, damping, dt)
 
-    target_v_enable = getattr(body, "target_v_enable", False)
+
+def drive_toward_target(body, dt) -> bool:
+    """The belt part of dynamic_velocity_modifier: set the body's velocity
+    and spin from target_v / target_w (easing through a handoff). Returns
+    False (nothing changed) when the body has no belt target.
+
+    It has to run where pymunk calls the velocity callback - after the step
+    moved the body with last step's velocity (contact pushes included) and
+    before contacts are solved - so it stays a callback, not a pre-step
+    assignment."""
+    bd = body.__dict__    # plain fields: skip pymunk's attribute hooks (see apply_conveyor_kinematics)
+    target_v_enable = bd.get("target_v_enable", False)
     if not target_v_enable:
-        return
-    target_v = Vec2d(*getattr(body, "target_v", body.velocity))
-    momentum_v = getattr(body, "transition_momentum_v", None)
-    momentum_time = getattr(body, "transition_momentum_time", 0.0)
-    momentum_duration = getattr(body, "transition_momentum_duration", 0.2)
+        return False
+    target_v = Vec2d(*bd.get("target_v", body.velocity))
+    momentum_v = bd.get("transition_momentum_v", None)
+    momentum_time = bd.get("transition_momentum_time", 0.0)
+    momentum_duration = bd.get("transition_momentum_duration", 0.2)
 
     if momentum_v is not None and momentum_time > 0.0 and momentum_duration > 0.01:
         alpha = _smootherstep(momentum_time / momentum_duration)
         original_v = Vec2d(*momentum_v)
         body.velocity = original_v * alpha + target_v * (1.0 - alpha)
-        body.transition_momentum_time = max(0.0, momentum_time - dt)
+        bd["transition_momentum_time"] = max(0.0, momentum_time - dt)
     else:
         body.velocity = target_v
-        body.transition_momentum_v = None
-        body.transition_momentum_time = 0.0
+        bd["transition_momentum_v"] = None
+        bd["transition_momentum_time"] = 0.0
 
-    target_w = getattr(body, "target_w", body.angular_velocity)
-    remaining_w = getattr(body, "target_w_remaining", None)
+    target_w = bd.get("target_w", body.angular_velocity)
+    remaining_w = bd.get("target_w_remaining", None)
 
     if remaining_w is not None and remaining_w > 0.0 and dt > 0.0 and abs(target_w) > 1e-9:
         clamped_w = min(abs(target_w), remaining_w / dt)
         body.angular_velocity = math.copysign(clamped_w, target_w)
-        body.target_w_remaining = max(0.0, remaining_w - clamped_w * dt)
+        bd["target_w_remaining"] = max(0.0, remaining_w - clamped_w * dt)
     else:
         body.angular_velocity = target_w
+    return True
 
 class PhysicsEngine:
     # ShapeFilter category bitmasks
@@ -210,16 +231,45 @@ class PhysicsEngine:
         #     pre_solve=_pre_solve_parcel_wall
         # )
 
+    def _prepare_belt_lookup(self):
+        """Once per step: the belt grid (rebuilt only when a belt moved), each
+        straight belt's surface velocity, and which belts are under each
+        parcel - shared by belt loads and the belt drive instead of each
+        searching every belt again."""
+        grid = self._current_grid()
+        self._step_belts_sig = self._grid_key
+        self._linear_v = {}
+        self._under = {}
+        for parcel in self.parcels:
+            x, y = parcel.body.position
+            self._under[parcel] = grid.belts_at(x, y)
+
+    def _current_grid(self) -> BeltGrid:
+        """The belt grid, rebuilt when a belt moved or was added/removed."""
+        key = tuple((id(b), belt_bounds(b)) for b in self.config.belts)
+        if key != getattr(self, "_grid_key", None):
+            self._grid = BeltGrid(self.config.belts)
+            self._grid_key = key
+            self._overlap_cache.clear()     # belts moved: area overlaps may have changed
+        return self._grid
+
     def _belts_under(self, px: float, py: float, belts=None):
-        """The belts (of `belts`, default all) whose surface holds the point -
-        bounding box first, exact shape only for the few that pass."""
-        boxes = getattr(self, "_belt_boxes", None)
-        if boxes is None:
-            boxes = [(belt, *belt_bounds(belt)) for belt in self.config.belts]
-        wanted = None if belts is None else {id(b) for b in belts}
-        return [belt for belt, x0, y0, x1, y1 in boxes
-                if x0 <= px <= x1 and y0 <= py <= y1 and (wanted is None or id(belt) in wanted)
-                and belt_contains(belt, px, py)]
+        """The belts (of `belts`, default all) whose surface holds the point,
+        in layout order, via the belt grid."""
+        grid = self._grid if getattr(self, "_under", None) is not None else self._current_grid()
+        found = grid.belts_at(px, py)
+        if belts is None:
+            return found
+        wanted = {id(b) for b in belts}
+        return [b for b in found if id(b) in wanted]
+
+    def _parcel_belts(self, parcel):
+        """The belts under a parcel's center this step (found once per step)."""
+        under = getattr(self, "_under", None)
+        if under is not None and parcel in under:
+            return under[parcel]
+        x, y = parcel.body.position
+        return self._belts_under(x, y)     # spawned this step
 
     def _is_point_on_belt(self, px: float, py: float, belt) -> bool:
         """Returns True if the point (px, py) is physically on the given belt."""
@@ -260,7 +310,11 @@ class PhysicsEngine:
         )
 
     def _belts_have_area_overlap(self, belt_a, belt_b) -> bool:
-        sig = self._get_belts_signature()
+        # Within a step the belts don't move: reuse the step's key instead of
+        # rebuilding the signature for every parcel at a transfer.
+        sig = getattr(self, "_step_belts_sig", None) if getattr(self, "_under", None) is not None else None
+        if sig is None:
+            sig = self._get_belts_signature()
         if sig != self._last_belts_sig:
             self._overlap_cache.clear()
             self._last_belts_sig = sig
@@ -356,6 +410,7 @@ class PhysicsEngine:
                     body = pymunk.Body(mass, moment)
                     body.position = (sx, sy)
                     body.angle = math.radians(source.rotation)
+
 
                     if not friction_mode and getattr(self.config, 'useSurfaceVelocity', False):
                         body.velocity_func = dynamic_velocity_modifier
@@ -517,21 +572,31 @@ class PhysicsEngine:
                 parcel.belt_id = self.friction.pre_step(parcel.body, parcel.traction, self.config.belts)
 
     def apply_conveyor_kinematics(self):
-        """Drive each parcel using the belt velocity sampled at its center + 4 corners."""
+        """Drive each parcel using the belt velocity sampled at its center
+        (useSurfaceVelocity: sets the target dynamic_velocity_modifier
+        drives the parcel toward inside the solver step)."""
+        surface_drive = getattr(self.config, 'useSurfaceVelocity', False)
+        linear_v = getattr(self, "_linear_v", None)
+        if linear_v is None:
+            linear_v = {}
         for parcel in self.parcels:
             if parcel.traction is not None:
                 continue  # friction-traction parcel (see apply_friction_traction)
+            # The per-parcel drive fields live in the body's __dict__: reading /
+            # writing them there skips pymunk's pass-through __setattr__ /
+            # __getattr__ hooks (a Python call per access - or a caught
+            # AttributeError for a missing one), many per parcel per step.
+            bd = parcel.body.__dict__
             pos = parcel.body.position
             sample_pts = [(pos.x, pos.y)]
             # for v in parcel.shape.get_vertices():
             #     wv = pos + v.rotated(parcel.body.angle)
             #     sample_pts.append((wv.x, wv.y))
 
-            if getattr(self.config, 'useSurfaceVelocity', False):
+            if surface_drive:
                 touching_belts:Dict[str, Belt] = {}
-                for sp in sample_pts:
-                    for belt in self._belts_under(sp[0], sp[1]):
-                        touching_belts[belt.id] = belt
+                for belt in self._parcel_belts(parcel):
+                    touching_belts[belt.id] = belt
                 touching_ids = set(touching_belts.keys())
                 if len(touching_ids) > 1:
                     overlapping_ids = set()
@@ -542,21 +607,27 @@ class PhysicsEngine:
                                 overlapping_ids.add(belt_a.id)
                                 overlapping_ids.add(belt_b.id)
                     if overlapping_ids:
-                        parcel.body.momentum_intersection_ids = overlapping_ids
+                        bd["momentum_intersection_ids"] = overlapping_ids
                             
                 if touching_belts:
                     best_belt = None
                     best_score = -float('inf')
                     best_idx = 0
+                    vel = parcel.body.velocity    # read once: unchanged while its belts are scored
                     
                     for belt in touching_belts.values():
-                        belt_speed = belt_surface_speed(belt)
                         if belt.type == "linear":
-                            rad = math.radians(belt.rotation + belt.directionAngle)
-                            cvx = belt_speed * math.cos(rad)
-                            cvy = belt_speed * math.sin(rad)
+                            # The same surface velocity everywhere on a straight
+                            # belt: worked out once per step, not per parcel.
+                            v = linear_v.get(id(belt))
+                            if v is None:
+                                belt_speed = belt_surface_speed(belt)
+                                rad = math.radians(belt.rotation + belt.directionAngle)
+                                v = linear_v[id(belt)] = (belt_speed * math.cos(rad), belt_speed * math.sin(rad))
+                            cvx, cvy = v
                             cw = 0.0
                         elif belt.type == "path":
+                            belt_speed = belt_surface_speed(belt)
                             # Drawn belt: tangent of the nearest centerline
                             # piece, turning at speed * curvature on arcs.
                             sv = surface_velocity(belt, pos.x, pos.y)
@@ -564,6 +635,7 @@ class PhysicsEngine:
                                 continue
                             cvx, cvy, cw = sv
                         elif belt.type == "curved":
+                            belt_speed = belt_surface_speed(belt)
                             dx = pos.x - belt.x
                             dy = pos.y - belt.y
                             dist = math.hypot(dx, dy)
@@ -608,11 +680,11 @@ class PhysicsEngine:
                         if belt.type == "curved" and not angular_sector_hit:
                             cw = 0.0
                             
-                        v_len = parcel.body.velocity.length
+                        v_len = vel.length
                         if v_len < 0.1:
                             score = math.hypot(cvx, cvy)
                         else:
-                            score = cvx * parcel.body.velocity.x + cvy * parcel.body.velocity.y
+                            score = cvx * vel.x + cvy * vel.y
                             
                         if score > best_score:
                             best_score = score
@@ -621,35 +693,35 @@ class PhysicsEngine:
                     if best_belt:
                         selected_belt = best_belt[3]
                         # print(f"selected_belt: {selected_belt.id}")
-                        remaining_w = getattr(parcel.body, "target_w_remaining", 0.0)
+                        remaining_w = bd.get("target_w_remaining", 0.0)
                         if remaining_w is None:
                             remaining_w = 0.0
-                        momentum_intersection_ids = getattr(parcel.body, "momentum_intersection_ids", set())
-                        momentum_source_id = getattr(parcel.body, "target_w_belt_id", None)
+                        momentum_intersection_ids = bd.get("momentum_intersection_ids", set())
+                        momentum_source_id = bd.get("target_w_belt_id", None)
                         intersecting_handoff = (
                             remaining_w > 0.0
                             and selected_belt.id in momentum_intersection_ids
                             and momentum_source_id in momentum_intersection_ids
                         )
                         if selected_belt.type == "curved" and abs(best_belt[2]) > 1e-9:
-                            if getattr(parcel.body, "target_w_belt_id", None) != selected_belt.id:
-                                parcel.body.target_w_belt_id = selected_belt.id
-                                parcel.body.target_w_remaining = self._arc_span_radians(
+                            if bd.get("target_w_belt_id", None) != selected_belt.id:
+                                bd["target_w_belt_id"] = selected_belt.id
+                                bd["target_w_remaining"] = self._arc_span_radians(
                                     selected_belt.startAngle,
                                     selected_belt.endAngle,
                                 )
-                            parcel.body.target_w_last = best_belt[2]
-                            target_w_remaining = getattr(parcel.body, "target_w_remaining", None)
+                            bd["target_w_last"] = best_belt[2]
+                            target_w_remaining = bd.get("target_w_remaining", None)
                             if target_w_remaining and target_w_remaining < 1e-9:
                                 best_belt = (best_belt[0], best_belt[1], 0.0, selected_belt)
                         elif intersecting_handoff:
-                            cw = getattr(parcel.body, "target_w_last", best_belt[2])
+                            cw = bd.get("target_w_last", best_belt[2])
                             best_belt = (best_belt[0], best_belt[1], cw, selected_belt)
                         else:
-                            parcel.body.target_w_remaining = None
-                            parcel.body.momentum_intersection_ids = set()
+                            bd["target_w_remaining"] = None
+                            bd["momentum_intersection_ids"] = set()
 
-                        previous_belt_id = getattr(parcel.body, "current_belt_id", None)
+                        previous_belt_id = bd.get("current_belt_id", None)
                         if previous_belt_id and previous_belt_id != selected_belt.id:
                             # Start a fresh momentum-blend window using the
                             # *new* belt's own configured transition time.
@@ -665,27 +737,27 @@ class PhysicsEngine:
                             # 0.6s default produced 0.3s of zero blending
                             # followed by 0.6s of blending - 0.9s total,
                             # ignoring the configured value entirely).
-                            current_v = parcel.body.velocity
-                            parcel.body.transition_momentum_v = (current_v.x, current_v.y)
-                            parcel.body.transition_momentum_duration = selected_belt.transition_momentum_duration
-                            parcel.body.transition_momentum_time = parcel.body.transition_momentum_duration
-                        parcel.body.current_belt_id = selected_belt.id
-                        parcel.body.target_v_enable = True
-                        parcel.body.target_v = (best_belt[0], best_belt[1])
-                        parcel.body.target_w = best_belt[2]
-                        # print(f"Parcel {parcel.id} target_v: {parcel.body.target_v}, target_w: {parcel.body.target_w}")
+                            current_v = vel
+                            bd["transition_momentum_v"] = (current_v.x, current_v.y)
+                            bd["transition_momentum_duration"] = selected_belt.transition_momentum_duration
+                            bd["transition_momentum_time"] = bd["transition_momentum_duration"]
+                        bd["current_belt_id"] = selected_belt.id
+                        bd["target_v_enable"] = True
+                        bd["target_v"] = (best_belt[0], best_belt[1])
+                        bd["target_w"] = best_belt[2]
+                        # print(f"Parcel {parcel.id} target_v: {bd["target_v"]}, target_w: {bd["target_w"]}")
                 else:
-                    parcel.body.target_v_enable = False
+                    bd["target_v_enable"] = False
                     parcel.body.velocity *= 0.9
                     parcel.body.angular_velocity *= 0.9
-                    parcel.body.target_w_remaining = None
-                    parcel.body.momentum_intersection_ids = set()
-                    parcel.body.transition_momentum_v = None
-                    parcel.body.transition_momentum_time = 0.0
-                    parcel.body.current_belt_id = None
+                    bd["target_w_remaining"] = None
+                    bd["momentum_intersection_ids"] = set()
+                    bd["transition_momentum_v"] = None
+                    bd["transition_momentum_time"] = 0.0
+                    bd["current_belt_id"] = None
                 continue
             else:
-                parcel.body.target_v_enable = False
+                bd["target_v_enable"] = False
 
             # --- ORIGINAL MANUAL IMPULSE LOGIC ---
             # Only computed here, not up front - the useSurfaceVelocity
@@ -742,11 +814,24 @@ class PhysicsEngine:
         return sensor_shape
 
     def _parcel_vertices(self, parcel) -> List[Tuple[float, float]]:
+        """The parcel's corners in world coordinates - once per parcel per
+        sensor pass (cached while evaluate_sensors runs), from its local
+        corners (constant) with the same arithmetic as Vec2d.rotated."""
+        cache = getattr(self, "_vertex_cache", None)
+        if cache is not None:
+            hit = cache.get(parcel)
+            if hit is not None:
+                return hit
+        local = parcel.__dict__.get("_local_vertices")
+        if local is None:
+            local = parcel._local_vertices = [(v.x, v.y) for v in parcel.shape.get_vertices()]
         body = parcel.body
-        vertices = []
-        for vertex in parcel.shape.get_vertices():
-            world = body.position + vertex.rotated(body.angle)
-            vertices.append((world.x, world.y))
+        px, py = body.position
+        angle = body.angle
+        cos, sin = math.cos(angle), math.sin(angle)
+        vertices = [(px + (x * cos - y * sin), py + (x * sin + y * cos)) for x, y in local]
+        if cache is not None:
+            cache[parcel] = vertices
         return vertices
 
     def _project_polygon(self, vertices: List[Tuple[float, float]], axis: Tuple[float, float]) -> Tuple[float, float]:
@@ -829,24 +914,30 @@ class PhysicsEngine:
         (an IR sensor's footprint, or each laser banner beam as a segment
         across the sensor), then the sensor's output stage
         (devices.condition: on/off delay, invert, detection counter)."""
-        # Every parcel's position once (pymunk reads are not free), for all sensors.
-        self._parcel_positions = [(p, *p.body.position) for p in self.parcels]
+        # Every parcel's position once, as arrays: each sensor then finds the
+        # parcels near it with one numpy operation instead of a Python loop.
+        self._parcel_arrays = self._positions_arrays()
+        self._vertex_cache = {}
         for sensor in self.config.sensors:
             raw = self._raw_beams(sensor)
             sensor.sensor_states = devices.condition(sensor, raw, h)
-        self._parcel_positions = None
+        self._parcel_arrays = self._vertex_cache = None
+
+    def _positions_arrays(self):
+        parcels = self.parcels
+        if not parcels:
+            return np.empty((0, 2)), np.empty(0)
+        xy = np.array([p.body.position for p in parcels], dtype=float)
+        reach = np.fromiter((p.max_extent for p in parcels), dtype=float, count=len(parcels))
+        return xy, reach
 
     def _close_parcels(self, sensor, extent: float):
-        positions = getattr(self, "_parcel_positions", None)
-        if positions is None:
-            positions = [(p, *p.body.position) for p in self.parcels]
-        out = []
-        for p, x, y in positions:
-            reach = extent + p.max_extent
-            dx, dy = x - sensor.x, y - sensor.y
-            if dx * dx + dy * dy <= reach * reach:
-                out.append(p)
-        return out
+        arrays = getattr(self, "_parcel_arrays", None)
+        xy, reach = arrays if arrays is not None else self._positions_arrays()
+        if not len(reach):
+            return []
+        d2 = (xy[:, 0] - sensor.x) ** 2 + (xy[:, 1] - sensor.y) ** 2
+        return [self.parcels[i] for i in np.flatnonzero(d2 <= (extent + reach) ** 2)]
 
     def _raw_beams(self, sensor) -> List[bool]:
         if sensor.sensorType == "ir":
@@ -861,26 +952,47 @@ class PhysicsEngine:
         close = self._close_parcels(sensor, math.hypot(sensor.width / 2.0, (laser_count - 1) * beam_dist / 2.0))
         if not close:
             return [False] * laser_count
+        return self._banner_beams(sensor, laser_count, beam_dist, close)
+
+    def _banner_beams(self, sensor, laser_count: int, beam_dist: float, close) -> List[bool]:
+        """Beam i is the segment u in [-w/2, w/2] at v = (i - (n-1)/2) * pitch
+        in the sensor's own frame (u across the belt, v along the banner).
+        Each nearby parcel (a convex box) is turned into that frame: only the
+        beams within its v-range can hit it, and for each of those the
+        parcel's cross-section at that v is an interval of u - blocked when
+        it overlaps the beam. Same answer as testing every beam segment
+        against every parcel outline, without the per-beam polygon tests."""
+        eps = 1e-9
         rad = math.radians(sensor.rotation)
         cos_a, sin_a = math.cos(rad), math.sin(rad)
-        polygons = []
-        for p in close:
-            poly = self._parcel_vertices(p)
-            xs, ys = [v[0] for v in poly], [v[1] for v in poly]
-            polygons.append((min(xs), min(ys), max(xs), max(ys), poly))
-        beams = []
-        for i in range(laser_count):
-            # Beam i: a segment across the sensor's width at offset `by`.
-            by = (i - (laser_count - 1) / 2.0) * beam_dist
-            lx = sensor.width / 2.0
-            start = (sensor.x - lx * cos_a - by * sin_a, sensor.y - lx * sin_a + by * cos_a)
-            end = (sensor.x + lx * cos_a - by * sin_a, sensor.y + lx * sin_a + by * cos_a)
-            bx0, bx1 = min(start[0], end[0]), max(start[0], end[0])
-            by0, by1 = min(start[1], end[1]), max(start[1], end[1])
-            # Only parcels whose bounding box touches the beam's get the exact test.
-            beams.append(any(self._segment_intersects_polygon(start, end, poly)
-                             for x0, y0, x1, y1, poly in polygons
-                             if x0 <= bx1 and bx0 <= x1 and y0 <= by1 and by0 <= y1))
+        half_w = sensor.width / 2.0
+        mid = (laser_count - 1) / 2.0
+        beams = [False] * laser_count
+        for parcel in close:
+            local = []
+            for x, y in self._parcel_vertices(parcel):
+                dx, dy = x - sensor.x, y - sensor.y
+                local.append((dx * cos_a + dy * sin_a, -dx * sin_a + dy * cos_a))
+            vs = [v for _u, v in local]
+            first = max(0, math.ceil((min(vs) - eps) / beam_dist + mid))
+            last = min(laser_count - 1, math.floor((max(vs) + eps) / beam_dist + mid))
+            edges = [(u0, v0, u1, v1, min(v0, v1) - eps, max(v0, v1) + eps)
+                     for (u0, v0), (u1, v1) in zip(local, local[1:] + local[:1])]
+            for i in range(first, last + 1):
+                if beams[i]:
+                    continue
+                b = (i - mid) * beam_dist
+                lo, hi = math.inf, -math.inf
+                for u0, v0, u1, v1, v_lo, v_hi in edges:
+                    if v_lo > b or v_hi < b:
+                        continue                        # edge entirely on one side
+                    if abs(v1 - v0) <= eps:             # edge along the beam
+                        lo, hi = min(lo, u0, u1), max(hi, u0, u1)
+                    else:
+                        u = u0 + (b - v0) / (v1 - v0) * (u1 - u0)
+                        lo, hi = min(lo, u), max(hi, u)
+                if lo <= hi and hi >= -half_w - eps and lo <= half_w + eps:
+                    beams[i] = True
         return beams
 
     def _update_belt_loads(self):
@@ -890,20 +1002,20 @@ class PhysicsEngine:
             return
         for belt in watched:
             belt.load = 0.0
+        watched_ids = {id(b) for b in watched}
         for parcel in self.parcels:
-            px, py = parcel.body.position
-            for belt in self._belts_under(px, py, watched):
-                belt.load += parcel.body.mass
+            for belt in self._parcel_belts(parcel):
+                if id(belt) in watched_ids:
+                    belt.load += parcel.body.mass
 
     def step(self, h: float):
         """One fixed physics step: drives, sources, traction, solver, sinks,
         sensors. Sensors run every step so a parcel crossing a narrow sensor
         between two GUI frames is still seen (and counted in risingEdges)."""
         with geometry_frame(self.config.belts):
-            # Each belt's bounding box for this step: a point is only tested
-            # against the belts whose box holds it (one or two, not all).
-            self._belt_boxes = [(belt, *belt_bounds(belt)) for belt in self.config.belts]
+            self._prepare_belt_lookup()
             self._step(h)
+            self._under = None
 
     def _step(self, h: float):
         self._update_belt_loads()

@@ -459,6 +459,20 @@ python main.py test_config.json --speed max --render-fps 20
 `--no-sim-thread` steps physics once per frame instead (the old behaviour;
 "max" is then 8x). `--headless` always uses the simulation thread.
 
+How many parcels run in real time: the physics takes 250 steps per simulated
+second and its cost grows with the parcel count. `python bench_physics.py`
+measures it on a synthetic plant (same physics settings as
+`test_config.json`); on the development PC:
+
+| Parcels | ms per step | Real-time factor |
+|---|---|---|
+| 50 | 0.57 | 7x |
+| 100 | 1.15 | 3.4x |
+| 200 | 2.2 | 1.8x |
+| 400 | 4.4 | 0.9x |
+
+The window and the PLC exchange take some of that headroom.
+
 ### Belt drives, traction, and timing
 
 See [drive_traction_plan.md](drive_traction_plan.md) for the design.

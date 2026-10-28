@@ -169,3 +169,30 @@ def surface_velocity(belt: Belt, px: float, py: float) -> Optional[Tuple[float, 
         w = curved_direction(belt) * speed / belt.radius if belt.radius > 0 else 0.0
         return -w * dy, w * dx, w
     return None
+
+
+class BeltGrid:
+    """Which belts can hold a point, in O(1): a uniform grid (cells of `cell`
+    metres) listing, per cell, the belts whose bounding box reaches into it
+    - in layout order, so the answers come out in the same order as testing
+    every belt. A parcel is then tested exactly against the one to three
+    belts of its cell instead of all of them. Build it again when a belt
+    moves (PhysicsEngine does, from the belts' bounds)."""
+
+    def __init__(self, belts: Sequence[Belt], cell: float = 1.0):
+        self.cell = cell
+        self.cells = {}
+        for belt in belts:
+            x0, y0, x1, y1 = belt_bounds(belt)
+            entry = (belt, x0, y0, x1, y1)
+            for cx in range(math.floor(x0 / cell), math.floor(x1 / cell) + 1):
+                for cy in range(math.floor(y0 / cell), math.floor(y1 / cell) + 1):
+                    self.cells.setdefault((cx, cy), []).append(entry)
+
+    def belts_at(self, px: float, py: float) -> list:
+        """The belts whose surface holds (px, py), in layout order."""
+        cell = self.cells.get((math.floor(px / self.cell), math.floor(py / self.cell)))
+        if not cell:
+            return []
+        return [belt for belt, x0, y0, x1, y1 in cell
+                if x0 <= px <= x1 and y0 <= py <= y1 and belt_contains(belt, px, py)]
