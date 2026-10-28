@@ -119,11 +119,20 @@ class Renderer:
 
     def open_designer(self):
         """Open this layout in the layout editor (its own process): layouts
-        are designed there, then run here."""
+        are designed there, then run here. A designer already running shows
+        it instead of a second one starting (sim_link.py)."""
+        import sim_link
+        if self.config_path and sim_link.request_open_designer(self.config_path) is not None:
+            print(f"[Sim] The designer is showing {self.config_path}.")
+            return
+        starting = getattr(self, "_designer_process", None)
+        if starting is not None and starting.poll() is None:
+            print("[Sim] The designer is still starting.")
+            return
         editor = os.path.join(os.path.dirname(os.path.abspath(__file__)), "layout_editor.py")
         args = [sys.executable, editor] + ([self.config_path] if self.config_path else [])
         try:
-            subprocess.Popen(args, cwd=os.path.dirname(editor))
+            self._designer_process = subprocess.Popen(args, cwd=os.path.dirname(editor))
             print(f"[Sim] Opened the designer on {self.config_path or 'a new layout'} - save there, "
                   f"then Run in Simulator to see the changes here.")
         except OSError as exc:

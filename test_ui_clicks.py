@@ -169,6 +169,33 @@ class EditorClicksTest(unittest.TestCase):
         saved = load_config(self.layout)
         self.assertEqual(next(b for b in saved.belts if b.id == "belt_1_1_2").speed, 1.25)
 
+    def test_the_running_designer_shows_the_layout_asked_for(self):
+        import layout_editor
+        import sim_link
+        link = layout_editor.attach_instance_link(_app, poll_ms=10)
+        self.addCleanup(link.close)
+
+        def ask(path):
+            self.assertIsNotNone(sim_link.request_open_designer(path))
+            for _ in range(100):
+                _app.processEvents()
+                QTest.qWait(10)
+                if link._pending is None:              # the designer took it
+                    break
+            _app.processEvents()
+
+        ask(self.layout)                                            # the layout it has open: just the front
+        self.assertTrue(self.window.isVisible())
+        other = os.path.join(os.path.dirname(self.layout), "other_layout.json")
+        shutil.copy(self.layout, other)
+        ask(other)                                                  # another layout: opened in its place
+        shown = [w for w in _app.topLevelWidgets() if isinstance(w, MainWindow) and w.isVisible()]
+        self.assertEqual([os.path.basename(w.config_path) for w in shown], ["other_layout.json"])
+        for w in shown:
+            self.addCleanup(w.close)
+        timer = _app._instance_link[1]
+        timer.stop()
+
     def test_run_in_simulator_reuses_the_running_simulator(self):
         from sim_link import SimulatorLink
         link = SimulatorLink(self.layout)                            # a simulator window is running
@@ -334,6 +361,23 @@ class SimulatorClicksTest(unittest.TestCase):
         args = popen.call_args[0][0]
         self.assertTrue(args[1].endswith("layout_editor.py"))
         self.assertEqual(args[2], "test_config.json")
+
+    def test_edit_in_designer_reuses_the_running_designer(self):
+        from sim_link import InstanceLink
+        self.r.config_path = "test_config.json"
+        link = InstanceLink("designer")                              # a designer is open
+        self.addCleanup(link.close)
+        with mock.patch("visualizer.subprocess.Popen") as popen:
+            self.click(self.r.editor_ui.designer_btn)
+            self.click(self.r.editor_ui.designer_btn)
+        popen.assert_not_called()                                   # no second designer
+        self.assertEqual(os.path.normcase(link.take()), os.path.normcase(os.path.abspath("test_config.json")))
+        link.close()
+        with mock.patch("visualizer.subprocess.Popen") as popen:    # none running: start one, once
+            popen.return_value.poll.return_value = None
+            self.click(self.r.editor_ui.designer_btn)
+            self.click(self.r.editor_ui.designer_btn)
+        self.assertEqual(popen.call_count, 1)
 
     def centre_on(self, item):
         self.r.zoom = 1.0

@@ -4429,19 +4429,47 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, "Open Layout", "", "JSON Files (*.json)")
         if not path:
             return
+        self._open_path(path)
+
+    def _open_path(self, path: str) -> Optional["MainWindow"]:
+        """This window replaced by one on `path` (asks before discarding
+        unsaved changes). The new window, or None if it stayed."""
         try:
             config = load_config(path)
         except (OSError, ValueError) as exc:
             QMessageBox.warning(self, "Open Layout", f"Could not load {path}:\n{exc}")
-            return
+            return None
         if not self.undo_stack.isClean():
             answer = QMessageBox.question(self, "Unsaved changes", "Discard unsaved changes to the current layout?")
             if answer != QMessageBox.Yes:
-                return
+                return None
         replacement = MainWindow(config=config, config_path=path)
         replacement.show()
         self.undo_stack.setClean()  # changes were explicitly discarded
         self.close()
+        return replacement
+
+    def show_layout(self, path: str) -> "MainWindow":
+        """Edit in Designer from the simulator (sim_link.py): this window to
+        the front, on `path` - opening it here if another layout is open.
+        Returns the window now showing it (this one if the user kept their
+        unsaved layout)."""
+        import sim_link
+        window = self
+        if not sim_link.same_layout(self.config_path, path):
+            self._bring_to_front()
+            window = self._open_path(path) or self
+        window._bring_to_front()
+        window.statusBar().showMessage(f"Editing {os.path.basename(path)} (from the simulator) - save, then Run "
+                                       f"in Simulator to see it there.", 8000)
+        return window
+
+    def _bring_to_front(self):
+        if self.isMinimized():
+            self.showNormal()
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     def _save_config(self) -> bool:
         """Save to the opened file (asks for a path if there is none).
@@ -4504,7 +4532,33 @@ def main():
         # A path that doesn't exist yet becomes the Save target.
         window = MainWindow(config_path=args.layout)
     window.show()
+    attach_instance_link(app)
     sys.exit(app.exec())
+
+
+def attach_instance_link(app, poll_ms: int = 150):
+    """One designer: the simulator's Edit in Designer asks this one to show
+    the layout (sim_link.py) instead of starting another. Returns the link."""
+    import sim_link
+    link = sim_link.InstanceLink("designer")
+
+    def poll():
+        path = link.take()
+        if not path:
+            return
+        windows = [w for w in QApplication.topLevelWidgets() if isinstance(w, MainWindow) and w.isVisible()]
+        active = QApplication.activeWindow()
+        window = active if active in windows else (windows[-1] if windows else None)
+        if window is None:
+            window = MainWindow(config=load_config(path), config_path=path)
+        window.show_layout(path)
+
+    timer = QTimer(app)
+    timer.timeout.connect(poll)
+    timer.start(poll_ms)
+    app.aboutToQuit.connect(link.close)
+    app._instance_link = (link, timer)      # kept alive with the app
+    return link
 
 
 if __name__ == "__main__":

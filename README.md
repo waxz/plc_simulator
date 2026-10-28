@@ -197,8 +197,8 @@ The Qt layout editor is where belt shapes and positions are designed:
   it in the simulator. There is one simulator window: if one is already
   running (started from here, or `python main.py` in a terminal), it reloads
   the saved layout in place; otherwise `main.py` starts in its own window.
-  The running simulator is noted in `sim_instance.json` next to the settings
-  file (`sim_link.py`).
+  The running simulator and designer are noted in `sim_instance.json` /
+  `designer_instance.json` next to the settings file (`sim_link.py`).
 - Dark and light themes: the toolbar button or **View > Theme**. The choice
   is shared with the simulator and remembered in
   `~/.conveyor_sim/settings.json` (or `$CONVEYOR_SIM_SETTINGS`).
@@ -477,7 +477,9 @@ coordinates. `V` toggles the per-parcel speed readout (actual / belt speed).
 The simulator runs and watches a layout; it does not edit it. Layouts are
 designed in the layout editor, and **Layout > Edit in Designer** opens the
 current layout there (save, then **Run in Simulator** in the editor to see
-the change). The tool bar under the status bar holds every command in
+the change). Like the simulator, there is one designer: if one is open, it
+comes to the front with this layout (opening it in place of another layout,
+asking first about unsaved changes) instead of a second one starting. The tool bar under the status bar holds every command in
 three groups: Simulation (Start / Pause, Clear Parcels, Reset), Layout
 (Components - the layout as a tree, a folder per kind - and Edit in
 Designer) and View (Hide / Show Drawing, theme). The layout's DXF background
