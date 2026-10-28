@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Conveyor 3D View</title>
+  <style>
+    :root {
+      --bg: #1f2329; --panel: rgba(36, 40, 47, 0.92); --border: #383e47; --text: #d6dbe1;
+      --dim: #8b949e; --accent: #3898d6; --ok: #40b268; --alarm: #de4c40;
+    }
+    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+                 font: 13px "Segoe UI", system-ui, sans-serif; overflow: hidden; }
+    #view { position: fixed; inset: 0; }
+    .panel { position: fixed; background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+             padding: 8px 10px; user-select: none; }
+    #hud { top: 12px; left: 12px; min-width: 210px; }
+    #hud h1 { margin: 0 0 4px; font-size: 14px; font-weight: 600; }
+    #hud .row { display: flex; justify-content: space-between; gap: 16px; color: var(--dim); }
+    #hud .row b { color: var(--text); font-weight: 500; font-variant-numeric: tabular-nums; }
+    #link { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--alarm);
+            margin-right: 6px; vertical-align: 1px; }
+    #link.on { background: var(--ok); }
+    #tools { top: 12px; right: 12px; display: flex; gap: 6px; }
+    #tools button { background: transparent; color: var(--text); border: 1px solid var(--border);
+                    border-radius: 4px; padding: 4px 10px; font: inherit; cursor: pointer; }
+    #tools button:hover { border-color: var(--accent); }
+    #tools button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+    #hint { bottom: 12px; left: 12px; color: var(--dim); }
+    #tip { position: fixed; pointer-events: none; background: var(--panel); border: 1px solid var(--border);
+           border-radius: 4px; padding: 3px 7px; display: none; white-space: nowrap; }
+    #error { top: 50%; left: 50%; transform: translate(-50%, -50%); display: none; max-width: 460px; }
+  </style>
+  <!-- three.js: from the CDN, or a local copy in view3d_web/vendor/three (view3d.py swaps it in). -->
+  <script type="importmap">
+    { "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/" } }
+  </script>
+</head>
+<body>
+  <div id="view"></div>
+  <div id="hud" class="panel">
+    <h1><span id="link"></span><span id="title">Conveyor 3D View</span></h1>
+    <div class="row">Sim time <b id="time">-</b></div>
+    <div class="row">Parcels <b id="parcels">0</b></div>
+    <div class="row">Pallets <b id="pallets">0</b></div>
+  </div>
+  <div id="tools" class="panel">
+    <button id="fit" title="Frame the whole layout (F)">Fit</button>
+    <button id="top" title="Look straight down (T)">Top</button>
+    <button id="drawing" class="on" title="Show / hide the floor plan (D)">Floor plan</button>
+    <button id="labels" title="Show / hide names (L)">Labels</button>
+  </div>
+  <div id="hint" class="panel">Drag: orbit · Right-drag: pan · Wheel: zoom · Click an operator button to press it</div>
+  <div id="tip"></div>
+  <div id="error" class="panel"></div>
+  <script type="module" src="viewer.js"></script>
+</body>
+</html>

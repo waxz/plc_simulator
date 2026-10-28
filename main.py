@@ -8,6 +8,7 @@ from physics import PhysicsEngine
 from mqtt_data_exchange import MQTTSyncEngine, apply_exchange_config
 from metrics_store import MetricsStore
 from sim_runner import SimulationRunner
+import view3d
 
 
 def run_pygame(config, physics_engine, mqtt, headless: bool, runner=None, config_path=None,
@@ -77,6 +78,7 @@ def run_pygame(config, physics_engine, mqtt, headless: bool, runner=None, config
                 mqtt.sync()
 
             renderer.render(physics_engine)
+            view3d.pump(renderer, physics_engine)
             if headless:
                 # No display: nothing else paces this loop.
                 time.sleep(1 / 60.0)
@@ -176,6 +178,12 @@ def build_argparser() -> argparse.ArgumentParser:
         help="Simulation speed: a real-time factor (1 = real time, 4 = four times faster) or 'max' "
              "(as fast as the host can). Also the Speed button / [ ] keys in the window.",
     )
+    parser.add_argument("--view3d", nargs="?", const="open", choices=("open", "serve"),
+                        help="The 3D view of the simulation (view3d.py): 'open' (the default) serves it and opens "
+                             "it in the browser, 'serve' only serves it (headless / another PC via a tunnel). "
+                             "Also the window's 3D View button")
+    parser.add_argument("--view3d-port", type=int, default=view3d.DEFAULT_PORT,
+                        help=f"Port of the 3D view on 127.0.0.1 (default {view3d.DEFAULT_PORT})")
     parser.add_argument("--render-fps", type=int, default=30,
                         help="Window frame rate (default 30); the simulation doesn't wait for it")
     return parser
@@ -238,6 +246,9 @@ def run_layout(args, speed, link=None):
     global _web_ui_started
     print(f"Loading configuration from {args.config}...")
     config = load_config(args.config)
+    view3d.server(args.view3d_port)
+    if args.view3d and not view3d.SERVER.running:
+        view3d.open_view(config, args.config, browser=args.view3d == "open", port=args.view3d_port)
     if args.exchange_config:
         apply_exchange_config(config, args.exchange_config)
         print(f"Loaded exchange settings from {args.exchange_config}.")

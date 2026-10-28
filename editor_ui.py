@@ -20,7 +20,7 @@ TOOLBAR_GROUPS = (
     ("SIMULATION", (("sim_play_btn", "Start", 76, "#sim_primary"), ("sim_speed_btn", "Speed 1x", 92),
                     ("sim_clear_btn", "Clear Parcels", 108), ("sim_reset_btn", "Reset", 64))),
     ("LAYOUT", (("manager_btn", "Components", 100), ("designer_btn", "Edit in Designer", 126))),
-    ("VIEW", (("drawing_btn", "Hide Drawing", 110), ("theme_btn", "Light Theme", 104))),
+    ("VIEW", (("view3d_btn", "3D View", 76), ("drawing_btn", "Hide Drawing", 110), ("theme_btn", "Light Theme", 104))),
 )
 
 # What the inspector lists for each kind of component (sorted into the
@@ -403,7 +403,7 @@ class EditorUI:
                                     (self.sim_clear_btn, "CLEAR"),
                                     (self.sim_reset_btn, "RESET"), (self.theme_btn, "TOGGLE_THEME"),
                                     (self.manager_btn, "OPEN_MANAGER"), (self.designer_btn, "OPEN_DESIGNER"),
-                                    (self.drawing_btn, "TOGGLE_DRAWING")):
+                                    (self.drawing_btn, "TOGGLE_DRAWING"), (self.view3d_btn, "OPEN_3D")):
                 if event.ui_element == button:
                     return command
             if self.manager_select_btn and event.ui_element == self.manager_select_btn:

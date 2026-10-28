@@ -348,9 +348,18 @@ class Renderer:
         
         if cmd == "OPEN_DESIGNER":
             self.open_designer()
+        elif cmd == "OPEN_3D":
+            self.open_view3d()
         elif cmd == "OPEN_MANAGER":
             self.editor_ui.open_manager_panel()
         return cmd
+
+    def open_view3d(self) -> str:
+        """The 3D view of this simulation in the browser (view3d.py)."""
+        import view3d
+        url = view3d.open_view(self.config, self.config_path)
+        print(f"[Sim] 3D view: {url}")
+        return url
 
     def _set_button(self, button, pressed: bool):
         """Press / release an operator button: here (the lamp-and-contact

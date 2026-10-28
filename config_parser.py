@@ -315,6 +315,10 @@ class RobotArm(BaseModel):
     # Runtime pose for drawing: the tool (gripper) position.
     toolX: float = Field(default=0.0, exclude=True)
     toolY: float = Field(default=0.0, exclude=True)
+    # Runtime: the cycle's phase ("idle", "to_pick", "to_place", "home") and
+    # how far through it (0..1) - the 3D view lifts the tool from these.
+    phase: str = Field(default="idle", exclude=True)
+    phaseT: float = Field(default=0.0, exclude=True)
 
 
 class Elevator(BaseModel):

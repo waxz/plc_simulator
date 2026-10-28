@@ -188,8 +188,12 @@ class MachineRuntime:
 
     def carried_parts(self) -> List:
         """Parts out of the space: pallet loads and gripped parts (drawn on top)."""
-        out = [load for pallet in self.pallets for load in pallet.loads]
-        out += [s["held"] for s in self._robots.values() if s.get("held") is not None]
+        return [part for part, _carrier in self.carried_parts_with_carrier()]
+
+    def carried_parts_with_carrier(self) -> List[Tuple[object, str]]:
+        """(part, "load" | "held") for every part out of the space."""
+        out = [(load, "load") for pallet in self.pallets for load in pallet.loads]
+        out += [(s["held"], "held") for s in self._robots.values() if s.get("held") is not None]
         return out
 
     # -- per step --------------------------------------------------------------------
@@ -390,6 +394,7 @@ class MachineRuntime:
 
     def _step_robot(self, robot: RobotArm, h: float) -> None:
         state = self._robots.setdefault(robot.id, {"phase": "idle", "t": 0.0, "held": None, "from": None})
+        robot.phase, robot.phaseT = state["phase"], 0.0
         if state["phase"] == "idle":
             robot.partAtPick = self.part_at(robot.pickX, robot.pickY, robot.pickLevel, robot.pickRadius) is not None
             robot.placeReady = self.place_ready(robot)
@@ -402,6 +407,7 @@ class MachineRuntime:
         leg = max(1e-3, robot.cycleTime / 3.0)
         state["t"] += h
         t = min(1.0, state["t"] / leg)
+        robot.phaseT = t
         robot.toolX, robot.toolY = self._sweep(robot, state["from"], self._robot_target(robot, state["phase"]), t)
         if t < 1.0:
             return

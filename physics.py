@@ -88,6 +88,7 @@ class ParcelView(NamedTuple):
     target_speed: Optional[float]
     kind: str = "parcel"                # "parcel" or "pallet"
     level: int = 0
+    carrier: str = ""                   # "load" (on a pallet), "held" (in a gripper), "" (free)
 
 
 def _smootherstep(t: float) -> float:
@@ -1333,10 +1334,10 @@ class PhysicsEngine:
             views.append(ParcelView(parcel.id, self._parcel_vertices(parcel), x, y, parcel.color, actual, target,
                                     parcel.kind, parcel.level))
         # Loads and gripped parts: drawn on top of their pallets.
-        for part in self.machines.carried_parts():
+        for part, carrier in self.machines.carried_parts_with_carrier():
             x, y = part.body.position
             views.append(ParcelView(part.id, self._parcel_vertices(part), x, y, part.color, 0.0, None,
-                                    part.kind, part.level))
+                                    part.kind, part.level, carrier))
         return views
 
     def step_for(self, wall_seconds: float) -> int:

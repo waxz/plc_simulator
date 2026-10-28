@@ -29,6 +29,8 @@ The Python simulation runs as a standalone process that:
   impulse application, parcel collision, and sensor state evaluation.
 - `machines.py` - Pallets, stoppers, robot arms and elevators, and floor
   levels (see [Machines](#machines-pallets-stoppers-robot-arms-elevators)).
+- `scene3d.py`, `view3d.py`, `view3d_web/` - The 3D view of the running
+  simulation in the browser (see [3D view](#3d-view)).
 - `visualizer.py` - The Pygame rendering loop. Draws belts, sensors, parcels, and
   selection highlights based on the simulation state.
 - `editor_ui.py` - The Pygame GUI panel for viewing read-only properties of the
@@ -672,6 +674,48 @@ python main.py test_config.json --web-ui
 # with a channel registry file instead of the hardcoded exchange definitions:
 python main.py test_config.json --channel-registry channels.json --web-ui
 ```
+
+### 3D view
+
+The running simulation in 3D, in a browser: the simulator window's
+**3D View** button (VIEW group), or start with it:
+
+```bash
+python main.py machines_demo.json --view3d
+```
+
+The layout is built from what the designer placed on the 2D floor plan:
+belts are their outlines extruded at conveyor height (0.75 m) on stands,
+straight belts show chevrons that move at the belt's actual speed. The DXF
+background lies on the floor. Sensors show their beams (red when blocked),
+operator panels are pedestals with lamps and buttons; click a button to
+press it, like in the 2D window. Stoppers rise and drop, robot arms reach
+with two links to their gripper, and elevators lift their platform belt
+between floor levels (`levelHeight` apart).
+
+The physics stays 2D: belts move parcels on the floor plane exactly as in
+the 2D window. The view adds the height. A parcel or pallet sits on its
+level's belt top, a pallet's load on the pallet deck, a lift's riders on the
+platform, and a gripped part follows the robot's tool up and down between
+pick and place. Every moving part is sent with a full 3D pose (x, y, z, yaw)
+and size, so machines that will really lift or carry things later (mobile
+robots, lifting arms) only report a z; the viewer draws what it gets.
+
+- Drag orbits, right-drag pans, the wheel zooms toward the cursor.
+  **Fit** (F) frames the layout and **Top** (T) looks straight down.
+  **Floor plan** (D) shows / hides the drawing and **Labels** (L) the names.
+  Hover anything to see its name.
+- The page is served by the simulator itself on 127.0.0.1, port 8765
+  (`--view3d-port`). `--view3d serve` serves without opening a browser, for
+  `--headless` or a browser elsewhere through a tunnel. It uses no extra
+  Python packages.
+- three.js 0.160 comes from the jsDelivr CDN. On a PC without internet, unpack
+  the npm package `three@0.160.0` into `view3d_web/vendor/three` and the page
+  uses that copy instead.
+- How it works: `scene3d.py` turns the layout (once) and the live state (~30
+  times a second, only while a page is open) into 3D data. `view3d.py` serves
+  the page, `/scene`, and `/events` (server-sent events). `view3d_web/viewer.js`
+  draws it with three.js.
 
 ### Mock PLC client
 
