@@ -39,8 +39,12 @@ from cad.constraints import (
 )
 from cad.belts import belt_chain_connections
 from cad.ports import belt_ports
+from cad.snap import join_shapes
 from config_parser import BackgroundDrawing, BeltConnection, SketchEntity
 from id_utils import next_indexed_id
+from modify_tool import (
+    BreakTool, CopyTool, ExtendTool, FilletTool, MirrorTool, MoveTool, OffsetTool, RotateTool, ScaleTool, TrimTool,
+)
 from path_tool import (
     AnchorGripManager, CurvedBeltDrawTool, OutlineDrawTool, PathDrawTool, PathToolbar, PickFromDrawingTool,
     SketchArcTool,
@@ -270,9 +274,19 @@ class CadController:
         self.sketch_polygon_tool = SketchPolygonTool(window, self.draw_toolbar, self.snap, belt_item_cls=belt_item_cls)
         for tool in (self.sketch_rect_tool, self.sketch_circle_tool, self.sketch_polygon_tool):
             tool.on_sketch = self.add_sketch
+        # Modify tools (modify_tool.py): trim, extend, break, offset, fillet, transforms.
+        self.modify_tools = {}
+        for name, cls in (("trim", TrimTool), ("extend", ExtendTool), ("break", BreakTool), ("offset", OffsetTool),
+                          ("fillet", FilletTool), ("move", MoveTool), ("copy", CopyTool), ("rotate", RotateTool),
+                          ("mirror", MirrorTool), ("scale", ScaleTool)):
+            tool = cls(window, self.draw_toolbar, self.snap, belt_item_cls=belt_item_cls)
+            tool.cad = self
+            self.modify_tools[name] = tool
         self.sketch_items: List[SketchItem] = []
         self._background_shapes = []
         window.view.on_delete_extra = self._delete_selected_sketch
+        window.view.on_copy_extra = self.selected_sketch_entities
+        window.view.on_paste_extra = self.paste_sketch
         self.grips = AnchorGripManager(window, belt_item_cls=belt_item_cls, scale=scale, snap=self.snap)
         self.ports = PortOverlay(self)
         self.closing = False  # set by MainWindow.closeEvent: stop touching the scene
@@ -414,6 +428,49 @@ class CadController:
         self.window.undo_stack.push(SketchCommand(self, before, after, "Delete sketch"))
         return True
 
+    def selected_sketch_indices(self) -> List[int]:
+        try:
+            return sorted(i.index for i in self.window.scene.selectedItems() if isinstance(i, SketchItem))
+        except RuntimeError:
+            return []
+
+    def selected_sketch_entities(self) -> List[SketchEntity]:
+        """Copies of the selected sketch lines (the clipboard's Ctrl+C / Ctrl+X)."""
+        return [self.config.sketch[i].model_copy(deep=True) for i in self.selected_sketch_indices()]
+
+    def paste_sketch(self, entities: List[SketchEntity], dx: float, dy: float):
+        """Ctrl+V: the copied sketch lines, moved by (dx, dy) - one undo step."""
+        from cad import modify as cmod
+        moved = [SketchEntity(points=pts, bulges=bul, closed=closed)
+                 for pts, bul, closed in (cmod.move(e, dx, dy) for e in entities)]
+        before = list(self.config.sketch)
+        self.window.undo_stack.push(SketchCommand(self, before, before + moved, "Paste sketch"))
+
+    def join_selected_sketch(self):
+        """Join the selected sketch lines end to end into one (Modify > Join)."""
+        indices = self.selected_sketch_indices()
+        if len(indices) < 2:
+            self._status("Join: select two or more sketch lines that meet end to end.")
+            return
+        try:
+            pts, bul, closed = join_shapes([self.config.sketch[i] for i in indices])
+        except ValueError as exc:
+            self._status(f"Join: {exc}")
+            return
+        self.modify_tools["trim"].replace(indices, [(pts, bul, closed)], "Join")
+        self._status(f"Joined {len(indices)} lines into one{' closed shape' if closed else ''}.")
+
+    def explode_selected_sketch(self):
+        """Split each selected sketch line into its single segments (Modify > Explode)."""
+        from cad import modify as cmod
+        indices = self.selected_sketch_indices()
+        if not indices:
+            self._status("Explode: select sketch lines first.")
+            return
+        parts = [part for i in indices for part in cmod.explode(self.config.sketch[i])]
+        self.modify_tools["trim"].replace(indices, parts, "Explode")
+        self._status(f"Exploded into {len(parts)} segments.")
+
     def clear_sketch(self):
         if self.config.sketch:
             self.window.undo_stack.push(SketchCommand(self, list(self.config.sketch), [], "Clear sketch"))
@@ -498,6 +555,24 @@ class CadController:
         ]
         sketch.addSeparator()
         clear_action = add(sketch, "Clear Sketch", self.clear_sketch)
+        modify_menu = tools.addMenu("Modify")
+        mt = self.modify_tools
+        modify_actions = [
+            add(modify_menu, "Trim", mt["trim"].start, "T"),
+            add(modify_menu, "Extend", mt["extend"].start, "E"),
+            add(modify_menu, "Break", mt["break"].start, "K"),
+            add(modify_menu, "Offset", mt["offset"].start, "Shift+O"),
+            add(modify_menu, "Fillet", mt["fillet"].start, "F"),
+            add(modify_menu, "Join", self.join_selected_sketch, "J"),
+            add(modify_menu, "Explode", self.explode_selected_sketch, "X"),
+            None,
+            add(modify_menu, "Move", mt["move"].start, "M"),
+            add(modify_menu, "Copy", mt["copy"].start, "Shift+M"),
+            add(modify_menu, "Rotate", mt["rotate"].start, "R"),
+            add(modify_menu, "Mirror", mt["mirror"].start, "I"),
+            add(modify_menu, "Scale", mt["scale"].start),
+        ]
+        modify_menu.insertSeparator(modify_actions[8])
         belts = tools.addMenu("Belts")
         belt_actions = [
             add(belts, "Belt from Sketch/Drawing", self.pick_tool.start, "B"),
@@ -524,6 +599,20 @@ class CadController:
                 action.setToolTip(f"{action.text()} ({key})" if key else action.text())
                 bar.addAction(action)
         self.sketch_toolbar = bar
+        # Modify: a vertical tool bar beside the canvas, as in a CAD tool.
+        mbar = QToolBar("Modify", w)
+        mbar.setObjectName("modifyToolbar")
+        mbar.setOrientation(Qt.Vertical)
+        w.addToolBar(Qt.LeftToolBarArea, mbar)
+        mbar.addWidget(QLabel(" Modify"))
+        for action in modify_actions:
+            if action is None:
+                mbar.addSeparator()
+                continue
+            key = action.shortcut().toString()
+            action.setToolTip(f"{action.text()} ({key}) - sketch lines" if key else f"{action.text()} - sketch lines")
+            mbar.addAction(action)
+        self.modify_toolbar = mbar
         connections = tools.addMenu("Connections")
         add(connections, "Connect Belts", self.connect_selected, "Ctrl+J")
         add(connections, "Fillet Belts...", self.fillet_selected, "Ctrl+Shift+F")

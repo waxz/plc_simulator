@@ -172,6 +172,15 @@ class PathToolbar(QToolBar):
         self.corner_spin = QDoubleSpinBox(minimum=0.0, maximum=50.0, singleStep=0.25, value=1.0, decimals=3, suffix=" m")
         self.corner_spin.setToolTip("Path: sharp corners are rounded with this radius when finished (0 = sharp)")
         self.corner_actions = [self.addWidget(QLabel(" Corner R ")), self.addWidget(self.corner_spin)]
+        # Modify tools (modify_tool.py): Offset's distance, Mirror's keep-the-originals.
+        self.distance_spin = QDoubleSpinBox(minimum=0.001, maximum=100.0, singleStep=0.1, value=0.5, decimals=3,
+                                            suffix=" m")
+        self.distance_spin.setToolTip("Offset: how far the parallel copy is")
+        self.distance_actions = [self.addWidget(QLabel(" Distance ")), self.addWidget(self.distance_spin)]
+        self.keep_check = QCheckBox("Keep originals")
+        self.keep_check.setChecked(True)
+        self.keep_check.setToolTip("Mirror: keep the selected lines and add the mirrored copies (off: replace them)")
+        self.keep_actions = [self.addWidget(self.keep_check)]
         # Draw Belt Path: one belt (and motor) per straight run / curve, or one path belt.
         self.split_check = QCheckBox("Separate belts")
         self.split_check.setChecked(True)
@@ -257,11 +266,13 @@ class PathToolbar(QToolBar):
             self.on_options_changed()
 
     def configure(self, title: str, *, segments: bool, width: bool, corner: bool, points: bool,
-                  belt_type: bool = False, sides: bool = False, split: bool = False, arc_method: bool = False):
+                  belt_type: bool = False, sides: bool = False, split: bool = False, arc_method: bool = False,
+                  distance: bool = False, keep: bool = False):
         self.setEnabled(True)
         self.mode_label.setText(f"  {title}  ")
         for actions, shown in ((self.segment_actions, segments), (self.width_actions, width),
-                               (self.corner_actions, corner)):
+                               (self.corner_actions, corner), (self.distance_actions, distance),
+                               (self.keep_actions, keep)):
             for action in actions:
                 action.setVisible(shown)
         self.input.setEnabled(points)

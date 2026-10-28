@@ -2875,6 +2875,11 @@ class CanvasView(QGraphicsView):
         self.tool = None
         # Called first by Delete; returns True if it deleted something itself.
         self.on_delete_extra = None
+        # Sketch lines on the clipboard too (layout_editor_cad.py): copies of
+        # the selected ones, and how to paste them moved by (dx, dy).
+        self.on_copy_extra = None
+        self.on_paste_extra = None
+        self._clipboard_sketch = []
         self._pan_tool_active = False
         self._middle_pan_active = False
         self._middle_pan_last_pos = None
@@ -3059,6 +3064,9 @@ class CanvasView(QGraphicsView):
             self.setDragMode(QGraphicsView.ScrollHandDrag)
         elif event.matches(QKeySequence.Copy):
             self._copy_selected()
+        elif event.matches(QKeySequence.Cut):
+            if self._copy_selected():
+                self._delete_selected()
         elif event.matches(QKeySequence.Paste):
             self._paste_clipboard()
         elif event.key() in (Qt.Key_Delete, Qt.Key_Backspace):
@@ -3173,13 +3181,22 @@ class CanvasView(QGraphicsView):
             return
         super().mouseDoubleClickEvent(event)
 
-    def _copy_selected(self):
+    def _copy_selected(self) -> bool:
+        """Ctrl+C (and the copy half of Ctrl+X): the selected components and
+        sketch lines. False when nothing is selected (the clipboard is kept)."""
         selected = [i for i in self.scene().selectedItems() if isinstance(i, PlacedItem)]
-        if selected:
-            self._clipboard_models = [deepcopy(i.model) for i in selected]
+        sketch = self.on_copy_extra() if self.on_copy_extra is not None else []
+        if not selected and not sketch:
+            return False
+        self._clipboard_models = [deepcopy(i.model) for i in selected]
+        self._clipboard_sketch = sketch
+        return True
 
     def _paste_clipboard(self):
+        if not self._clipboard_models and not self._clipboard_sketch:
+            return
         if not self._clipboard_models:
+            self._paste_sketch_only()
             return
         # Paste the whole group at the mouse position instead of the
         # original spot: shift every copied model by the same offset, from
@@ -3199,8 +3216,9 @@ class CanvasView(QGraphicsView):
 
         multi = len(self._clipboard_models) > 1
         text = f"Paste {len(self._clipboard_models)} Components" if multi else "Paste Component"
-        if self.undo_stack is not None and multi:
-            self.undo_stack.beginMacro(text)
+        with_sketch = bool(self._clipboard_sketch and self.on_paste_extra is not None)
+        if self.undo_stack is not None and (multi or with_sketch):
+            self.undo_stack.beginMacro(text + (" and sketch" if with_sketch else ""))
         new_items = []
         for model in self._clipboard_models:
             new_model = deepcopy(model)
@@ -3211,27 +3229,47 @@ class CanvasView(QGraphicsView):
             new_model.y += offset_y
             item_cls = ITEM_CLASS_FOR_KIND[kind]
             new_items.append(self._add_item(item_cls(new_model), text=text))
-        if self.undo_stack is not None and multi:
+        if with_sketch:
+            self.on_paste_extra(self._clipboard_sketch, offset_x, offset_y)   # moved along with the components
+        if self.undo_stack is not None and (multi or with_sketch):
             self.undo_stack.endMacro()
 
         self.scene().clearSelection()
         for item in new_items:
             item.setSelected(True)
 
-    def _delete_selected(self):
-        if self.on_delete_extra is not None and self.on_delete_extra():
-            return  # e.g. selected sketch entities (layout_editor_cad.py)
-        selected = [i for i in self.scene().selectedItems() if isinstance(i, PlacedItem)]
-        if not selected:
+    def _paste_sketch_only(self):
+        """Ctrl+V with only sketch lines on the clipboard: their centre at the
+        mouse (else half a metre on)."""
+        if self.on_paste_extra is None:
             return
-        # One combined command for the whole selection, not one per item -
-        # a multi-select delete should undo as a single step.
-        if self.undo_stack is not None:
-            text = "Delete Component" if len(selected) == 1 else f"Delete {len(selected)} Components"
-            self.undo_stack.push(DeleteItemsCommand(self._do_add_item, self._do_remove_item, selected, text))
+        pts = [p for e in self._clipboard_sketch for p in e.points]
+        cx, cy = sum(x for x, _ in pts) / len(pts), sum(y for _, y in pts) / len(pts)
+        if self._last_mouse_scene_pos is not None:
+            tx, ty = from_scene_pos(self._last_mouse_scene_pos)
         else:
-            for item in selected:
-                self._do_remove_item(item)
+            tx, ty = cx + 0.5, cy + 0.5
+        self.on_paste_extra(self._clipboard_sketch, tx - cx, ty - cy)
+
+    def _delete_selected(self):
+        selected = [i for i in self.scene().selectedItems() if isinstance(i, PlacedItem)]
+        # Components and sketch lines selected together go together, one undo step.
+        macro = self.undo_stack is not None and bool(selected) and self.on_delete_extra is not None
+        if macro:
+            self.undo_stack.beginMacro("Delete")
+        if self.on_delete_extra is not None:
+            self.on_delete_extra()       # the selected sketch entities (layout_editor_cad.py)
+        if selected:
+            # One combined command for the whole selection, not one per item -
+            # a multi-select delete should undo as a single step.
+            if self.undo_stack is not None:
+                text = "Delete Component" if len(selected) == 1 else f"Delete {len(selected)} Components"
+                self.undo_stack.push(DeleteItemsCommand(self._do_add_item, self._do_remove_item, selected, text))
+            else:
+                for item in selected:
+                    self._do_remove_item(item)
+        if macro:
+            self.undo_stack.endMacro()
 
 
 def _field_specs_for(item: PlacedItem):

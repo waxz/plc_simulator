@@ -230,6 +230,26 @@ with the same shortcuts (shown in each button's tooltip). The drawing options
 (Width, Corner R, Arc method, coordinate input, ...) appear on the first row,
 showing only what the active tool uses.
 
+**Modify** (the vertical tool bar left of the canvas, or Tools > Modify)
+edits sketch lines like a CAD tool; arcs stay exact, every action is one
+undo step, points snap (OSNAP) and can be typed:
+
+| Tool | Key | Use |
+|---|---|---|
+| Trim | `T` | click the piece to cut away - between the lines crossing it (other sketch lines and the background drawing); it shows red under the cursor first. Repeats until Esc |
+| Extend | `E` | click near a line's end: it grows to the next line it meets (a line straight on, an arc round its circle) |
+| Break | `K` | click a point on a line: it splits in two there (a closed shape opens) |
+| Offset | `Shift+O` | set **Distance** on the tool bar, click a line, then the side: a parallel copy (mitred corners, concentric arcs) |
+| Fillet | `F` | set **Corner R**, click two lines on the sides to keep: they are joined with a tangent arc (R 0 = sharp corner) |
+| Join / Explode | `J` / `X` | the selected lines joined end to end into one / split into single segments |
+| Move / Copy | `M` / `Shift+M` | the selected lines: base point, then target (`@dx,dy` works); Copy places copies until Esc |
+| Rotate | `R` | the selected lines: centre, then the angle's direction - or type the angle (`90`) |
+| Mirror | `I` | the selected lines: two points of the mirror line; **Keep originals** on the tool bar |
+| Scale | | the selected lines: base point, then type the factor (`2`) or click at that distance |
+
+`Ctrl+C` / `Ctrl+V` / `Ctrl+X` copy, paste and cut sketch lines and
+components together (pasted at the mouse, keeping their layout).
+
 1. **Geometry first**, like any CAD tool:
    - **Sketch Line (S)** draws construction lines and tangent arcs (L / A),
      and **Sketch Arc (Shift+S)** draws an arc, by the toolbar's **Arc**
