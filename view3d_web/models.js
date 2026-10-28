@@ -287,3 +287,191 @@ export function setRobot6(robot, [a1, a2, a3, a4, a5, a6, holding, fault]) {
   robot.lampFault.material.emissiveIntensity = fault ? 2.2 : 0;
   robot.lampOk.material.emissiveIntensity = fault ? 0 : 1.2;
 }
+
+// -- logistics equipment (logistics.py) -------------------------------------------------------------
+
+const STEEL = 0x9aa3ad, DARK = 0x2b3038;
+
+// A scanner: an arch over the belt with a read line; a DWS a tunnel with a scale plate.
+export function buildScanner(s) {
+  const g = new THREE.Group();
+  g.position.set(s.x, s.y, s.z);
+  g.rotation.z = deg(s.rot);
+  const frame = mat(new THREE.Color(s.color).getHex(), { metalness: 0.3, roughness: 0.4 });
+  const half = s.h / 2 + 0.06, top = s.type === "dws" ? 0.85 : 0.65;
+  for (const y of [-half, half]) g.add(cuboid(0.06, 0.06, top + 0.1, frame, 0, y, top / 2 - 0.05));
+  g.add(cuboid(s.type === "dws" ? Math.max(0.3, s.w) : 0.08, 2 * half + 0.06, 0.08, frame, 0, 0, top));
+  if (s.type === "dws") {
+    // The tunnel's side panels and the weighing plate in the belt.
+    const panel = new THREE.MeshStandardMaterial({ color: 0x9fb4c7, transparent: true, opacity: 0.25, roughness: 0.2 });
+    for (const y of [-half, half]) g.add(cuboid(Math.max(0.3, s.w), 0.01, top - 0.1, panel, 0, y, top / 2));
+    g.add(cuboid(Math.max(0.3, s.w), s.h * 0.9, 0.01, mat(0x707a85, { metalness: 0.6 }), 0, 0, 0.004));
+  }
+  const head = cuboid(0.12, 0.16, 0.08, mat(DARK), 0, 0, top - 0.08);
+  g.add(head);
+  // The read line on the belt: lit while a parcel is in the zone.
+  const beam = new THREE.Mesh(new THREE.PlaneGeometry(0.012, s.h),
+                              new THREE.MeshBasicMaterial({ color: 0xff2a2a, transparent: true, opacity: 0.35 }));
+  beam.position.z = 0.006;
+  g.add(beam);
+  g.traverse((o) => { o.userData.label = `${s.label || s.id} (${s.type})`; });
+  return { group: g, beam };
+}
+
+export function setScanner(unit, [present, code, noRead]) {
+  unit.beam.material.opacity = present ? 0.95 : 0.35;
+  unit.beam.material.color.setHex(noRead ? 0xffb020 : 0xff2a2a);
+  void code;
+}
+
+// A pusher: a frame beside the belt with a paddle that strokes across; a wheel
+// diverter: rows of small wheels in the belt that turn and lift when active.
+export function buildDiverter(d) {
+  const g = new THREE.Group();
+  g.position.set(d.x, d.y, d.z);
+  g.rotation.z = deg(d.rot);
+  const color = new THREE.Color(d.color).getHex();
+  const unit = { group: g, type: d.type, stroke: 0, target: 0, wheels: [] };
+  if (d.type === "pusher") {
+    const side = d.angle < 0 ? 1 : -1;            // the pusher stands on the side it pushes away from
+    const y0 = side * (d.h / 2 + 0.12);
+    g.add(cuboid(d.w * 0.9, 0.18, 0.22, mat(DARK), 0, y0 + side * 0.06, 0.11));
+    const paddle = new THREE.Group();
+    paddle.add(cuboid(d.w * 0.7, 0.03, 0.16, mat(color, { roughness: 0.4 }), 0, 0, 0.1));
+    paddle.add(cuboid(0.04, Math.abs(y0) + 0.05, 0.04, mat(STEEL, { metalness: 0.7 }), 0, side * (Math.abs(y0) / 2), 0.1));
+    paddle.position.y = y0 - side * 0.02;
+    g.add(paddle);
+    Object.assign(unit, { paddle, y0, travel: -side * (d.h * 0.85) });
+  } else {
+    const a = deg(d.angle) / 2;
+    for (let i = -2; i <= 2; i++) {
+      for (let j = -2; j <= 2; j++) {
+        const wheel = cylY(0.035, 0.025, mat(color, { roughness: 0.5 }), 16);
+        wheel.position.set(i * d.w / 5.5, j * d.h / 5.5, -0.02);
+        wheel.rotation.z = 0;
+        wheel.userData.turn = a;
+        g.add(wheel);
+        unit.wheels.push(wheel);
+      }
+    }
+  }
+  g.traverse((o) => { o.userData.label = `${d.label || d.id} (to ${d.destination})`; });
+  return unit;
+}
+
+export function stepDiverter(unit, dt) {
+  unit.stroke += (unit.target - unit.stroke) * Math.min(1, dt * 10);
+  if (unit.paddle) unit.paddle.position.y = unit.y0 + unit.travel * unit.stroke;
+  for (const w of unit.wheels) {
+    w.position.z = -0.02 + 0.03 * unit.stroke;          // pop up through the belt
+    w.rotation.z = w.userData.turn * unit.stroke;
+  }
+}
+
+export function buildTurntableRing(t) {
+  const g = new THREE.Group();
+  g.position.set(t.x, t.y, 0);
+  const color = new THREE.Color(t.color).getHex();
+  g.add(cylZ(t.r, 0.06, mat(color, { metalness: 0.4, roughness: 0.4 }), 48).translateZ(t.z - 0.18));
+  g.add(cylZ(0.12, t.z - 0.18, mat(DARK), 24).translateZ((t.z - 0.18) / 2));
+  g.traverse((o) => { o.userData.label = `${t.label || t.id} (turntable)`; });
+  return g;
+}
+
+// A photo-eye at an accumulation zone's end: two posts and a beam.
+export function buildEye(e) {
+  const g = new THREE.Group();
+  g.position.set(e.x, e.y, e.z);
+  g.rotation.z = deg(e.heading);
+  const half = e.w / 2 + 0.04;
+  for (const y of [-half, half]) g.add(cuboid(0.03, 0.03, 0.14, mat(DARK), -0.12, y, 0.07));
+  const beam = new THREE.Mesh(new THREE.BoxGeometry(0.008, 2 * half, 0.008),
+                              new THREE.MeshBasicMaterial({ color: 0x2f6b45 }));
+  beam.position.set(-0.12, 0, 0.1);
+  g.add(beam);
+  return { group: g, beam };
+}
+
+// A chute: a sloped slide into a bin whose fill rises with the count.
+export function buildChute(c) {
+  const g = new THREE.Group();
+  g.position.set(c.x, c.y, 0);
+  const bin = mat(0x5b6470, { metalness: 0.5, roughness: 0.5 });
+  const h = 0.55, t = 0.03;
+  g.add(cuboid(c.w, c.h, t, bin, 0, 0, t / 2));
+  for (const [x, y, w, l] of [[0, -c.h / 2, c.w, t], [0, c.h / 2, c.w, t], [-c.w / 2, 0, t, c.h], [c.w / 2, 0, t, c.h]]) {
+    g.add(cuboid(w, l, h, bin, x, y, h / 2));
+  }
+  const fill = cuboid(c.w - 0.08, c.h - 0.08, 1, mat(0xc8a26a, { roughness: 0.9 }), 0, 0, 0);
+  fill.scale.z = 0.001;
+  fill.position.z = t;
+  fill.geometry = new THREE.BoxGeometry(1, 1, 1).translate(0, 0, 0.5);
+  fill.scale.set(c.w - 0.08, c.h - 0.08, 0.001);
+  g.add(fill);
+  const lamp = cylZ(0.04, 0.06, new THREE.MeshStandardMaterial({ color: 0x7a1f1f, emissive: 0xff3b30, emissiveIntensity: 0 }));
+  lamp.position.set(c.w / 2, c.h / 2, h + 0.03);
+  g.add(lamp);
+  g.traverse((o) => { o.userData.label = `${c.label || c.id} (chute, ${c.capacity})`; });
+  return { group: g, fill, lamp, capacity: c.capacity, height: h - 0.05 };
+}
+
+export function setChute(unit, [count, full]) {
+  unit.fill.scale.z = Math.max(0.001, unit.height * Math.min(1, count / Math.max(1, unit.capacity)));
+  unit.lamp.material.emissiveIntensity = full ? 2.2 : 0;
+}
+
+// A guard door: posts and a mesh-panel leaf on a hinge (click to open / close).
+export function buildDoor(d) {
+  const g = new THREE.Group();
+  g.position.set(d.x, d.y, 0);
+  g.rotation.z = deg(d.rot);
+  const frame = mat(new THREE.Color(d.color).getHex(), { roughness: 0.5 });
+  const H = 1.9;
+  for (const x of [-d.w / 2 - 0.03, d.w / 2 + 0.03]) g.add(cuboid(0.05, 0.05, H, frame, x, 0, H / 2));
+  const hinge = new THREE.Group();
+  hinge.position.x = -d.w / 2;
+  const leaf = new THREE.Group();
+  leaf.add(cuboid(d.w, 0.03, 0.04, frame, d.w / 2, 0, 0.12));
+  leaf.add(cuboid(d.w, 0.03, 0.04, frame, d.w / 2, 0, H - 0.08));
+  leaf.add(cuboid(0.04, 0.03, H - 0.2, frame, 0.02, 0, H / 2));
+  leaf.add(cuboid(0.04, 0.03, H - 0.2, frame, d.w - 0.02, 0, H / 2));
+  leaf.add(cuboid(d.w - 0.06, 0.005, H - 0.24,
+                  new THREE.MeshStandardMaterial({ color: 0x3a3f45, transparent: true, opacity: 0.45, roughness: 0.8 }),
+                  d.w / 2, 0, H / 2));
+  const lock = cuboid(0.06, 0.08, 0.1, mat(0x30353b), d.w - 0.05, 0.05, 1.05);
+  leaf.add(lock);
+  hinge.add(leaf);
+  g.add(hinge);
+  g.traverse((o) => { o.userData.label = `${d.label || d.id} (guard door) - click to open / close`; o.userData.door = d.id; });
+  return { group: g, hinge, lock, open: 0, target: 0 };
+}
+
+export function setDoor(unit, [closed, locked]) {
+  unit.target = closed ? 0 : 1;
+  unit.lock.material = mat(locked ? 0x2bd36a : 0x30353b);
+}
+
+export function stepDoor(unit, dt) {
+  unit.open += (unit.target - unit.open) * Math.min(1, dt * 6);
+  unit.hinge.rotation.z = -deg(100) * unit.open;
+}
+
+// A safety relay: a yellow box on a post with a status beacon.
+export function buildSafety(s) {
+  const g = new THREE.Group();
+  g.position.set(s.x, s.y, 0);
+  g.add(cuboid(0.06, 0.06, 1.2, mat(DARK), 0, 0, 0.6));
+  g.add(cuboid(0.3, 0.16, 0.36, mat(0xeab308, { roughness: 0.5 }), 0, 0, 1.3));
+  const beacon = cylZ(0.05, 0.12, new THREE.MeshStandardMaterial({ color: 0x1f8f45, emissive: 0x2bd36a, emissiveIntensity: 1.5 }));
+  beacon.position.z = 1.54;
+  g.add(beacon);
+  g.traverse((o) => { o.userData.label = `${s.label || s.id} (safety relay)`; });
+  return { group: g, beacon };
+}
+
+export function setSafety(unit, [ok, tripped]) {
+  const on = ok ? 0x2bd36a : 0xff3b30;
+  unit.beacon.material.color.setHex(ok ? 0x1f8f45 : 0x8f1f1f);
+  unit.beacon.material.emissive.setHex(on);
+  unit.beacon.material.emissiveIntensity = tripped || ok ? 1.8 : 0.9;
+}

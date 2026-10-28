@@ -93,6 +93,8 @@ class Belt(BaseModel):
     _overload_s: float = PrivateAttr(default=0.0)
     _drive_ref: float = PrivateAttr(default=0.0)
     _encoder_frac: float = PrivateAttr(default=0.0)
+    _safety_stop: bool = PrivateAttr(default=False)     # a safety circuit holds it stopped
+    _zone_hold: bool = PrivateAttr(default=False)       # an accumulation zone holds its parcel
     _geom: Optional[tuple] = PrivateAttr(default=None)  # surface.py geometry cache
 
 
@@ -165,14 +167,32 @@ class Source(BaseModel):
     minMass: float = 1.0      # kg, parcel mass range (friction traction)
     maxMass: float = 1.0
     level: int = 0            # floor level of the parcels it makes
+    # Parcel identity (logistics.py): each parcel gets the next barcode, a
+    # destination drawn from `destinations` (weighted by
+    # `destinationWeights`, equal when empty; none when `destinations` is
+    # empty) and, with probability `noReadRate`, an unreadable label.
+    destinations: List[int] = Field(default_factory=list)
+    destinationWeights: List[float] = Field(default_factory=list)
+    noReadRate: float = 0.0
+    barcodeStart: int = 1000001
 
 class Sink(BaseModel):
+    """Where parcels leave the layout. With a `capacity` it is a chute /
+    bin (logistics.py): it holds that many, then reports `full` and parcels
+    back up in front of it until it is emptied - after `emptyTime` s by
+    itself (0 = only on command), or by the PLC's `empty` (rising edge).
+    Only chutes (capacity > 0) are on the PLC exchange."""
     id: str
     x: float
     y: float
     width: float
     height: float
     label: str
+    capacity: int = 0
+    emptyTime: float = 0.0
+    empty: bool = False                                  # command
+    count: int = Field(default=0, exclude=True)          # feedback: parcels in it now
+    full: bool = Field(default=False, exclude=True)
 
 class ControlButton(BaseModel):
     id: str
@@ -399,6 +419,175 @@ class Elevator(BaseModel):
     position: float = Field(default=0.0, exclude=True)     # runtime: height in levels (0.5 = halfway)
 
 
+# ---------------------------------------------------------------------------
+# Logistics equipment (logistics.py runs them): identification, sorting,
+# accumulation and safety. Like the machines above, each works by itself
+# (control "auto") or follows the PLC (control "plc").
+# ---------------------------------------------------------------------------
+
+class Scanner(BaseModel):
+    """An identification point over a belt: reads each parcel once as its
+    centre enters the read zone (`width` along the travel, `height` across,
+    `rotation` the travel direction). `scannerType`:
+      "barcode"  a camera / laser scanner - parcels with an unreadable label
+                 give a no-read
+      "rfid"     a reader gate - always reads
+      "dws"      a dimension-weight-scan station: reads like a barcode
+                 scanner and also measures weight and size
+    Feedback per read: `code` (UDINT barcode, 0 on a no-read), `destination`
+    (BYTE, as the warehouse system would answer for that code), `noRead`,
+    `readCount` (UINT, +1 per parcel: a new read when it changes), `present`
+    (a parcel in the zone now) and, for "dws", `weight` (kg) and
+    `measuredLength` / `measuredWidth` / `measuredHeight` (m)."""
+    id: str
+    x: float
+    y: float
+    rotation: float = 0.0
+    width: float = 0.4
+    height: float = 1.0
+    scannerType: Literal["barcode", "rfid", "dws"] = "barcode"
+    label: str = ""
+    color: str = "#0ea5e9"
+    level: int = 0
+    code: int = Field(default=0, exclude=True)
+    destination: int = Field(default=0, exclude=True)
+    noRead: bool = Field(default=False, exclude=True)
+    readCount: int = Field(default=0, exclude=True)
+    present: bool = Field(default=False, exclude=True)
+    weight: float = Field(default=0.0, exclude=True)
+    measuredLength: float = Field(default=0.0, exclude=True)
+    measuredWidth: float = Field(default=0.0, exclude=True)
+    measuredHeight: float = Field(default=0.0, exclude=True)
+
+
+class Diverter(BaseModel):
+    """Sends parcels off the belt onto a branch: while it is active, parcels
+    in its zone (`width` along the travel, `height` across, `rotation` the
+    travel) are steered at `divertAngle` degrees to the travel - +90 / -90
+    for a pusher (left / right), about +-30 for pop-up wheels - at `speed`.
+
+    control "auto": active while a readable parcel for `destination` is in
+    the zone (a sorter's own tracking). control "plc": active while the
+    PLC's `divert` is on. Feedback: `active`, `present` (a parcel in the
+    zone), `presentCode` (UDINT, its barcode; 0 for a no-read) and
+    `diverted` (UINT count)."""
+    id: str
+    x: float
+    y: float
+    rotation: float = 0.0
+    width: float = 1.0
+    height: float = 1.0
+    diverterType: Literal["pusher", "wheels"] = "pusher"
+    divertAngle: float = 90.0
+    speed: float = 1.0
+    destination: int = 1
+    label: str = ""
+    color: str = "#f97316"
+    level: int = 0
+    control: ControlMode = "auto"
+    divert: bool = False                                     # command
+    active: bool = Field(default=False, exclude=True)        # feedback
+    present: bool = Field(default=False, exclude=True)
+    presentCode: int = Field(default=0, exclude=True)
+    diverted: int = Field(default=0, exclude=True)
+
+
+class Turntable(BaseModel):
+    """A turntable / 90-degree transfer: a round platform carrying its own
+    belt (`beltId`, an ordinary straight belt on the table) that turns
+    between `angles` (degrees added to the belt's own heading) at
+    `turnSpeed` deg/s. Whatever is on the platform turns with it.
+
+    Command (control "plc"): `targetIndex` (BYTE, into `angles`).
+    Feedback: `index`, `turning`, `inPosition`, `occupied`.
+    control "auto": at `autoFrom` it runs its belt until a parcel is on
+    board, turns to `autoTo`, runs the belt until the table is empty, and
+    turns back."""
+    id: str
+    x: float
+    y: float
+    radius: float = 0.8
+    beltId: Optional[str] = None
+    angles: List[float] = Field(default_factory=lambda: [0.0, 90.0])
+    turnSpeed: float = 90.0
+    label: str = ""
+    color: str = "#64748b"
+    level: int = 0
+    control: ControlMode = "auto"
+    autoFrom: int = 0
+    autoTo: int = 1
+    targetIndex: int = 0                                     # command
+    index: int = Field(default=0, exclude=True)              # feedback
+    turning: bool = Field(default=False, exclude=True)
+    inPosition: bool = Field(default=True, exclude=True)
+    occupied: bool = Field(default=False, exclude=True)
+    angle: float = Field(default=0.0, exclude=True)          # runtime: the table's turn now (deg)
+
+
+class Accumulator(BaseModel):
+    """A zero-pressure accumulation conveyor: the belts `beltIds` (in flow
+    order) are its zones, each with a photo-eye at its end. A zone runs
+    while it is empty, or while the zone after it is free ("singulation":
+    one parcel per zone, gaps kept) or moving ("train": a held queue moves
+    off together). The last zone discharges while `release` is on.
+
+    Command (control "plc"): `release`. control "auto": always released.
+    Feedback: `zones` (UINT bit mask, bit 0 = first zone, set = occupied),
+    `full` (every zone occupied)."""
+    id: str
+    x: float
+    y: float
+    beltIds: List[str] = Field(default_factory=list)
+    mode: Literal["singulation", "train"] = "singulation"
+    label: str = ""
+    color: str = "#22c55e"
+    control: ControlMode = "auto"
+    release: bool = True                                     # command
+    zones: int = Field(default=0, exclude=True)              # feedback
+    full: bool = Field(default=False, exclude=True)
+
+
+class GuardDoor(BaseModel):
+    """A door in a safety fence: the operator opens and closes it (click it
+    in the simulator or the 3D view). The PLC can lock it shut (`lock`).
+    Feedback: `closed`, `locked`. A safety circuit that lists it trips when
+    it opens."""
+    id: str
+    x: float
+    y: float
+    rotation: float = 0.0
+    width: float = 1.0
+    label: str = ""
+    color: str = "#facc15"
+    lock: bool = False                                       # command
+    closed: bool = Field(default=True, exclude=True)         # feedback
+    locked: bool = Field(default=False, exclude=True)
+
+
+class SafetyCircuit(BaseModel):
+    """A safety relay: it stops the belts `beltIds` (every belt when empty)
+    - whatever the PLC commands - when one of its emergency stops
+    (`stopButtonIds`, buttons: pressed = trip) is pressed, a guard door
+    (`doorIds`) opens or a light curtain (`curtainIds`, sensors) is
+    interrupted. The belts stay stopped until every cause is clear and it is
+    reset: the PLC's `reset` or the operator's reset button
+    (`resetButtonId`), rising edge. `x`, `y` place its symbol.
+    Feedback: `ok` (the belts may run), `tripped` (waiting for a reset)."""
+    id: str
+    x: float
+    y: float
+    stopButtonIds: List[str] = Field(default_factory=list)
+    doorIds: List[str] = Field(default_factory=list)
+    curtainIds: List[str] = Field(default_factory=list)
+    beltIds: List[str] = Field(default_factory=list)
+    resetButtonId: Optional[str] = None
+    label: str = ""
+    color: str = "#eab308"
+    reset: bool = False                                      # command
+    ok: bool = Field(default=True, exclude=True)             # feedback
+    tripped: bool = Field(default=False, exclude=True)
+
+
 class TopicComponent(BaseModel):
     id: str
     type: Literal["belt", "sensor", "item", "laser_banner", "button", "led"]
@@ -481,6 +670,12 @@ class SimulatorConfig(BaseModel):
     stoppers: List[Stopper] = Field(default_factory=list)
     robots: List[RobotArm] = Field(default_factory=list)
     elevators: List[Elevator] = Field(default_factory=list)
+    scanners: List[Scanner] = Field(default_factory=list)
+    diverters: List[Diverter] = Field(default_factory=list)
+    turntables: List[Turntable] = Field(default_factory=list)
+    accumulators: List[Accumulator] = Field(default_factory=list)
+    doors: List[GuardDoor] = Field(default_factory=list)
+    safety: List[SafetyCircuit] = Field(default_factory=list)
     mqttSettings: MqttSettings = Field(default_factory=MqttSettings)
     connections: List[BeltConnection] = Field(default_factory=list)
     sketch: List[SketchEntity] = Field(default_factory=list)

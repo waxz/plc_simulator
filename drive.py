@@ -69,6 +69,8 @@ def step_drive(belt: Belt, h: float) -> None:
     drive = belt.drive
     _update_fault(belt, h)
     setpoint = devices.commanded_speed(belt)
+    if belt._safety_stop or belt._zone_hold:
+        setpoint = 0.0          # a safety circuit / accumulation zone holds it, whatever is commanded
 
     if drive is None:
         belt._drive_ref = setpoint

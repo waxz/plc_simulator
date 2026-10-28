@@ -93,6 +93,7 @@ from config_parser import (
     Belt, ControlButton, Elevator, LedIndicator, Pallet, RobotArm, Sensor, SimulatorConfig, Sink, Source, Stopper,
     load_config,
 )
+from config_parser import Accumulator, Diverter, GuardDoor, SafetyCircuit, Scanner, Turntable
 import hmi_style as hmi
 from cad.path import (
     belt_local_path, flatten as path_flatten, footprint as path_footprint, path_flow_sign, path_length,
@@ -1858,6 +1859,167 @@ class ElevatorItem(_MachineItem):
         painter.drawText(rect, Qt.AlignCenter, text)
 
 
+# Logistics equipment (logistics.py runs it in the simulator)
+
+class ScannerItem(_MachineItem):
+    """A scanner's read zone over a belt (`width` along the travel, `height`
+    across): a frame with its read line and the scanner type."""
+
+    kind = "scanner"
+
+    def __init__(self, model: Scanner):
+        super().__init__(model, _rect_points(model.width, model.height))
+        self.setPen(Qt.NoPen)
+
+    def _outline(self):
+        return _rect_points(self.model.width, self.model.height)
+
+    def paint(self, painter: QPainter, option, widget=None):
+        color = QColor(self.model.color)
+        fill = QColor(color)
+        fill.setAlpha(40)
+        self.setBrush(QBrush(fill))
+        self.setPen(QPen(color, 0))
+        super().paint(painter, option, widget)
+        rect = self.polygon().boundingRect()
+        painter.setPen(QPen(hmi.qcolor(hmi.ALARM), 0))
+        painter.drawLine(QPointF(rect.center().x(), rect.top()), QPointF(rect.center().x(), rect.bottom()))
+        painter.setPen(QPen(hmi.qcolor(hmi.TEXT), 0))
+        painter.drawText(rect, Qt.AlignCenter, {"barcode": "SCAN", "rfid": "RFID", "dws": "DWS"}[self.model.scannerType])
+
+
+class DiverterItem(_MachineItem):
+    """A diverter's zone (dashed) and an arrow in its divert direction."""
+
+    kind = "diverter"
+
+    def __init__(self, model: Diverter):
+        super().__init__(model, _rect_points(model.width, model.height))
+        self.setPen(Qt.NoPen)
+
+    def _outline(self):
+        return _rect_points(self.model.width, self.model.height)
+
+    def paint(self, painter: QPainter, option, widget=None):
+        color = QColor(self.model.color)
+        self.setBrush(Qt.NoBrush)
+        self.setPen(QPen(color, 0, Qt.DashLine))
+        super().paint(painter, option, widget)
+        a = math.radians(self.model.divertAngle)
+        reach = max(self.model.width, self.model.height) * SCALE * 0.45
+        tip = QPointF(reach * math.cos(a), -reach * math.sin(a))            # local, y down
+        painter.setPen(QPen(color, max(1.0, reach * 0.08)))
+        painter.drawLine(QPointF(0, 0), tip)
+        for side in (-0.45, 0.45):
+            back = math.atan2(-tip.y(), tip.x()) + math.pi + side
+            painter.drawLine(tip, tip + QPointF(reach * 0.3 * math.cos(back), -reach * 0.3 * math.sin(back)))
+        painter.setPen(QPen(hmi.qcolor(hmi.TEXT), 0))
+        painter.drawText(self.polygon().boundingRect(), Qt.AlignBottom | Qt.AlignHCenter,
+                         f"-> {self.model.destination}")
+
+
+class TurntableItem(_MachineItem):
+    """A turntable: its round platform (its belt sits on it)."""
+
+    kind = "turntable"
+    SEGMENTS = 32
+
+    def __init__(self, model: Turntable):
+        super().__init__(model, self._outline_for(model))
+        self.setPen(Qt.NoPen)
+
+    @classmethod
+    def _outline_for(cls, model):
+        r = model.radius * SCALE
+        return [QPointF(r * math.cos(2 * math.pi * i / cls.SEGMENTS), -r * math.sin(2 * math.pi * i / cls.SEGMENTS))
+                for i in range(cls.SEGMENTS)]
+
+    def _outline(self):
+        return self._outline_for(self.model)
+
+    def _local_key_points(self):
+        r = self.model.radius * SCALE
+        return [QPointF(r, 0), QPointF(0, -r), QPointF(-r, 0), QPointF(0, r), QPointF(0, 0)]
+
+    def _local_edges(self):
+        return []
+
+    def paint(self, painter: QPainter, option, widget=None):
+        color = QColor(self.model.color)
+        fill = QColor(color)
+        fill.setAlpha(60)
+        self.setBrush(QBrush(fill))
+        self.setPen(QPen(color, 0))
+        super().paint(painter, option, widget)
+        r = self.model.radius * SCALE
+        painter.setPen(QPen(color, 0, Qt.DashLine))
+        for angle in self.model.angles:
+            a = math.radians(angle)
+            painter.drawLine(QPointF(0, 0), QPointF(r * math.cos(a), -r * math.sin(a)))
+
+
+class _IconItem(_MachineItem):
+    """A small square symbol (a device without a footprint of its own)."""
+
+    SIZE = 0.6
+    TEXT = ""
+
+    def __init__(self, model):
+        super().__init__(model, _rect_points(self.SIZE, self.SIZE))
+        self.setPen(Qt.NoPen)
+
+    def _outline(self):
+        return _rect_points(self.SIZE, self.SIZE)
+
+    def paint(self, painter: QPainter, option, widget=None):
+        color = QColor(self.model.color)
+        self.setBrush(QBrush(color.darker(160)))
+        self.setPen(QPen(color, 0))
+        super().paint(painter, option, widget)
+        painter.setPen(QPen(hmi.qcolor(hmi.TEXT), 0))
+        painter.drawText(self.polygon().boundingRect(), Qt.AlignCenter, self.TEXT)
+
+
+class AccumulatorItem(_IconItem):
+    """An accumulation conveyor's controller: its zones are the belts in
+    `beltIds`."""
+
+    kind = "accumulator"
+    TEXT = "ZPA"
+
+
+class SafetyItem(_IconItem):
+    """A safety relay: what it watches and which belts it stops are lists
+    of ids in its properties."""
+
+    kind = "safety"
+    TEXT = "SAFE"
+
+
+class GuardDoorItem(_MachineItem):
+    """A guard door in a fence: the door leaf between two posts."""
+
+    kind = "door"
+    DEPTH = 0.15
+
+    def __init__(self, model: GuardDoor):
+        super().__init__(model, _rect_points(model.width, self.DEPTH))
+        self.setPen(Qt.NoPen)
+
+    def _outline(self):
+        return _rect_points(self.model.width, self.DEPTH)
+
+    def paint(self, painter: QPainter, option, widget=None):
+        color = QColor(self.model.color)
+        self.setBrush(QBrush(color))
+        self.setPen(QPen(color.darker(200), 0))
+        super().paint(painter, option, widget)
+        hw = self.model.width * SCALE / 2.0
+        painter.setBrush(QBrush(hmi.qcolor(hmi.TEXT_DIM)))
+        for x in (-hw, hw):
+            painter.drawEllipse(QPointF(x, 0), self.DEPTH * SCALE * 0.6, self.DEPTH * SCALE * 0.6)
+
+
 class FreeDrawScene(QGraphicsScene):
     def __init__(self):
         super().__init__(-300, -300, 600, 600)
@@ -2375,6 +2537,43 @@ def _make_elevator(new_id: str) -> Elevator:
     return Elevator(id=new_id, x=0.0, y=0.0, label="Elevator")
 
 
+def _make_scanner(new_id: str) -> Scanner:
+    return Scanner(id=new_id, x=0.0, y=0.0, label="Scanner")
+
+
+def _make_dws(new_id: str) -> Scanner:
+    return Scanner(id=new_id, x=0.0, y=0.0, width=0.6, height=1.2, scannerType="dws", label="DWS")
+
+
+def _make_pusher(new_id: str) -> Diverter:
+    return Diverter(id=new_id, x=0.0, y=0.0, divertAngle=-90.0, label="Pusher")
+
+
+def _make_wheel_diverter(new_id: str) -> Diverter:
+    return Diverter(id=new_id, x=0.0, y=0.0, diverterType="wheels", divertAngle=30.0, speed=1.2,
+                    label="Wheel diverter")
+
+
+def _make_turntable(new_id: str) -> Turntable:
+    return Turntable(id=new_id, x=0.0, y=0.0, label="Turntable")
+
+
+def _make_accumulator(new_id: str) -> Accumulator:
+    return Accumulator(id=new_id, x=0.0, y=0.0, label="Accumulation")
+
+
+def _make_door(new_id: str) -> GuardDoor:
+    return GuardDoor(id=new_id, x=0.0, y=0.0, label="Guard door")
+
+
+def _make_safety(new_id: str) -> SafetyCircuit:
+    return SafetyCircuit(id=new_id, x=0.0, y=0.0, label="Safety relay")
+
+
+def _make_chute(new_id: str) -> Sink:
+    return Sink(id=new_id, x=0.0, y=0.0, width=1.2, height=1.0, label="Chute", capacity=10)
+
+
 def move_model(model, dx: float, dy: float):
     """Move a component by (dx, dy) - a robot arm's pick / place points too."""
     model.x += dx
@@ -2402,6 +2601,12 @@ ITEM_CLASS_FOR_KIND = {
     "stopper": StopperItem,
     "robot": RobotItem,
     "elevator": ElevatorItem,
+    "scanner": ScannerItem,
+    "diverter": DiverterItem,
+    "turntable": TurntableItem,
+    "accumulator": AccumulatorItem,
+    "door": GuardDoorItem,
+    "safety": SafetyItem,
 }
 
 # Reverse lookup: a copied/pasted model's own pydantic class tells us its
@@ -2417,6 +2622,12 @@ KIND_FOR_MODEL_CLASS = {
     Stopper: "stopper",
     RobotArm: "robot",
     Elevator: "elevator",
+    Scanner: "scanner",
+    Diverter: "diverter",
+    Turntable: "turntable",
+    Accumulator: "accumulator",
+    GuardDoor: "door",
+    SafetyCircuit: "safety",
 }
 
 # Which SimulatorConfig list attribute holds each kind's models -
@@ -2436,6 +2647,12 @@ CONFIG_LIST_ATTR_FOR_KIND = {
     "stopper": "stoppers",
     "robot": "robots",
     "elevator": "elevators",
+    "scanner": "scanners",
+    "diverter": "diverters",
+    "turntable": "turntables",
+    "accumulator": "accumulators",
+    "door": "doors",
+    "safety": "safety",
 }
 
 
@@ -2470,7 +2687,8 @@ def build_items_from_config(config, scene: QGraphicsScene, items_list: list):
         item = LedItem(model)
         scene.addItem(item)
         items_list.append(item)
-    for kind in ("elevator", "pallet", "stopper", "robot"):
+    for kind in ("elevator", "turntable", "pallet", "stopper", "robot", "scanner", "diverter", "accumulator",
+                 "door", "safety"):
         for model in getattr(config, CONFIG_LIST_ATTR_FOR_KIND[kind]):
             item = ITEM_CLASS_FOR_KIND[kind](model)
             scene.addItem(item)
@@ -2499,8 +2717,11 @@ class ComponentLibrary(QTreeWidget):
     MY_COMPONENTS = "My Components"
     FOLDER_FOR_KIND = {"belt": "Belts", "sensor": "Sensors", "source": "Parcel Flow", "sink": "Parcel Flow",
                        "button": "Operator Panel", "led": "Operator Panel", "pallet": "Machines",
-                       "stopper": "Machines", "robot": "Machines", "elevator": "Machines"}
-    FOLDER_ORDER = ("Belts", "Sensors", "Parcel Flow", "Machines", "Operator Panel", MY_COMPONENTS)
+                       "stopper": "Machines", "robot": "Machines", "elevator": "Machines",
+                       "scanner": "Logistics", "diverter": "Logistics", "turntable": "Logistics",
+                       "accumulator": "Logistics", "door": "Safety", "safety": "Safety"}
+    FOLDER_ORDER = ("Belts", "Sensors", "Parcel Flow", "Machines", "Logistics", "Safety", "Operator Panel",
+                    MY_COMPONENTS)
     BUILT_INS = (
         ("Linear Belt", "belt", _make_linear_belt),
         ("Curved Belt", "belt", _make_curved_belt),
@@ -2514,6 +2735,15 @@ class ComponentLibrary(QTreeWidget):
         ("Stopper", "stopper", _make_stopper),
         ("Robot Arm", "robot", _make_robot),
         ("Elevator", "elevator", _make_elevator),
+        ("Barcode Scanner", "scanner", _make_scanner),
+        ("DWS (Dimension-Weight-Scan)", "scanner", _make_dws),
+        ("Pusher Diverter", "diverter", _make_pusher),
+        ("Wheel Diverter", "diverter", _make_wheel_diverter),
+        ("Turntable", "turntable", _make_turntable),
+        ("Accumulation Conveyor", "accumulator", _make_accumulator),
+        ("Chute", "sink", _make_chute),
+        ("Guard Door", "door", _make_door),
+        ("Safety Relay", "safety", _make_safety),
     )
     FOLDER_ROLE = Qt.UserRole + 1  # folder items carry their path ("" for a built-in top folder)
 
@@ -3566,10 +3796,18 @@ def _field_specs_for(item: PlacedItem):
         specs.append(("float", "maxHeight", "Max length", 0.05, 50.0, 0.05))
         specs.append(("text", "label", "Label"))
         specs.append(("int", "level", "Level", 0, 20))
+        specs.append(("text", "destinations", "Destinations"))
+        specs.append(("text", "destinationWeights", "Destination mix"))
+        specs.append(("float", "noReadRate", "No-read rate", 0.0, 1.0, 0.01))
+        specs.append(("int", "barcodeStart", "First barcode", 0, 2_000_000_000))
+        specs.append(("float", "minMass", "Min weight", 0.0, 2000.0, 0.1))
+        specs.append(("float", "maxMass", "Max weight", 0.0, 2000.0, 0.1))
     elif isinstance(item, SinkItem):
         specs.append(("float", "width", "Width", 0.05, 50.0, 0.05))
         specs.append(("float", "height", "Height", 0.05, 50.0, 0.05))
         specs.append(("text", "label", "Label"))
+        specs.append(("int", "capacity", "Chute capacity", 0, 100000))
+        specs.append(("float", "emptyTime", "Empty after", 0.0, 3600.0, 0.5))
     elif isinstance(item, ButtonItem):
         specs.append(("float", "width", "Width", 0.05, 50.0, 0.05))
         specs.append(("float", "height", "Height", 0.05, 50.0, 0.05))
@@ -3615,7 +3853,52 @@ def _field_specs_for(item: PlacedItem):
                   ("float", "liftSpeed", "Lift speed", 0.01, 10.0, 0.05),
                   ("combo", "control", "Control", ["auto", "plc"]), ("int", "autoFrom", "Auto from", 0, 20),
                   ("int", "autoTo", "Auto to", 0, 20), ("text", "label", "Label")]
+    elif isinstance(item, ScannerItem):
+        specs += [("combo", "scannerType", "Type", ["barcode", "rfid", "dws"]),
+                  ("float", "width", "Zone length", 0.05, 10.0, 0.05), ("float", "height", "Zone width", 0.05, 10.0, 0.05),
+                  ("int", "level", "Level", 0, 20), ("text", "label", "Label")]
+    elif isinstance(item, DiverterItem):
+        specs += [("combo", "diverterType", "Type", ["pusher", "wheels"]),
+                  ("float", "width", "Zone length", 0.05, 10.0, 0.05), ("float", "height", "Zone width", 0.05, 10.0, 0.05),
+                  ("float", "divertAngle", "Divert angle", -180.0, 180.0, 5.0),
+                  ("float", "speed", "Divert speed", 0.05, 10.0, 0.05),
+                  ("int", "destination", "Destination", 0, 255), ("combo", "control", "Control", ["auto", "plc"]),
+                  ("int", "level", "Level", 0, 20), ("text", "label", "Label")]
+    elif isinstance(item, TurntableItem):
+        specs += [("float", "radius", "Radius", 0.1, 10.0, 0.05), ("text", "beltId", "Platform belt"),
+                  ("text", "angles", "Positions"), ("float", "turnSpeed", "Turn speed", 1.0, 720.0, 5.0),
+                  ("combo", "control", "Control", ["auto", "plc"]), ("int", "autoFrom", "Auto from", 0, 20),
+                  ("int", "autoTo", "Auto to", 0, 20), ("text", "label", "Label")]
+    elif isinstance(item, AccumulatorItem):
+        specs += [("text", "beltIds", "Zone belts"), ("combo", "mode", "Mode", ["singulation", "train"]),
+                  ("combo", "control", "Control", ["auto", "plc"]), ("text", "label", "Label")]
+    elif isinstance(item, GuardDoorItem):
+        specs += [("float", "width", "Width", 0.2, 10.0, 0.05), ("text", "label", "Label")]
+    elif isinstance(item, SafetyItem):
+        specs += [("text", "stopButtonIds", "E-stops"), ("text", "doorIds", "Guard doors"),
+                  ("text", "curtainIds", "Light curtains"), ("text", "beltIds", "Belts stopped"),
+                  ("text", "resetButtonId", "Reset button"), ("text", "label", "Label")]
     return specs
+
+
+# Properties holding lists, edited as comma-separated text: (item type).
+_LIST_FIELDS = {"destinations": int, "destinationWeights": float, "angles": float, "beltIds": str,
+                "stopButtonIds": str, "doorIds": str, "curtainIds": str}
+
+
+def _field_text(attr: str, value) -> str:
+    if attr in _LIST_FIELDS and isinstance(value, list):
+        return ", ".join(f"{v:g}" if isinstance(v, float) else str(v) for v in value)
+    return str(value or "")
+
+
+def _parse_list(attr: str, text: str):
+    kind = _LIST_FIELDS[attr]
+    parts = [t.strip() for t in text.replace(";", ",").split(",") if t.strip()]
+    try:
+        return [kind(p) for p in parts]
+    except ValueError:
+        return None
 
 
 # Units shown in the property grid's number boxes.
@@ -3830,7 +4113,7 @@ class PropertiesPanel(QWidget):
                 value = self._OPTIONAL_FIELD_DEFAULTS.get(attr, 0)
             widget.setValue(value)
         for attr, widget in self.texts.items():
-            widget.setText(str(getattr(item.model, attr) or ""))
+            widget.setText(_field_text(attr, getattr(item.model, attr)))
         for attr, widget in self.combos.items():
             widget.setCurrentText(str(getattr(item.model, attr)))
         for attr, widget in self.checkboxes.items():
@@ -3861,7 +4144,7 @@ class PropertiesPanel(QWidget):
         value = getattr(item.model, attr, None)
         for widgets, setter in (
             (self.spins, lambda w, v: w.setValue(v if v is not None else self._OPTIONAL_FIELD_DEFAULTS.get(attr, 0))),
-            (self.texts, lambda w, v: w.setText(str(v or ""))),
+            (self.texts, lambda w, v: w.setText(_field_text(attr, v))),
             (self.combos, lambda w, v: w.setCurrentText(str(v))),
             (self.checkboxes, lambda w, v: w.setChecked(bool(v))),
         ):
@@ -3925,6 +4208,13 @@ class PropertiesPanel(QWidget):
             return
         old_value = getattr(item.model, attr)
         new_value = self.texts[attr].text()
+        if attr in _LIST_FIELDS:
+            new_value = _parse_list(attr, new_value)
+            if new_value is None:                    # not a list of that type: show the old one again
+                self.texts[attr].setText(_field_text(attr, old_value))
+                return
+        elif attr in ("beltId", "resetButtonId"):
+            new_value = new_value.strip() or None
         if attr == "key":
             new_value = new_value.strip()[:1].lower() or None  # one key, or none
         if old_value == new_value:
@@ -4054,10 +4344,13 @@ class PropertiesPanel(QWidget):
 
 
 _KIND_ORDER = {"belt": 0, "sensor": 1, "source": 2, "sink": 3, "button": 4, "led": 5, "pallet": 6, "stopper": 7,
-               "robot": 8, "elevator": 9}
+               "robot": 8, "elevator": 9, "scanner": 10, "diverter": 11, "turntable": 12, "accumulator": 13,
+               "door": 14, "safety": 15}
 _KIND_COLORS = {"belt": (156, 163, 175), "sensor": hmi.ALARM, "source": hmi.SOURCE, "sink": hmi.SINK,
                 "button": hmi.ACCENT, "led": hmi.RUNNING, "pallet": (180, 83, 9), "stopper": (220, 38, 38),
-                "robot": (124, 58, 237), "elevator": (8, 145, 178)}
+                "robot": (124, 58, 237), "elevator": (8, 145, 178), "scanner": (14, 165, 233),
+                "diverter": (249, 115, 22), "turntable": (100, 116, 139), "accumulator": (34, 197, 94),
+                "door": (250, 204, 21), "safety": (234, 179, 8)}
 _KIND_ICONS = {}
 
 
@@ -4081,7 +4374,9 @@ class ComponentManagerPanel(QWidget):
 
     FOLDERS = (("belt", "Belts"), ("sensor", "Sensors"), ("source", "Sources"), ("sink", "Sinks"),
                ("button", "Buttons"), ("led", "LEDs"), ("pallet", "Pallets"), ("stopper", "Stoppers"),
-               ("robot", "Robot Arms"), ("elevator", "Elevators"))
+               ("robot", "Robot Arms"), ("elevator", "Elevators"), ("scanner", "Scanners"),
+               ("diverter", "Diverters"), ("turntable", "Turntables"), ("accumulator", "Accumulation"),
+               ("door", "Guard Doors"), ("safety", "Safety Circuits"))
 
     def __init__(self, scene: SnapGuideScene, items, view: QGraphicsView, config=None):
         super().__init__()
@@ -4169,6 +4464,20 @@ class ComponentManagerPanel(QWidget):
             return f"{m.control}, reach {m.reach:g} m, {m.cycleTime:g} s cycle"
         if kind == "elevator":
             return f"{m.control}, {m.levels} levels" + (f", belt {m.beltId}" if m.beltId else ", no belt")
+        if kind == "scanner":
+            return m.scannerType
+        if kind == "diverter":
+            return f"{m.diverterType} to destination {m.destination}, {m.control}"
+        if kind == "turntable":
+            return f"{m.control}, positions {', '.join(f'{a:g}' for a in m.angles)}"
+        if kind == "accumulator":
+            return f"{m.mode}, {len(m.beltIds)} zones, {m.control}"
+        if kind == "sink" and getattr(m, "capacity", 0):
+            return f"chute, {m.capacity} parcels"
+        if kind == "door":
+            return f"{m.width:g} m"
+        if kind == "safety":
+            return f"{len(m.stopButtonIds)} e-stops, {len(m.doorIds)} doors, {len(m.curtainIds)} curtains"
         return ""
 
     def refresh(self):

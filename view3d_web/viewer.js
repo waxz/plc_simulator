@@ -8,7 +8,10 @@
 // yaw) and size, so whatever lifts or carries them only changes numbers.
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
-import { buildConsole, buildPallet, buildRobot6, setDevice, setRobot6 } from "./models.js";
+import {
+  buildChute, buildConsole, buildDiverter, buildDoor, buildEye, buildPallet, buildRobot6, buildSafety, buildScanner,
+  buildTurntableRing, setChute, setDevice, setDoor, setRobot6, setSafety, setScanner, stepDiverter, stepDoor,
+} from "./models.js";
 
 THREE.Object3D.DEFAULT_UP.set(0, 0, 1);
 
@@ -49,7 +52,8 @@ scene.add(sun, sun.target);
 let layout = null;
 let sceneInfo = null;
 let sceneVersion = -1;
-const live = { belts: new Map(), sensors: new Map(), devices: new Map(), stoppers: new Map(),
+const live = { belts: new Map(), sensors: new Map(), devices: new Map(), stoppers: new Map(), scanners: new Map(),
+               diverters: new Map(), eyes: new Map(), chutes: new Map(), doors: new Map(), safety: new Map(),
                robots: new Map(), elevators: new Map(), bodies: new Map(), drawing: null, labels: [] };
 const ui = { drawing: true, labels: false };
 
@@ -181,7 +185,16 @@ function buildBelt(b) {
   group.add(mesh);
   mesh.position.z = -t;                      // the group's z is the belt top
   group.position.z = beltTopZ(b.level);
-  if (!b.elevator) {
+  let pivot = null;
+  if (b.table) {
+    // On a turntable: turned about the table's centre (built at its angle then).
+    pivot = new THREE.Group();
+    pivot.position.set(b.table.x, b.table.y, 0);
+    group.position.x = -b.table.x;
+    group.position.y = -b.table.y;
+    pivot.add(group);
+  }
+  if (!b.elevator && !b.table) {
     // Stands at some outline corners, down to the floor.
     const step = Math.max(1, Math.round(b.outline.length / 10));
     for (let i = 0; i < b.outline.length; i += step) {
@@ -189,8 +202,8 @@ function buildBelt(b) {
       group.add(post(x, y, -group.position.z, -t, 0.05, mat(COLORS.metal, { metalness: 0.5 })));
     }
   }
-  layout.add(tagged(group, `Belt ${b.id}`));
-  live.belts.set(b.id, { group, texture, dir: b.dir });
+  layout.add(tagged(pivot || group, `Belt ${b.id}`));
+  live.belts.set(b.id, { group, texture, dir: b.dir, pivot, angle0: b.table ? b.table.angle : 0 });
   const [x, y] = b.outline[0];
   layout.add(label(b.id, x, y, group.position.z + 0.3));
 }
@@ -301,7 +314,8 @@ function buildElevator(e) {
 
 function buildLayout(info) {
   if (layout) scene.remove(layout);
-  for (const key of ["belts", "sensors", "devices", "stoppers", "robots", "elevators"]) live[key].clear();
+  for (const key of ["belts", "sensors", "devices", "stoppers", "robots", "elevators", "scanners", "diverters", "eyes",
+                     "chutes", "doors", "safety"]) live[key].clear();
   for (const entry of live.bodies.values()) bodyGroup.remove(entry.mesh);
   live.bodies.clear();
   live.labels = [];
@@ -322,6 +336,24 @@ function buildLayout(info) {
   info.stoppers.forEach(buildStopper);
   info.robots.forEach(buildRobot);
   info.elevators.forEach(buildElevator);
+  // Logistics equipment.
+  for (const sc of info.scanners || []) { const u = buildScanner(sc); layout.add(u.group); live.scanners.set(sc.id, u); }
+  for (const d of info.diverters || []) { const u = buildDiverter(d); layout.add(u.group); live.diverters.set(d.id, u); }
+  for (const t of info.turntables || []) layout.add(buildTurntableRing(t));
+  for (const e of info.eyes || []) {
+    const u = buildEye(e);
+    layout.add(u.group);
+    if (!live.eyes.has(e.acc)) live.eyes.set(e.acc, []);
+    live.eyes.get(e.acc)[e.zone] = u;
+  }
+  for (const c of info.chutes || []) { const u = buildChute(c); layout.add(u.group); live.chutes.set(c.id, u); }
+  for (const d of info.doors || []) { const u = buildDoor(d); layout.add(u.group); live.doors.set(d.id, u); }
+  for (const sf of info.safety || []) {
+    const u = buildSafety(sf);
+    layout.add(u.group);
+    live.safety.set(sf.id, u);
+    layout.add(label(sf.label || sf.id, sf.x, sf.y, 1.85));
+  }
   fit();
 }
 
@@ -334,7 +366,7 @@ let lastState = null;
 function updateBodies(rows) {
   const seen = new Set();
   let parcels = 0, pallets = 0;
-  for (const [id, kind, x, y, z, yaw, w, l, h, color] of rows) {
+  for (const [id, kind, x, y, z, yaw, w, l, h, color, barcode, destination] of rows) {
     seen.add(id);
     kind === "pallet" ? pallets++ : parcels++;
     let entry = live.bodies.get(id);
@@ -349,7 +381,7 @@ function updateBodies(rows) {
         tagged(mesh, `Pallet ${id}`);
       } else {
         mesh = box(1, 1, 1, mat(new THREE.Color(color).getHex(), { roughness: 0.85 }));
-        mesh.userData.label = `Parcel ${id}`;
+        mesh.userData.label = barcode ? `Parcel ${barcode}${destination ? ` -> ${destination}` : ""}` : `Parcel ${id}`;
       }
       bodyGroup.add(mesh);
       entry = { mesh, target: new THREE.Vector3(x, y, z), yaw: deg(yaw) };
@@ -393,11 +425,21 @@ function applyState(state) {
     const row = state.elevators[id];
     if (row) e.platform.position.z = row[0] + sceneInfo.beltTop - sceneInfo.beltThickness - 0.05;
   }
+  for (const [id, u] of live.scanners) if (state.scanners && state.scanners[id]) setScanner(u, state.scanners[id]);
+  for (const [id, u] of live.diverters) if (state.diverters) u.target = state.diverters[id] ? 1 : 0;
+  for (const [id, eyes] of live.eyes) {
+    const zones = (state.accumulators || {})[id] || 0;
+    eyes.forEach((u, i) => { if (u) u.beam.material.color.setHex(zones >> i & 1 ? COLORS.sensorOn : COLORS.sensorOff); });
+  }
+  for (const [id, u] of live.chutes) if (state.chutes && state.chutes[id]) setChute(u, state.chutes[id]);
+  for (const [id, u] of live.doors) if (state.doors && state.doors[id]) setDoor(u, state.doors[id]);
+  for (const [id, u] of live.safety) if (state.safety && state.safety[id]) setSafety(u, state.safety[id]);
   for (const [id, b] of live.belts) {
     const row = state.belts[id];
     if (!row) continue;
     b.speed = row[0];
     if (row[1] !== null) b.group.position.z = row[1];
+    if (b.pivot && row[2] !== null && row[2] !== undefined) b.pivot.rotation.z = deg(row[2] - b.angle0);
   }
 }
 
@@ -483,7 +525,7 @@ function pick(event) {
 }
 renderer.domElement.addEventListener("pointermove", (e) => {
   const hit = e.buttons ? null : pick(e);
-  renderer.domElement.style.cursor = hit && hit.object.userData.button ? "pointer" : "";
+  renderer.domElement.style.cursor = hit && (hit.object.userData.button || hit.object.userData.door) ? "pointer" : "";
   if (hit) {
     tip.textContent = hit.object.userData.label;
     tip.style.left = `${e.clientX + 14}px`;
@@ -499,6 +541,12 @@ function sendButton(id, down) {
 renderer.domElement.addEventListener("pointerdown", (e) => {
   if (e.button !== 0) return;
   const hit = pick(e);
+  const door = hit && hit.object.userData.door;
+  if (door) {
+    fetch("door", { method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ id: door }) }).catch(() => {});
+    return;
+  }
   const id = hit && hit.object.userData.button;
   if (id) {
     pressed = id;
@@ -533,6 +581,8 @@ function animate() {
     entry.mesh.position.lerp(entry.target, k);
     entry.mesh.rotation.z = shortestAngle(entry.mesh.rotation.z, entry.yaw) * k + entry.mesh.rotation.z * (1 - k);
   }
+  for (const u of live.diverters.values()) stepDiverter(u, dt);
+  for (const u of live.doors.values()) stepDoor(u, dt);
   for (const s of live.stoppers.values()) {
     s.up += ((s.target ?? 1) - s.up) * Math.min(1, dt * 12);
     s.bar.position.z = -0.12 + s.up * 0.12;

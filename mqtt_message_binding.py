@@ -39,7 +39,8 @@ def find_component_by_id(component_id: str, config: SimulatorConfig) -> Optional
         return True
 
     for collection_name in ("sensors", "belts", "buttons", "leds", "sources", "sinks", "stoppers", "robots",
-                            "elevators", "pallets"):
+                            "elevators", "pallets", "scanners", "diverters", "turntables", "accumulators", "doors",
+                            "safety"):
         collection = getattr(config, collection_name, [])
         for component in collection:
             if component.id == component_id:
@@ -397,14 +398,15 @@ def load_mapping_csv(filename: str) -> List[Tuple[ByteType, str]]:
 def known_component_ids(config: SimulatorConfig) -> "set[str]":
     """Every id custom_component_mapping()/paddng_component() actually
     recognize - sensors/belts/buttons/leds plus the virtual "clock" id.
-    Sources/sinks have no IO fields, so they're deliberately excluded.
+    Sources and plain sinks have no IO fields, so they're excluded (a
+    chute - a sink with a capacity - has, see MACHINE_FIELDS).
     Shared by custom_component_mapping()'s own validation, the bootstrap
     CLI, and the web registry editor's live validation, so "is this a real
     component id" has exactly one answer everywhere it's asked."""
     ids = {s.id for s in config.sensors} | {b.id for b in config.belts}
     ids |= {b.id for b in config.buttons} | {l.id for l in config.leds}
     for kind in MACHINE_FIELDS:
-        ids |= {m.id for m in getattr(config, kind, [])}
+        ids |= {m.id for m in getattr(config, kind, []) if kind != "sinks" or m.capacity}
     ids.add("clock")
     return ids
 
@@ -429,11 +431,34 @@ MACHINE_FIELDS = {
                        [(ByteType.UINT16, "cycles"), (ByteType.BYTE, "faultCode"),
                         *[(ByteType.FLOAT, f"j{i}") for i in range(1, 7)],
                         (ByteType.FLOAT, "tcpX"), (ByteType.FLOAT, "tcpY"), (ByteType.FLOAT, "tcpZ")])},
+    # Logistics equipment (logistics.py).
+    "scanners": {"in": ([], []),
+                 "out": ([(ByteType.BIT, "noRead"), (ByteType.BIT, "present")],
+                         [(ByteType.UINT32, "code"), (ByteType.BYTE, "destination"), (ByteType.UINT16, "readCount"),
+                          (ByteType.FLOAT, "weight"), (ByteType.FLOAT, "measuredLength"),
+                          (ByteType.FLOAT, "measuredWidth"), (ByteType.FLOAT, "measuredHeight")])},
+    "diverters": {"in": ([(ByteType.BIT, "divert")], []),
+                  "out": ([(ByteType.BIT, "active"), (ByteType.BIT, "present")],
+                          [(ByteType.UINT32, "presentCode"), (ByteType.UINT16, "diverted")])},
+    "turntables": {"in": ([], [(ByteType.BYTE, "targetIndex")]),
+                   "out": ([(ByteType.BIT, "turning"), (ByteType.BIT, "inPosition"), (ByteType.BIT, "occupied")],
+                           [(ByteType.BYTE, "index")])},
+    "accumulators": {"in": ([(ByteType.BIT, "release")], []),
+                     "out": ([(ByteType.BIT, "full")], [(ByteType.UINT16, "zones")])},
+    "doors": {"in": ([(ByteType.BIT, "lock")], []),
+              "out": ([(ByteType.BIT, "closed"), (ByteType.BIT, "locked")], [])},
+    "safety": {"in": ([(ByteType.BIT, "reset")], []),
+               "out": ([(ByteType.BIT, "ok"), (ByteType.BIT, "tripped")], [])},
+    # A chute (a sink with a capacity): only those are on the exchange (io_topics).
+    "sinks": {"in": ([(ByteType.BIT, "empty")], []),
+              "out": ([(ByteType.BIT, "full")], [(ByteType.UINT16, "count")])},
     "elevators": {"in": ([], [(ByteType.BYTE, "targetLevel")]),
                   "out": ([(ByteType.BIT, "moving"), (ByteType.BIT, "atLevel"), (ByteType.BIT, "occupied")],
                           [(ByteType.BYTE, "level")])},
 }
-_MACHINE_KIND = {"Stopper": "stoppers", "RobotArm": "robots", "Elevator": "elevators"}
+_MACHINE_KIND = {"Stopper": "stoppers", "RobotArm": "robots", "Elevator": "elevators", "Scanner": "scanners",
+                 "Diverter": "diverters", "Turntable": "turntables", "Accumulator": "accumulators",
+                 "GuardDoor": "doors", "SafetyCircuit": "safety", "Sink": "sinks"}
 
 
 def machine_fields(machine, direction: str) -> Tuple[List[Tuple[ByteType, str]], List[Tuple[ByteType, str]]]:

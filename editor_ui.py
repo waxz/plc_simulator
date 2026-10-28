@@ -6,6 +6,7 @@ import pygame
 import hmi_style as hmi
 import pygame_gui
 from config_parser import Belt, Sensor, Source, Sink, ControlButton, LedIndicator, Pallet, Stopper, RobotArm, Elevator
+from config_parser import Accumulator, Diverter, GuardDoor, SafetyCircuit, Scanner, Turntable
 from physics import PhysicsEngine
 
 
@@ -38,6 +39,13 @@ INSPECTOR_FIELDS = {
     RobotArm: ("id", "label", "x", "y", "reach", "pickX", "pickY", "placeX", "placeY", "cycleTime", "control"),
     Elevator: ("id", "label", "x", "y", "rotation", "width", "height", "levels", "levelHeight", "liftSpeed",
                "beltId", "control"),
+    Scanner: ("id", "label", "scannerType", "x", "y", "rotation", "width", "height", "level"),
+    Diverter: ("id", "label", "diverterType", "x", "y", "rotation", "width", "height", "divertAngle", "speed",
+               "destination", "control"),
+    Turntable: ("id", "label", "x", "y", "radius", "beltId", "turnSpeed", "control"),
+    Accumulator: ("id", "label", "x", "y", "mode", "control"),
+    GuardDoor: ("id", "label", "x", "y", "rotation", "width"),
+    SafetyCircuit: ("id", "label", "x", "y"),
 }
 BELT_GEOMETRY = {
     "linear": ("length", "beltWidth", "beltShape"),
@@ -53,7 +61,9 @@ def _kind_name(item) -> str:
         return f"{item.type} belt"
     return {Sensor: "sensor", Source: "source", Sink: "sink", ControlButton: "push button",
             LedIndicator: "LED", Pallet: "pallet", Stopper: "stopper", RobotArm: "robot arm",
-            Elevator: "elevator"}.get(type(item), "component")
+            Elevator: "elevator", Scanner: "scanner", Diverter: "diverter", Turntable: "turntable",
+            Accumulator: "accumulation conveyor", GuardDoor: "guard door",
+            SafetyCircuit: "safety circuit"}.get(type(item), "component")
 
 
 def format_value(attr: str, value) -> str:
@@ -248,6 +258,26 @@ class EditorUI:
         if isinstance(item, Elevator):
             where = f"to level {item.targetLevel}" if item.moving else f"at level {item.level}"
             return {"Lift": where, "Platform": "loaded" if item.occupied else "empty"}
+        if isinstance(item, Scanner):
+            last = "no read" if item.noRead else f"{item.code} -> {item.destination}"
+            out = {"Reads": str(item.readCount), "Last": last if item.readCount else "-"}
+            if item.scannerType == "dws" and item.readCount:
+                out["Measured"] = (f"{item.weight:.2f} kg  {item.measuredLength:.2f} x {item.measuredWidth:.2f}"
+                                   f" x {item.measuredHeight:.2f} m")
+            return out
+        if isinstance(item, Diverter):
+            return {"Diverter": "ACTIVE" if item.active else "idle", "Diverted": str(item.diverted)}
+        if isinstance(item, Turntable):
+            return {"Table": "turning" if item.turning else f"position {item.index}",
+                    "Platform": "loaded" if item.occupied else "empty"}
+        if isinstance(item, Accumulator):
+            return {"Zones": format(item.zones, "b")[::-1] or "0", "Full": "yes" if item.full else "no"}
+        if isinstance(item, Sink) and item.capacity:
+            return {"Chute": f"{item.count} / {item.capacity}", "Full": "yes" if item.full else "no"}
+        if isinstance(item, GuardDoor):
+            return {"Door": "closed" if item.closed else "OPEN", "Lock": "locked" if item.locked else "free"}
+        if isinstance(item, SafetyCircuit):
+            return {"Safety": "OK" if item.ok else ("tripped" if item.tripped else "stop")}
         return {}
 
     def update_live(self, physics_engine: PhysicsEngine = None):
@@ -336,6 +366,12 @@ class EditorUI:
             ("stopper", "Stoppers", self.config.stoppers),
             ("robot", "Robot Arms", self.config.robots),
             ("elevator", "Elevators", self.config.elevators),
+            ("scanner", "Scanners", self.config.scanners),
+            ("diverter", "Diverters", self.config.diverters),
+            ("turntable", "Turntables", self.config.turntables),
+            ("accumulator", "Accumulation", self.config.accumulators),
+            ("door", "Guard Doors", self.config.doors),
+            ("safety", "Safety Circuits", self.config.safety),
         ]
         for kind, title, items in groups:
             if not items:

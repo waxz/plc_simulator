@@ -12,6 +12,7 @@ and follow the simulation live. Open it with the window's 3D View button
                       events, ~30 a second, while the page is open
   POST /button        {"id": ..., "pressed": true|false} - press an operator
                       button in the 3D view (applied by the window's loop)
+  POST /door          {"id": ...} - open / close a guard door
 
 Standard library only (http.server + server-sent events). The server lives
 for the whole simulator process, across layout reloads (set_layout).
@@ -176,12 +177,16 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(200, body, CONTENT_TYPES.get(os.path.splitext(full)[1], "application/octet-stream"))
 
     def do_POST(self):
-        if self.path.split("?", 1)[0] != "/button":
+        path = self.path.split("?", 1)[0]
+        if path not in ("/button", "/door"):
             self._send(404, b"not found", "text/plain")
             return
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0) or 0)) or b"{}")
-            self.view.commands.put(("button", str(body["id"]), bool(body["pressed"])))
+            if path == "/door":
+                self.view.commands.put(("door", str(body["id"]), True))
+            else:
+                self.view.commands.put(("button", str(body["id"]), bool(body["pressed"])))
         except (ValueError, KeyError, TypeError):
             self._send(400, b'{"ok":false}')
             return
@@ -245,8 +250,13 @@ def pump(renderer, physics_engine) -> None:
         return
     if s.config is not renderer.config:
         s.set_layout(renderer.config, getattr(renderer, "config_path", None))
-    for kind, button_id, pressed in s.take_commands():
-        button = next((b for b in renderer.config.buttons if b.id == button_id), None)
+    for kind, item_id, pressed in s.take_commands():
+        if kind == "door":
+            door = next((d for d in renderer.config.doors if d.id == item_id), None)
+            if door is not None:
+                renderer._toggle_door(door)
+            continue
+        button = next((b for b in renderer.config.buttons if b.id == item_id), None)
         if kind == "button" and button is not None:
             renderer._set_button(button, pressed)
     if s.clients and physics_engine is not None:

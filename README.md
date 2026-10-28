@@ -29,6 +29,10 @@ The Python simulation runs as a standalone process that:
   impulse application, parcel collision, and sensor state evaluation.
 - `machines.py` - Pallets, stoppers, robot arms and elevators, and floor
   levels (see [Machines](#machines-pallets-stoppers-robot-arms-elevators)).
+- `logistics.py` - Parcel identity, scanners, diverters, turntables,
+  accumulation, chutes, guard doors and safety relays (see
+  [Logistics equipment](#logistics-equipment-identification-sorting-accumulation-safety));
+  `logistics_draw.py` draws them in the simulator window.
 - `robot6.py` - 6-axis robot kinematics (FANUC-style geometry, closed-form
   inverse for a downward tool); `heights.py` - floor levels, conveyor and
   part heights shared by the robots and the 3D view.
@@ -728,6 +732,51 @@ python main.py test_config.json --web-ui
 # with a channel registry file instead of the hardcoded exchange definitions:
 python main.py test_config.json --channel-registry channels.json --web-ui
 ```
+
+### Logistics equipment: identification, sorting, accumulation, safety
+
+`logistics.py` runs these. They are in the designer's **Logistics** and
+**Safety** library folders. Each device works by itself (`control: "auto"`)
+or follows the PLC (`"plc"`), and its feedback goes to the PLC either way.
+Like the machines, each one joins the generated I/O frames when a layout has
+it (`MACHINE_FIELDS`).
+
+**Parcel identity.** A source numbers its parcels (`barcodeStart`), gives
+each a destination from `destinations` / `destinationWeights`, and a share
+(`noReadRate`) with an unreadable label. Each parcel also gets a weight in
+the source's mass range.
+
+| Equipment | Set up | Does | PLC signals (in / out) |
+|---|---|---|---|
+| Scanner | zone over the belt, `scannerType` "barcode" / "rfid" / "dws" | Reads each parcel once as it enters. A barcode scanner gives a no-read on an unreadable label, RFID always reads, and a DWS (dimension-weight-scan) also measures the parcel | - / `code` UDINT, `destination` BYTE (as a warehouse system would answer), `readCount` UINT (+1 per parcel), `noRead`, `present`; DWS: `weight`, `measuredLength`, `measuredWidth`, `measuredHeight` REALs |
+| Diverter | zone on the belt, `diverterType` "pusher" / "wheels", `divertAngle` (+-90 pusher, ~30 wheels), `speed`, `destination` | Steers the parcels in its zone onto the branch while active. Auto: active while a readable parcel for its destination is there | `divert` / `active`, `present`, `presentCode` UDINT, `diverted` UINT |
+| Turntable | `radius`, `beltId` (its platform belt), `angles`, `turnSpeed` | Turns its belt, and what is on it, between positions. Auto: loads at `autoFrom`, turns to `autoTo`, unloads, turns back | `targetIndex` BYTE / `index` BYTE, `turning`, `inPosition`, `occupied` |
+| Accumulation conveyor | `beltIds` (its zones, in flow order), `mode` "singulation" / "train" | Zero-pressure accumulation, with a photo-eye at each zone's end. A full zone holds its belt while the next zone is occupied ("train": unless the next one is moving). The last zone discharges while released | `release` / `zones` UINT (bit mask), `full` |
+| Chute | a sink with `capacity`, `emptyTime` | Holds `capacity` parcels, then is `full` and parcels back up in front of it. Emptied after `emptyTime`, or by `empty`. Only chutes go on the exchange, not plain sinks | `empty` / `count` UINT, `full` |
+| Guard door | `width` | The operator opens and closes it: click it in the simulator or the 3D view. The PLC can lock it | `lock` / `closed`, `locked` |
+| Safety relay | `stopButtonIds`, `doorIds`, `curtainIds` (sensors), `beltIds` (empty = all), `resetButtonId` | Stops its belts whatever the PLC commands when an e-stop is pressed, a door opens or a light curtain is broken. They stay stopped until every cause is clear and it is reset (its reset button or the PLC's `reset`) | `reset` / `ok`, `tripped` |
+
+The PLC program (`plc_logic.py`) drives `control: "plc"` equipment:
+- It tracks every scanner read (code to destination) and fires a diverter
+  when the code in its zone is for that diverter's destination.
+- It runs turntables through the same cycle as auto mode.
+- It releases accumulation while the line runs.
+- It empties a chute without an empty time a few seconds after it fills.
+- It locks guard doors while the line runs, and resets safety relays with
+  the line's Start / Reset.
+
+`logistics_demo.json` is a scan-and-sort line:
+- an induct with destinations 1-3 and 8 % no-reads;
+- a three-zone accumulation conveyor and a DWS;
+- a sorter with two pushers and a wheel diverter into three chutes;
+- a turntable that sends the no-reads to a reject line;
+- a guard door and an e-stop on a safety relay.
+
+```bash
+python main.py logistics_demo.json --view3d
+```
+
+The physics of layouts without this equipment is unchanged, bit for bit.
 
 ### 3D view
 

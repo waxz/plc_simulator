@@ -9,6 +9,8 @@ import math
 import time
 from typing import Tuple, Optional, List
 from config_parser import SimulatorConfig, Belt, Sensor, ControlButton, LedIndicator, Elevator, RobotArm, Stopper
+from config_parser import GuardDoor
+from logistics_draw import draw_logistics, hit_logistics
 from math_utils import get_rect_vertices, point_in_polygon, point_in_arc, get_belt_polygon, get_default_quad_vertices
 from surface import belt_contains
 import devices
@@ -307,6 +309,8 @@ class Renderer:
                     self.selected_item = clicked_item
                     self.editor_ui.show_props_for(clicked_item)
 
+                    if isinstance(clicked_item, GuardDoor):
+                        self._toggle_door(clicked_item)
                     if isinstance(clicked_item, ControlButton):
                         if  self.playing:
                             self._set_button(clicked_item, True)  # momentary/latching, NO/NC contact
@@ -354,6 +358,22 @@ class Renderer:
             self.editor_ui.open_manager_panel()
         return cmd
 
+    def _toggle_door(self, door) -> None:
+        """The operator opens / closes a guard door: here at once and, with
+        the simulation in its own process, there too."""
+        if door.closed and door.locked:
+            print(f"[Sim] '{door.label or door.id}' is locked (the line is running).")
+            return
+        door.closed = not door.closed
+        remote = getattr(self.physics, "toggle_door", None)
+        if remote is not None:
+            remote(door.id)
+        else:
+            logistics = getattr(self.physics, "logistics", None)
+            if logistics is not None:
+                door.closed = not door.closed            # the engine toggles it (same object)
+                logistics.toggle_door(door.id)
+
     def open_view3d(self) -> str:
         """The 3D view of this simulation in the browser (view3d.py)."""
         import view3d
@@ -382,6 +402,9 @@ class Renderer:
 
     def _hit_test(self, wx: float, wy: float) -> Optional[object]:
         """Check if a world coordinate intersects a component."""
+        item = hit_logistics(self.config, wx, wy)
+        if item is not None:
+            return item
         # Check sensors
         for sensor in self.config.sensors:
             verts = get_rect_vertices(sensor.x, sensor.y, sensor.width, sensor.height, sensor.rotation)
@@ -990,6 +1013,7 @@ class Renderer:
             self.draw_elevator(elevator, over=True)       # frame and gauge over its platform belt
         for stopper in self.config.stoppers:
             self.draw_stopper(stopper)
+        draw_logistics(self)
         for source in self.config.sources:
             self.draw_source(source)
         for sensor in self.config.sensors:

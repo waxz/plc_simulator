@@ -1,0 +1,353 @@
+{
+  "version": "1.0.0",
+  "useSurfaceVelocity": true,
+  "tractionModel": "kinematic",
+  "belts": [
+    {
+      "id": "infeed",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 3.0,
+      "y": 0.0,
+      "length": 6.0,
+      "beltWidth": 1.0,
+      "rotation": 0.0,
+      "speed": 1.0,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#64748b"
+    },
+    {
+      "id": "acc_1",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 6.75,
+      "y": 0.0,
+      "length": 1.5,
+      "beltWidth": 1.0,
+      "rotation": 0.0,
+      "speed": 1.0,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#3f7a52"
+    },
+    {
+      "id": "acc_2",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 8.25,
+      "y": 0.0,
+      "length": 1.5,
+      "beltWidth": 1.0,
+      "rotation": 0.0,
+      "speed": 1.0,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#3f7a52"
+    },
+    {
+      "id": "acc_3",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 9.75,
+      "y": 0.0,
+      "length": 1.5,
+      "beltWidth": 1.0,
+      "rotation": 0.0,
+      "speed": 1.0,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#3f7a52"
+    },
+    {
+      "id": "scan",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 11.25,
+      "y": 0.0,
+      "length": 1.5,
+      "beltWidth": 1.0,
+      "rotation": 0.0,
+      "speed": 1.0,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#64748b"
+    },
+    {
+      "id": "sorter",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 18.0,
+      "y": 0.0,
+      "length": 12.0,
+      "beltWidth": 1.0,
+      "rotation": 0.0,
+      "speed": 1.0,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#64748b"
+    },
+    {
+      "id": "branch_1",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 14.5,
+      "y": -2.0,
+      "length": 3.0,
+      "beltWidth": 1.0,
+      "rotation": -90.0,
+      "speed": 0.8,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#64748b"
+    },
+    {
+      "id": "branch_2",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 18.0,
+      "y": 2.0,
+      "length": 3.0,
+      "beltWidth": 1.0,
+      "rotation": 90.0,
+      "speed": 0.8,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#64748b"
+    },
+    {
+      "id": "branch_3",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 21.5,
+      "y": -2.0,
+      "length": 3.0,
+      "beltWidth": 1.0,
+      "rotation": -90.0,
+      "speed": 0.8,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#64748b"
+    },
+    {
+      "id": "tt_belt",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 24.75,
+      "y": 0.0,
+      "length": 1.5,
+      "beltWidth": 1.0,
+      "rotation": 0.0,
+      "speed": 0.8,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#64748b"
+    },
+    {
+      "id": "reject",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 24.75,
+      "y": 2.25,
+      "length": 3.0,
+      "beltWidth": 1.0,
+      "rotation": 90.0,
+      "speed": 0.8,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#64748b"
+    }
+  ],
+  "sources": [
+    {
+      "id": "induct",
+      "x": 0.6,
+      "y": 0.0,
+      "rotation": 0.0,
+      "interval": 1.6,
+      "minWidth": 0.3,
+      "maxWidth": 0.5,
+      "minHeight": 0.3,
+      "maxHeight": 0.45,
+      "label": "Induct",
+      "minMass": 0.5,
+      "maxMass": 12.0,
+      "destinations": [
+        1,
+        2,
+        3
+      ],
+      "destinationWeights": [
+        0.4,
+        0.35,
+        0.25
+      ],
+      "noReadRate": 0.08
+    }
+  ],
+  "sinks": [
+    {
+      "id": "chute_1",
+      "x": 14.5,
+      "y": -4.1,
+      "width": 1.2,
+      "height": 1.0,
+      "label": "Chute 1",
+      "capacity": 8,
+      "emptyTime": 6.0
+    },
+    {
+      "id": "chute_2",
+      "x": 18.0,
+      "y": 4.1,
+      "width": 1.2,
+      "height": 1.0,
+      "label": "Chute 2",
+      "capacity": 8,
+      "emptyTime": 6.0
+    },
+    {
+      "id": "chute_3",
+      "x": 21.5,
+      "y": -4.1,
+      "width": 1.2,
+      "height": 1.0,
+      "label": "Chute 3",
+      "capacity": 8,
+      "emptyTime": 6.0
+    },
+    {
+      "id": "reject_bin",
+      "x": 24.75,
+      "y": 4.3,
+      "width": 1.2,
+      "height": 1.0,
+      "label": "No-read"
+    }
+  ],
+  "scanners": [
+    {
+      "id": "dws_1",
+      "x": 11.25,
+      "y": 0.0,
+      "width": 0.4,
+      "height": 1.2,
+      "scannerType": "dws",
+      "label": "DWS"
+    }
+  ],
+  "accumulators": [
+    {
+      "id": "acc",
+      "x": 8.25,
+      "y": -1.2,
+      "beltIds": [
+        "acc_1",
+        "acc_2",
+        "acc_3"
+      ],
+      "mode": "singulation",
+      "label": "Accumulation"
+    }
+  ],
+  "diverters": [
+    {
+      "id": "div_1",
+      "x": 14.5,
+      "y": 0.0,
+      "width": 1.0,
+      "height": 1.0,
+      "divertAngle": -90.0,
+      "speed": 1.0,
+      "destination": 1,
+      "diverterType": "pusher",
+      "label": "Divert 1"
+    },
+    {
+      "id": "div_2",
+      "x": 18.0,
+      "y": 0.0,
+      "width": 1.0,
+      "height": 1.0,
+      "divertAngle": 60.0,
+      "speed": 1.2,
+      "destination": 2,
+      "diverterType": "wheels",
+      "label": "Divert 2"
+    },
+    {
+      "id": "div_3",
+      "x": 21.5,
+      "y": 0.0,
+      "width": 1.0,
+      "height": 1.0,
+      "divertAngle": -90.0,
+      "speed": 1.0,
+      "destination": 3,
+      "diverterType": "pusher",
+      "label": "Divert 3"
+    }
+  ],
+  "turntables": [
+    {
+      "id": "tt_1",
+      "x": 24.75,
+      "y": 0.0,
+      "radius": 0.85,
+      "beltId": "tt_belt",
+      "angles": [
+        0.0,
+        90.0
+      ],
+      "turnSpeed": 120.0,
+      "label": "Turntable"
+    }
+  ],
+  "doors": [
+    {
+      "id": "door_1",
+      "x": 16.25,
+      "y": 1.6,
+      "rotation": 0.0,
+      "width": 1.2,
+      "label": "Guard door"
+    }
+  ],
+  "safety": [
+    {
+      "id": "safety_1",
+      "x": 2.0,
+      "y": 3.2,
+      "stopButtonIds": [
+        "estop"
+      ],
+      "doorIds": [
+        "door_1"
+      ],
+      "resetButtonId": "reset",
+      "label": "Safety relay"
+    }
+  ],
+  "buttons": [
+    {
+      "id": "estop",
+      "x": 2.0,
+      "y": -2.2,
+      "width": 0.4,
+      "height": 0.4,
+      "label": "SORT E-STOP",
+      "color": "#dc2626",
+      "buttonType": "latching",
+      "normallyClosed": true
+    },
+    {
+      "id": "reset",
+      "x": 2.5,
+      "y": -2.2,
+      "width": 0.4,
+      "height": 0.4,
+      "label": "SORT RESET",
+      "color": "#3b82f6"
+    }
+  ]
+}

@@ -28,6 +28,9 @@ def belt_surface_speed(belt: Belt) -> float:
     command; 0 while faulted."""
     if belt.drive is not None:
         return belt.actualSpeed
+    held = belt.__pydantic_private__          # a safety circuit / accumulation zone holding it (fast path)
+    if held["_safety_stop"] or held["_zone_hold"]:
+        return 0.0
     return devices.commanded_speed(belt)
 
 

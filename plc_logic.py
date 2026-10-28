@@ -52,6 +52,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
 
 import devices
+import logistics
 import machines
 from config_parser import SimulatorConfig
 
@@ -97,6 +98,7 @@ def _design_speed(belt) -> float:
     return speed
 
 
+CHUTE_SWAP_S = 5.0     # a full chute without an empty time: emptied this long after it fills
 LOADED_AFTER_S = 0.5   # elevator: a part on the platform this long is on board (its belt stops)
 
 
@@ -131,6 +133,7 @@ class MachineControl:
                 robot.enable, robot.program = True, 1
                 robot.start = running and robot.ready and robot.partAtPick and robot.placeReady
                 robot.faultReset = robot.fault and self.reset_requested
+        self._logistics(running, dt, speeds, events)
         self.reset_requested = False
         belts = {b.id: b for b in cfg.belts}
         for elevator in cfg.elevators:
@@ -154,6 +157,65 @@ class MachineControl:
                     belt.speed = abs(nominal)
                 else:
                     belt.speed = nominal if run else 0.0
+
+
+    def _logistics(self, running: bool, dt: float, speeds: Dict[str, float], events: List[str]) -> None:
+        """Logistics equipment (logistics.py), for the PLC:
+          - tracking: each scanner read gives code -> destination (what a
+            warehouse system answers); a "plc" diverter fires when the code
+            in its zone is for its destination
+          - "plc" turntables: the same cycle as auto mode
+          - "plc" accumulators: released while the line runs
+          - chutes without an empty time: emptied a while after they fill
+            (the operator swapping the bin)
+          - guard doors locked while the line runs
+          - safety circuits reset with the line's Start / Reset"""
+        cfg = self.config
+        track = self.__dict__.setdefault("_track", {})
+        counts = self.__dict__.setdefault("_reads", {})
+        for scanner in cfg.scanners:
+            if counts.get(scanner.id) != scanner.readCount:
+                counts[scanner.id] = scanner.readCount
+                if scanner.code and scanner.readCount:
+                    track[scanner.code] = scanner.destination
+                    if len(track) > 4096:                       # forget the oldest
+                        track.pop(next(iter(track)))
+        for d in cfg.diverters:
+            if d.control == "plc":
+                fire = running and d.presentCode != 0 and track.get(d.presentCode) == d.destination
+                if fire and not d.divert:
+                    events.append(f"diverter {d.id}: {d.presentCode} -> destination {d.destination}")
+                d.divert = fire
+        belts = {b.id: b for b in cfg.belts}
+        tables = self.__dict__.setdefault("_tables", {})
+        for table in cfg.turntables:
+            if table.control != "plc":
+                continue
+            target, run = logistics.turntable_auto(table, tables.setdefault(table.id, {}), dt)
+            if running and target != table.targetIndex:
+                events.append(f"turntable {table.id} to position {target}")
+                table.targetIndex = target
+            belt = belts.get(table.beltId) if table.beltId else None
+            if belt is not None:
+                nominal = speeds.get(belt.id, DEFAULT_SPEED)
+                run = run and running
+                if belt.commandFormat == "vfd":
+                    belt.run, belt.speed = run, abs(nominal)
+                else:
+                    belt.speed = nominal if run else 0.0
+        for acc in cfg.accumulators:
+            if acc.control == "plc":
+                acc.release = running
+        chutes = self.__dict__.setdefault("_chutes", {})
+        for sink in cfg.sinks:
+            if sink.capacity and not sink.emptyTime:
+                full_s = chutes.get(sink.id, 0.0) + dt if sink.full else 0.0
+                chutes[sink.id] = full_s
+                sink.empty = full_s >= CHUTE_SWAP_S
+        for door in cfg.doors:
+            door.lock = running
+        for circuit in cfg.safety:
+            circuit.reset = self.reset_requested
 
 
 @dataclass

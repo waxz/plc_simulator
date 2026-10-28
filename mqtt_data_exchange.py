@@ -88,7 +88,9 @@ def io_topics(config: SimulatorConfig) -> Tuple[Dict[str, Dict[str, Any]], Dict[
     legacy = PUBLISH_TOPICS["input"]["custom_ids"] + SUBSCRIBE_TOPICS["output"]["custom_ids"]
     if set(legacy) <= known_component_ids(config):
         return PUBLISH_TOPICS, SUBSCRIBE_TOPICS
-    machines = [m.id for m in (*config.stoppers, *config.robots, *config.elevators)]
+    machines = [m.id for m in (*config.stoppers, *config.robots, *config.elevators, *config.scanners,
+                               *config.diverters, *config.turntables, *config.accumulators, *config.doors,
+                               *config.safety, *(s for s in config.sinks if s.capacity))]
     inputs = [b.id for b in config.buttons] + [s.id for s in config.sensors] + machines + ["clock"]
     outputs = [l.id for l in config.leds] + [b.id for b in config.belts] + machines
     return ({"input": {**PUBLISH_TOPICS["input"], "custom_ids": inputs}},

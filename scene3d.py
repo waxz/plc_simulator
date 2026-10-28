@@ -161,6 +161,7 @@ def control_panels(config: SimulatorConfig) -> List[dict]:
 def static_scene(config: SimulatorConfig, config_path: Optional[str] = None, version: int = 0) -> dict:
     lh = level_height(config)
     elevator_belts = {e.beltId: e.id for e in config.elevators if e.beltId}
+    table_belts = {t.beltId: t for t in config.turntables if t.beltId}
     belts = []
     xs, ys = [], []
     for belt in config.belts:
@@ -173,6 +174,8 @@ def static_scene(config: SimulatorConfig, config_path: Optional[str] = None, ver
         belts.append({
             "id": belt.id, "color": belt.color, "level": belt.level, "outline": outline, "holes": holes,
             "elevator": elevator_belts.get(belt.id),
+            "table": ({"x": table_belts[belt.id].x, "y": table_belts[belt.id].y, "angle": table_belts[belt.id].angle}
+                      if belt.id in table_belts else None),
             # Straight belts get a moving surface texture along this heading.
             "dir": _r(belt.rotation + belt.directionAngle) if belt.type == "linear" and not belt.vertexs else None,
         })
@@ -207,6 +210,38 @@ def static_scene(config: SimulatorConfig, config_path: Optional[str] = None, ver
                        "levels": e.levels, "levelHeight": e.levelHeight, "color": e.color, "beltId": e.beltId,
                        "label": e.label} for e in config.elevators],
         "drawing": _drawing_polylines(config, config_path),
+        **logistics_scene(config, lh),
+    }
+
+
+def logistics_scene(config: SimulatorConfig, lh: float) -> dict:
+    """The logistics equipment (logistics.py) for the 3D view."""
+    from cad.ports import belt_ports
+    belts = {b.id: b for b in config.belts}
+    eyes = []
+    for acc in config.accumulators:
+        for i, belt_id in enumerate(acc.beltIds):
+            belt = belts.get(belt_id)
+            ports = belt_ports(belt) if belt is not None else None
+            if ports is not None:
+                eyes.append({"acc": acc.id, "zone": i, "x": ports.outlet.x, "y": ports.outlet.y,
+                             "heading": ports.outlet.heading, "w": belt.beltWidth,
+                             "z": surface_z(config, belt.level, lh)})
+    return {
+        "scanners": [{"id": s.id, "x": s.x, "y": s.y, "w": s.width, "h": s.height, "rot": s.rotation,
+                      "type": s.scannerType, "z": surface_z(config, s.level, lh), "color": s.color,
+                      "label": s.label} for s in config.scanners],
+        "diverters": [{"id": d.id, "x": d.x, "y": d.y, "w": d.width, "h": d.height, "rot": d.rotation,
+                       "angle": d.divertAngle, "type": d.diverterType, "z": surface_z(config, d.level, lh),
+                       "color": d.color, "label": d.label, "destination": d.destination} for d in config.diverters],
+        "turntables": [{"id": t.id, "x": t.x, "y": t.y, "r": t.radius, "z": surface_z(config, t.level, lh),
+                        "color": t.color, "label": t.label} for t in config.turntables],
+        "eyes": eyes,
+        "chutes": [{"id": s.id, "x": s.x, "y": s.y, "w": s.width, "h": s.height, "capacity": s.capacity,
+                    "label": s.label} for s in config.sinks if s.capacity],
+        "doors": [{"id": d.id, "x": d.x, "y": d.y, "w": d.width, "rot": d.rotation, "color": d.color,
+                   "label": d.label} for d in config.doors],
+        "safety": [{"id": s.id, "x": s.x, "y": s.y, "color": s.color, "label": s.label} for s in config.safety],
     }
 
 
@@ -249,14 +284,17 @@ def dynamic_state(config: SimulatorConfig, views: Sequence, sim_time: float = 0.
             z = base_z(v.level) + PALLET_H
         else:
             z = base_z(v.level)
-        bodies.append([v.id, kind, _r(v.x), _r(v.y), _r(z), _r(yaw), _r(w), _r(l), _r(h), v.color])
+        bodies.append([v.id, kind, _r(v.x), _r(v.y), _r(z), _r(yaw), _r(w), _r(l), _r(h), v.color,
+                       getattr(v, "barcode", 0), getattr(v, "destination", 0)])
 
     lift_of_belt = {e.beltId: e for e in config.elevators if e.beltId}
+    tables = {t.beltId: t for t in config.turntables if t.beltId}
     belts = {}
     for b in config.belts:
         elevator = lift_of_belt.get(b.id)
         z = elevator.position * lh + BELT_TOP if elevator is not None else None
-        belts[b.id] = [_r(b.actualSpeed), z if z is None else _r(z)]
+        table = tables.get(b.id)
+        belts[b.id] = [_r(b.actualSpeed), z if z is None else _r(z), _r(table.angle) if table is not None else None]
 
     def on(value) -> bool:
         if isinstance(value, str):
@@ -274,4 +312,11 @@ def dynamic_state(config: SimulatorConfig, views: Sequence, sim_time: float = 0.
         "stoppers": {s.id: bool(s.isUp) for s in config.stoppers},
         "robots": robots,
         "elevators": {e.id: [_r(e.position * lh), bool(e.moving)] for e in config.elevators},
+        "scanners": {s.id: [bool(s.present), s.code, bool(s.noRead), s.readCount] for s in config.scanners},
+        "diverters": {d.id: bool(d.active) for d in config.diverters},
+        "turntables": {t.id: _r(t.angle) for t in config.turntables},
+        "accumulators": {a.id: a.zones for a in config.accumulators},
+        "chutes": {s.id: [s.count, bool(s.full)] for s in config.sinks if s.capacity},
+        "doors": {d.id: [bool(d.closed), bool(d.locked)] for d in config.doors},
+        "safety": {s.id: [bool(s.ok), bool(s.tripped)] for s in config.safety},
     }

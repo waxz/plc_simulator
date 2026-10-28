@@ -13,6 +13,7 @@ from typing import List, NamedTuple, Tuple, Optional
 from config_parser import SimulatorConfig
 from math_utils import point_in_polygon, get_rect_vertices
 import devices
+import logistics as logistics_runtime
 import machines
 from drive import step_drive
 from surface import (
@@ -34,6 +35,11 @@ class Parcel:
         self.kind = kind
         self.level = level
         self.loads: List["Parcel"] = []
+        # Identity (logistics.identify): barcode, destination, a readable label.
+        self.barcode = 0
+        self.destination = 0
+        self.readable = True
+        self.weight: Optional[float] = None     # kg on a scale (None: the body's mass)
         self.model = None                   # config_parser.Pallet for a pallet
         self.offset = (0.0, 0.0, 0.0)       # a load's place on its pallet (dx, dy, dangle)
         self.max_extent = max(math.hypot(v.x, v.y) for v in shape.get_vertices()) if hasattr(shape, 'get_vertices') else 0.5
@@ -89,6 +95,8 @@ class ParcelView(NamedTuple):
     kind: str = "parcel"                # "parcel" or "pallet"
     level: int = 0
     carrier: str = ""                   # "load" (on a pallet), "held" (in a gripper), "" (free)
+    barcode: int = 0
+    destination: int = 0
 
 
 def _smootherstep(t: float) -> float:
@@ -245,6 +253,10 @@ class PhysicsEngine:
         # Pallets, stoppers, robot arms, elevators (machines.py).
         self.machines = machines.MachineRuntime(self)
         self.machines.reset()
+        # Parcel identity, scanners, diverters, turntables, accumulation,
+        # chutes, safety (logistics.py).
+        self.logistics = logistics_runtime.LogisticsRuntime(self)
+        self.logistics.reset()
 
     def _setup_collision_handlers(self):
         """Install a parcel-parcel collision handler that eliminates bouncing.
@@ -553,6 +565,7 @@ class PhysicsEngine:
                         parcel.traction = self.friction.attach(body, w / 2.0, h / 2.0)
                     if source.level:
                         parcel.level = source.level
+                    self.logistics.identify(parcel, source)
                     self.parcels.append(parcel)
                     self.source_timers[source.id] = 0.0 # reset timer only if spawned
 
@@ -652,6 +665,7 @@ class PhysicsEngine:
                 belt._encoder_frac = 0.0
                 belt._overload_s = 0.0
             self.machines.reset()
+            self.logistics.reset()
 
     def _play_area_bounds(self) -> Optional[Tuple[float, float, float, float]]:
         """Bounding box covering every belt/source/sink, padded generously -
@@ -689,6 +703,7 @@ class PhysicsEngine:
         # Sinks are axis-aligned rectangles (rotation 0): a box test, built once.
         boxes = [(sink.id, sink.x - sink.width / 2.0, sink.y - sink.height / 2.0,
                   sink.x + sink.width / 2.0, sink.y + sink.height / 2.0) for sink in self.config.sinks]
+        chutes = {sink.id: sink for sink in self.config.sinks if sink.capacity}
         before = list(self.parcels)
         positions = [parcel.body.position for parcel in before]
         for parcel, (px, py) in zip(before, positions):
@@ -701,14 +716,20 @@ class PhysicsEngine:
                                 self.machines.take_loads(parcel)
                             break
                 continue
-            in_a_sink = False
+            in_a_sink = held = False
             for sink_id, x0, y0, x1, y1 in boxes:
                 if x0 <= px <= x1 and y0 <= py <= y1:
+                    chute = chutes.get(sink_id)
+                    if chute is not None and not self.logistics.chute_takes(chute):
+                        held = True             # a full chute: it waits in front of it
+                        break
                     in_a_sink = True
                     self.delivered[sink_id] = self.delivered.get(sink_id, 0) + 1
                     break
             if in_a_sink:
                 to_remove.append(parcel)
+                continue
+            if held:
                 continue
             if bounds is not None:
                 min_x, min_y, max_x, max_y = bounds
@@ -1276,6 +1297,9 @@ class PhysicsEngine:
             self._under = None
 
     def _step(self, h: float):
+        logistics = self.logistics if self.logistics.active else None
+        if logistics is not None:
+            logistics.before_drives(h)
         self._update_belt_loads()
         for belt in self.config.belts:
             step_drive(belt, h)
@@ -1290,9 +1314,13 @@ class PhysicsEngine:
         else:
             self.space.damping = 0.1
         self.apply_conveyor_kinematics()
+        if logistics is not None:
+            logistics.steer()
         self.space.step(h)
         self.handle_sinks()
         self.machines.after_step(h)
+        if logistics is not None:
+            logistics.after_step(h)
         self.evaluate_sensors(h)
         self._post_positions = None
         self.sim_time += h
@@ -1332,12 +1360,12 @@ class PhysicsEngine:
             actual, target = parcel_speed_info(parcel)
             x, y = parcel.body.position
             views.append(ParcelView(parcel.id, self._parcel_vertices(parcel), x, y, parcel.color, actual, target,
-                                    parcel.kind, parcel.level))
+                                    parcel.kind, parcel.level, "", parcel.barcode, parcel.destination))
         # Loads and gripped parts: drawn on top of their pallets.
         for part, carrier in self.machines.carried_parts_with_carrier():
             x, y = part.body.position
             views.append(ParcelView(part.id, self._parcel_vertices(part), x, y, part.color, 0.0, None,
-                                    part.kind, part.level, carrier))
+                                    part.kind, part.level, carrier, part.barcode, part.destination))
         return views
 
     def step_for(self, wall_seconds: float) -> int:

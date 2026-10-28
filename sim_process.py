@@ -39,6 +39,14 @@ MACHINE_FIELDS = {
                "ready", "atHome", "inPosition", "fault", "faultCode", "j1", "j2", "j3", "j4", "j5", "j6",
                "tcpX", "tcpY", "tcpZ"),
     "elevators": ("level", "moving", "atLevel", "occupied", "position", "targetLevel"),
+    "scanners": ("code", "destination", "noRead", "readCount", "present", "weight", "measuredLength",
+                 "measuredWidth", "measuredHeight"),
+    "diverters": ("active", "present", "presentCode", "diverted", "divert"),
+    "turntables": ("index", "turning", "inPosition", "occupied", "angle", "targetIndex"),
+    "accumulators": ("zones", "full", "release"),
+    "doors": ("closed", "locked", "lock"),
+    "safety": ("ok", "tripped"),
+    "sinks": ("count", "full"),
 }
 SNAPSHOT_TIMEOUT_S = 5.0
 
@@ -161,6 +169,9 @@ def simulation_main(conn, settings: dict) -> None:
                 if button is not None:
                     with lock:
                         (devices.press if pressed else devices.release)(button)
+            elif cmd == "door":
+                with lock:
+                    physics.logistics.toggle_door(arg)
             elif cmd == "clear":
                 physics.clear_parcels()
             elif cmd == "reset":
@@ -316,6 +327,10 @@ class PhysicsProxy:
 
     def set_button(self, button_id: str, pressed: bool) -> None:
         self._send("button", (button_id, pressed))
+
+    def toggle_door(self, door_id: str) -> None:
+        """The operator opens / closes a guard door (logistics.py)."""
+        self._send("door", door_id)
 
     def clear_parcels(self) -> None:
         self._send("clear")

@@ -50,7 +50,8 @@ class EditorTreesTest(unittest.TestCase):
     def test_library_is_a_folder_tree(self):
         tree = self.window.library_panel.list_widget
         top = [tree.topLevelItem(i).text(0) for i in range(tree.topLevelItemCount())]
-        self.assertEqual(top, ["Belts", "Sensors", "Parcel Flow", "Machines", "Operator Panel", "My Components"])
+        self.assertEqual(top, ["Belts", "Sensors", "Parcel Flow", "Machines", "Logistics", "Safety",
+                               "Operator Panel", "My Components"])
         belts = tree.topLevelItem(0)
         self.assertEqual([belts.child(i).text(0) for i in range(belts.childCount())], ["Linear Belt", "Curved Belt"])
         self.assertEqual(tree.folder_of(tree._row("Push Button")), "Operator Panel")

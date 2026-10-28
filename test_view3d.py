@@ -114,6 +114,28 @@ class SceneTest(unittest.TestCase):
         json.dumps(state)
 
 
+class LogisticsSceneTest(unittest.TestCase):
+    def test_equipment_and_live_states_reach_the_view(self):
+        import random
+        random.seed(3)
+        config = load_config(os.path.join(HERE, "logistics_demo.json"))
+        scene = scene3d.static_scene(config)
+        self.assertEqual([s["type"] for s in scene["scanners"]], ["dws"])
+        self.assertEqual({d["type"] for d in scene["diverters"]}, {"pusher", "wheels"})
+        self.assertEqual(len(scene["eyes"]), 3)                          # one photo-eye per zone
+        self.assertEqual({c["id"] for c in scene["chutes"]}, {"chute_1", "chute_2", "chute_3"})
+        table_belt = next(b for b in scene["belts"] if b["id"] == "tt_belt")
+        self.assertEqual(table_belt["table"]["x"], config.turntables[0].x)
+        engine = PhysicsEngine(config)
+        engine.run_for(30.0)
+        state = scene3d.dynamic_state(config, engine.parcel_views(), engine.sim_time)
+        for key in ("scanners", "diverters", "turntables", "accumulators", "chutes", "doors", "safety"):
+            self.assertIn(key, state)
+        self.assertEqual(state["doors"]["door_1"], [True, False])
+        self.assertTrue(any(row[10] > 1000000 for row in state["bodies"]))   # barcodes on the parcels
+        self.assertEqual(len(state["belts"]["tt_belt"]), 3)              # speed, z, table angle
+
+
 class ServerTest(unittest.TestCase):
     def setUp(self):
         self.config = load_config(DEMO)
@@ -175,6 +197,11 @@ class ServerTest(unittest.TestCase):
         with urllib.request.urlopen(req, timeout=10) as r:
             self.assertEqual(json.loads(r.read()), {"ok": True})
         self.assertEqual(self.server.take_commands(), [("button", "b1", True)])
+        req = urllib.request.Request(self.base + "door", data=json.dumps({"id": "door_1"}).encode(),
+                                     headers={"Content-Type": "application/json"}, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as r:
+            self.assertEqual(json.loads(r.read()), {"ok": True})
+        self.assertEqual(self.server.take_commands(), [("door", "door_1", True)])
 
     def test_no_frames_are_built_without_a_viewer(self):
         built = []
