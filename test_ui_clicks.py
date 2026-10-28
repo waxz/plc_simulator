@@ -10,6 +10,7 @@ events posted to the window's own event loop (Renderer.process_events).
 import os
 import shutil
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -284,6 +285,30 @@ class SimulatorClicksTest(unittest.TestCase):
         self.r.camera_x += 30
         self.frame()
         self.assertEqual(self.r.screen.get_at((edge[0] + 30, edge[1]))[:3], hmi.DRAWING)
+
+    def test_speed_button_and_keys(self):
+        ui = self.r.editor_ui
+        self.assertEqual(ui.sim_speed_btn.text, "Speed 1x")
+        seen = []
+        for _ in range(5):
+            self.click(ui.sim_speed_btn)
+            seen.append(ui.sim_speed_btn.text)
+        self.assertEqual(seen, ["Speed 2x", "Speed 4x", "Speed 8x", "Speed MAX", "Speed 1x"])
+        self.assertEqual(self.r.speed, 1.0)
+        for key, expected in ((pygame.K_RIGHTBRACKET, 2.0), (pygame.K_RIGHTBRACKET, 4.0), (pygame.K_LEFTBRACKET, 2.0)):
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": key, "unicode": "", "mod": 0}))
+            self.r.process_events()
+            self.assertEqual(self.r.speed, expected)
+
+    def test_the_scene_is_drawn_under_the_simulation_lock(self):
+        import threading
+        lock = threading.Lock()
+        self.r.sim_lock = lock
+        lock.acquire()                                   # the simulation thread mid-step
+        threading.Timer(0.3, lock.release).start()
+        t = time.monotonic()
+        self.frame()
+        self.assertGreaterEqual(time.monotonic() - t, 0.25)
 
     def test_edit_in_designer_opens_the_layout_editor(self):
         self.r.config_path = "test_config.json"

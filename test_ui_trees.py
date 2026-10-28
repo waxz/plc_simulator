@@ -169,7 +169,7 @@ class SimulatorTreesTest(unittest.TestCase):
         bar = self.ui.toolbar_panel.get_abs_rect()
         self.assertEqual((bar.x, bar.y, bar.width), (0, TOP_BAR, self.r.width))
         buttons = [b for _label, group in self.ui.toolbar_groups for b in group]
-        self.assertEqual(len(buttons), 7)
+        self.assertEqual(len(buttons), 8)
         for left, right in zip(buttons, buttons[1:]):
             self.assertLess(left.get_abs_rect().right, right.get_abs_rect().left)   # left to right
         for b in buttons:

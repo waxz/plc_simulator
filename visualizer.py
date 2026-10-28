@@ -1,6 +1,8 @@
 import os
 import subprocess
 import sys
+from collections import deque
+from contextlib import nullcontext
 import pygame
 import pygame_gui
 import math
@@ -19,6 +21,14 @@ from cad.checks import belt_footprint
 from cad.path import belt_world_path, path_length, segments as path_segments
 from cad.ports import centerline_points
 from editor_ui import EditorUI
+
+
+SPEEDS = (1.0, 2.0, 4.0, 8.0, None)   # real-time factors the Speed button cycles; None = max
+FRAME_LOCKED_MAX_SPEED = 8.0          # "max" when physics runs once per frame (--no-sim-thread)
+
+
+def speed_label(speed: Optional[float]) -> str:
+    return "MAX" if speed is None else f"{speed:g}x"
 
 
 class Renderer:
@@ -60,6 +70,12 @@ class Renderer:
         # The layout's DXF background (config.background), read on the first
         # frame - config_path, which its path is relative to, is set by then.
         self.drawing = DrawingLayer()
+        # Simulation speed (sim_runner.py): a real-time factor, None = as fast
+        # as possible. The window renders at its own rate; it holds the
+        # physics lock (set by main.py) only while drawing the scene.
+        self.speed: Optional[float] = 1.0
+        self.sim_lock = nullcontext()
+        self._ratio_samples = deque()   # (wall, sim_time) over the last couple of seconds
         self.show_drawing = True
         self._drawing_loaded = False
 
@@ -123,6 +139,15 @@ class Renderer:
             self.set_theme(hmi.other_theme())
         elif cmd == "TOGGLE_DRAWING":
             self.show_drawing = not self.show_drawing
+        elif cmd in ("CYCLE_SPEED", "SPEED_UP", "SPEED_DOWN"):
+            i = SPEEDS.index(self.speed) if self.speed in SPEEDS else 0
+            step = -1 if cmd == "SPEED_DOWN" else 1
+            if cmd == "CYCLE_SPEED":
+                i = (i + 1) % len(SPEEDS)
+            else:
+                i = max(0, min(len(SPEEDS) - 1, i + step))
+            self.speed = SPEEDS[i]
+            print(f"[Sim] Speed {speed_label(self.speed)}")
         elif cmd == "CLEAR" and self.physics is not None:
             self.physics.clear_parcels()
         elif cmd == "RESET" and self.physics is not None:
@@ -223,7 +248,7 @@ class Renderer:
                 
             self.manager.process_events(event)
             ui_cmd = self.editor_ui.handle_event(event)
-            if ui_cmd in ("TOGGLE_PLAY", "CLEAR", "RESET", "TOGGLE_THEME", "TOGGLE_DRAWING"):
+            if ui_cmd in ("TOGGLE_PLAY", "CLEAR", "RESET", "TOGGLE_THEME", "TOGGLE_DRAWING", "CYCLE_SPEED"):
                 cmd = self.run_command(ui_cmd)
                 continue
             if ui_cmd:
@@ -252,6 +277,10 @@ class Renderer:
                     cmd = self.run_command('TOGGLE_THEME')
                 elif event.key == pygame.K_d:
                     cmd = self.run_command('TOGGLE_DRAWING')
+                elif event.key == pygame.K_RIGHTBRACKET:
+                    cmd = self.run_command('SPEED_UP')
+                elif event.key == pygame.K_LEFTBRACKET:
+                    cmd = self.run_command('SPEED_DOWN')
                 elif event.key == pygame.K_c:
                     cmd = self.run_command('CLEAR')
                     
@@ -830,6 +859,19 @@ class Renderer:
                 sx, sy = self._world_to_screen(parcel.body.position.x, parcel.body.position.y)
                 self._queue_label(text, (sx, sy), self.PRIORITY_DEVICE, hmi.ALARM if lagging else hmi.TEXT)
 
+    def _recent_ratio(self, sim_time: float) -> float:
+        """Simulated seconds per wall second over the last ~2 s (0 while
+        paused) - follows a speed change at once, unlike a since-start mean."""
+        now = time.perf_counter()
+        samples = self._ratio_samples
+        if samples and sim_time < samples[-1][1]:
+            samples.clear()                     # reset: time went back to 0
+        samples.append((now, sim_time))
+        while len(samples) > 2 and now - samples[0][0] > 2.0:
+            samples.popleft()
+        (t0, s0), (t1, s1) = samples[0], samples[-1]
+        return (s1 - s0) / (t1 - t0) if t1 - t0 > 0.2 else 0.0
+
     def track_play_time(self) -> float:
         """Accumulate wall time spent playing; call once per loop iteration.
         Returns the total."""
@@ -850,6 +892,20 @@ class Renderer:
             self._surface_cache.clear()
             self._surface_cache_zoom = self.zoom
 
+        # The scene reads parcels and component states the simulation thread
+        # writes: draw it under the physics lock (a few ms), everything else
+        # (panels, status bar, flip, frame pacing) without it.
+        with self.sim_lock:
+            self._draw_scene(physics_engine)
+        self.editor_ui.sync_sim_buttons(self.playing, hmi.THEME, self.show_drawing, speed_label(self.speed))
+        self.manager.draw_ui(self.screen)
+        self._draw_status_bar(physics_engine)
+        self._draw_hint_bar()
+
+        pygame.display.flip()
+        self.clock.tick(self.fps)
+
+    def _draw_scene(self, physics_engine=None):
         self.screen.fill(hmi.BG)
         self.draw_grid()
         self._draw_background_drawing()
@@ -880,13 +936,6 @@ class Renderer:
 
         if physics_engine:
             self.editor_ui.update_sensor_state(physics_engine)
-        self.editor_ui.sync_sim_buttons(self.playing, hmi.THEME, self.show_drawing)
-        self.manager.draw_ui(self.screen)
-        self._draw_status_bar(physics_engine)
-        self._draw_hint_bar()
-
-        pygame.display.flip()
-        self.clock.tick(self.fps)
 
     def load_drawing(self) -> bool:
         """(Re)read the layout's DXF background; the View > drawing button is
@@ -927,10 +976,13 @@ class Renderer:
 
         fields = []
         if physics_engine:
-            real_elapsed = max(1e-6, self.track_play_time())
-            ratio = physics_engine.sim_time / real_elapsed
+            self.track_play_time()
+            ratio = self._recent_ratio(physics_engine.sim_time)
             fields.append(("TIME", f"{physics_engine.sim_time:7.1f} s", hmi.TEXT))
-            fields.append(("REAL", f"{ratio:4.2f}x", hmi.TEXT if abs(ratio - 1.0) <= 0.1 else hmi.WARNING))
+            fields.append(("SPEED", speed_label(self.speed), hmi.TEXT))
+            # Amber when the simulation can't keep the speed asked for.
+            behind = self.playing and self.speed is not None and ratio < 0.9 * self.speed
+            fields.append(("REAL", f"{ratio:4.2f}x", hmi.WARNING if behind else hmi.TEXT))
             fields.append(("PARCELS", f"{len(physics_engine.parcels)}", hmi.TEXT))
             delivered = sum(getattr(physics_engine, "delivered", {}).values())
             fields.append(("DELIVERED", f"{delivered}", hmi.TEXT))
@@ -967,7 +1019,8 @@ class Renderer:
         pygame.draw.line(self.screen, hmi.PANEL_BORDER, bar.topleft, bar.topright)
         hint = self._cached_text(
             self.hud_small,
-            "SPACE start / pause    C clear parcels    R reset    V parcel speeds " + ("on" if self.show_values else "off")
+            "SPACE start / pause    [ ] speed    C clear parcels    R reset    V parcel speeds "
+            + ("on" if self.show_values else "off")
             + "    D drawing    T theme    wheel zoom    drag pan    click a button to press it", hmi.TEXT_FAINT)
         self.screen.blit(hint, (12, bar.y + (BOTTOM_BAR - hint.get_height()) // 2))
 

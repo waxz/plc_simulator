@@ -3,6 +3,7 @@ from typing import Dict
 from pymunk.vec2d import Vec2d
 from contextlib import nullcontext
 import math
+import time
 import random
 import pymunk
 import threading
@@ -949,6 +950,21 @@ class PhysicsEngine:
             for _ in range(steps):
                 self.step(h)
             self._accumulator -= steps * h
+
+    def step_for(self, wall_seconds: float) -> int:
+        """As fast as possible: whole physicsDt steps back to back, holding
+        the lock, until `wall_seconds` of wall time is used (at least one
+        step). Returns the steps run. The caller releases the lock between
+        calls (sim_runner's max speed)."""
+        with self._lock:
+            h = self.config.physicsDt
+            end = time.perf_counter() + wall_seconds
+            steps = 0
+            while True:
+                self.step(h)
+                steps += 1
+                if time.perf_counter() >= end:
+                    return steps
 
     def run_for(self, seconds: float):
         """Deterministic headless stepping (tests, scripted scenarios):

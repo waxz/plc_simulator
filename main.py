@@ -3,16 +3,21 @@ import threading
 import time
 import pygame
 from config_parser import load_config
-from visualizer import Renderer
+from visualizer import FRAME_LOCKED_MAX_SPEED, Renderer
 from physics import PhysicsEngine
 from mqtt_data_exchange import MQTTSyncEngine, apply_exchange_config
 from metrics_store import MetricsStore
 from sim_runner import SimulationRunner
 
 
-def run_pygame(config, physics_engine, mqtt, headless: bool, runner=None, config_path=None):
+def run_pygame(config, physics_engine, mqtt, headless: bool, runner=None, config_path=None,
+               speed=1.0, render_fps: int = 30, sim_lock=None):
     print(f"Initializing visualizer (Headless: {headless})...")
     renderer = Renderer(config, headless=headless)
+    renderer.speed = speed
+    renderer.fps = render_fps
+    if sim_lock is not None and runner is not None:
+        renderer.sim_lock = sim_lock   # draw the scene while the runner thread isn't mid-step
     renderer.exchange = mqtt  # the status bar shows the PLC link
     renderer.physics = physics_engine  # Clear Parcels / Reset
     renderer.config_path = config_path  # Edit in Designer
@@ -30,7 +35,7 @@ def run_pygame(config, physics_engine, mqtt, headless: bool, runner=None, config
 
     try:
         while running:
-            dt = clock.tick(60) / 1000.0
+            dt = clock.tick(render_fps) / 1000.0
             # Event processing
             # TODO:   dt pass to process_events
             cmd = renderer.process_events()
@@ -47,9 +52,12 @@ def run_pygame(config, physics_engine, mqtt, headless: bool, runner=None, config
                 # Physics + exchange run on the runner's own thread; this
                 # loop only renders and forwards play/pause.
                 runner.playing = renderer.playing
+                runner.speed = renderer.speed
             else:
                 if renderer.playing:
-                    physics_engine.update(dt)
+                    # Frame-locked (--no-sim-thread): physics advances once per
+                    # frame, so "max" can only mean a fixed factor here.
+                    physics_engine.update(dt * (renderer.speed or FRAME_LOCKED_MAX_SPEED))
                 mqtt.sync()
 
             renderer.render(physics_engine)
@@ -62,7 +70,8 @@ def run_pygame(config, physics_engine, mqtt, headless: bool, runner=None, config
             if now - last_timing_report >= 5.0:
                 real_elapsed = play_real
                 ratio = physics_engine.sim_time / real_elapsed if real_elapsed > 0 else 0.0
-                print(f"[TIMING] sim={physics_engine.sim_time:.1f}s real={real_elapsed:.1f}s ratio={ratio:.3f}x "
+                print(f"[TIMING] speed={'max' if renderer.speed is None else f'{renderer.speed:g}x'} "
+                      f"sim={physics_engine.sim_time:.1f}s real={real_elapsed:.1f}s ratio={ratio:.3f}x "
                       f"dropped={physics_engine.dropped_time:.2f}s exchange={mqtt.stats()}")
                 last_timing_report = now
     except KeyboardInterrupt:
@@ -132,17 +141,31 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--web-host", default="127.0.0.1", help="Host for --web-ui (default 127.0.0.1)")
     parser.add_argument("--web-port", type=int, default=5050, help="Port for --web-ui (default 5050)")
     parser.add_argument(
-        "--sim-thread", action="store_true",
-        help="Run physics and the PLC exchange on a dedicated thread (see sim_runner.py) instead of once "
-             "per GUI frame, so exchange channels keep their configured interval (e.g. 10 ms). "
+        "--sim-thread", action=argparse.BooleanOptionalAction, default=True,
+        help="Run physics and the PLC exchange on their own thread (sim_runner.py), decoupled from "
+             "rendering: the window draws at --render-fps while the simulation keeps its speed and the "
+             "exchange channels their interval (default on; --no-sim-thread steps physics once per frame). "
              "Always on with --headless.",
     )
-    parser.add_argument("--sim-tick-ms", type=float, default=2.0, help="Tick period for --sim-thread (default 2 ms)")
+    parser.add_argument("--sim-tick-ms", type=float, default=2.0, help="Tick period of the simulation thread (default 2 ms)")
+    parser.add_argument(
+        "--speed", default="1",
+        help="Simulation speed: a real-time factor (1 = real time, 4 = four times faster) or 'max' "
+             "(as fast as the host can). Also the Speed button / [ ] keys in the window.",
+    )
+    parser.add_argument("--render-fps", type=int, default=30,
+                        help="Window frame rate (default 30); the simulation doesn't wait for it")
     return parser
 
 
 def main():
     args = build_argparser().parse_args()
+    try:
+        speed = None if str(args.speed).lower() == "max" else float(args.speed)
+    except ValueError:
+        raise SystemExit(f"--speed must be a number or 'max', not {args.speed!r}")
+    if speed is not None and speed <= 0:
+        raise SystemExit("--speed must be > 0")
 
     print(f"Loading configuration from {args.config}...")
     config = load_config(args.config)
@@ -179,13 +202,15 @@ def main():
 
     runner = None
     if args.sim_thread or args.headless:
-        runner = SimulationRunner(physics_engine, mqtt, tick_s=args.sim_tick_ms / 1000.0)
+        runner = SimulationRunner(physics_engine, mqtt, tick_s=args.sim_tick_ms / 1000.0, speed=speed)
         runner.playing = False  # the GUI's play state is forwarded every frame
         runner.start()
-        print(f"[main] Physics + exchange on a dedicated thread, tick {args.sim_tick_ms:g} ms.")
+        print(f"[main] Physics + exchange on their own thread (tick {args.sim_tick_ms:g} ms, speed "
+              f"{'max' if speed is None else f'{speed:g}x'}); the window renders at {args.render_fps} fps.")
 
     try:
-        run_pygame(config, physics_engine, mqtt, args.headless, runner=runner, config_path=args.config)
+        run_pygame(config, physics_engine, mqtt, args.headless, runner=runner, config_path=args.config,
+                   speed=speed, render_fps=args.render_fps, sim_lock=config_lock)
     finally:
         if runner is not None:
             runner.stop()

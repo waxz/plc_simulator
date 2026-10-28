@@ -17,8 +17,8 @@ CANVAS_TOP = TOP_BAR + TOOLBAR_H
 
 # The tool bar's groups, left to right: (title, [(attribute, text, width[, object id])]).
 TOOLBAR_GROUPS = (
-    ("SIMULATION", (("sim_play_btn", "Start", 76, "#sim_primary"), ("sim_clear_btn", "Clear Parcels", 108),
-                    ("sim_reset_btn", "Reset", 64))),
+    ("SIMULATION", (("sim_play_btn", "Start", 76, "#sim_primary"), ("sim_speed_btn", "Speed 1x", 92),
+                    ("sim_clear_btn", "Clear Parcels", 108), ("sim_reset_btn", "Reset", 64))),
     ("LAYOUT", (("manager_btn", "Components", 100), ("designer_btn", "Edit in Designer", 126))),
     ("VIEW", (("drawing_btn", "Hide Drawing", 110), ("theme_btn", "Light Theme", 104))),
 )
@@ -344,8 +344,8 @@ class EditorUI:
 
     # -- toolbar -------------------------------------------------------------------
 
-    def sync_sim_buttons(self, playing: bool, theme: str, drawing_shown: bool = True):
-        """Start <-> Pause (green / amber), the theme and drawing buttons' wording."""
+    def sync_sim_buttons(self, playing: bool, theme: str, drawing_shown: bool = True, speed_text: str = "1x"):
+        """Start <-> Pause (green / amber), the speed, theme and drawing buttons' wording."""
         if getattr(self, "_shown_playing", None) != playing:
             self._shown_playing = playing
             self.sim_play_btn.set_text("Pause" if playing else "Start")
@@ -356,6 +356,9 @@ class EditorUI:
         label = "Hide Drawing" if drawing_shown else "Show Drawing"
         if self.drawing_btn.text != label:
             self.drawing_btn.set_text(label)
+        label = f"Speed {speed_text}"
+        if self.sim_speed_btn.text != label:
+            self.sim_speed_btn.set_text(label)
 
     def _panel_height(self) -> int:
         return max(200, self.height - CANVAS_TOP - BOTTOM_BAR)
@@ -375,7 +378,8 @@ class EditorUI:
     def handle_event(self, event):
         """Returns a command ("TOGGLE_PLAY", "OPEN_DESIGNER", ("SELECT_ITEM", item), ...) or None."""
         if event.type == pygame_gui.UI_BUTTON_PRESSED:
-            for button, command in ((self.sim_play_btn, "TOGGLE_PLAY"), (self.sim_clear_btn, "CLEAR"),
+            for button, command in ((self.sim_play_btn, "TOGGLE_PLAY"), (self.sim_speed_btn, "CYCLE_SPEED"),
+                                    (self.sim_clear_btn, "CLEAR"),
                                     (self.sim_reset_btn, "RESET"), (self.theme_btn, "TOGGLE_THEME"),
                                     (self.manager_btn, "OPEN_MANAGER"), (self.designer_btn, "OPEN_DESIGNER"),
                                     (self.drawing_btn, "TOGGLE_DRAWING")):

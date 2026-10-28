@@ -426,6 +426,7 @@ an LED. Dragging on the canvas always pans the view.
 | Control | Key | Does |
 |---|---|---|
 | Simulation > Start / Pause | `Space` | run or pause the physics (green Start, amber Pause) |
+| Simulation > Speed | `[` `]` | 1x / 2x / 4x / 8x / MAX (as fast as possible); the window keeps its own frame rate |
 | Simulation > Clear Parcels | `C` | remove every parcel, keep time and drives running |
 | Simulation > Reset | `R` | clear parcels, time, counters, sensor filters and drive state |
 | View > Hide / Show Drawing | `D` | the layout's DXF background (disabled when the layout has none) |
@@ -435,9 +436,28 @@ an LED. Dragging on the canvas always pans the view.
 Add `--exchange-config <file.json>` to override the MQTT/TCP settings baked into
 the workspace config (see `tcp_exchange_config.json` for the shape).
 
-Add `--sim-thread` when a PLC is connected: physics and the exchange then run on
-their own 2 ms tick (`sim_runner.py`) instead of once per GUI frame, so a 10 ms
-channel really goes out every 10 ms. `--headless` always runs this way.
+The simulation runs on its own thread, decoupled from the window
+(`sim_runner.py`): physics and the PLC exchange tick every 2 ms of wall time,
+while the window only draws, at `--render-fps` (default 30). A slow frame -
+lots of parcels, a big drawing - never slows the simulation down, and a
+10 ms exchange channel really goes out every 10 ms. The window holds the
+simulation lock only while it draws the scene (a few ms).
+
+Speed: `--speed 1` (real time, default), `--speed 4` (four times faster), or
+`--speed max` (as fast as the host can - physics runs flat out in 8 ms
+slices, releasing the lock between them so the window and the PLC exchange
+keep going); in the window the **Speed** button cycles 1x / 2x / 4x / 8x /
+MAX and `[` / `]` step down / up. The status bar shows the speed asked for
+and **REAL**, the speed reached over the last two seconds (amber when the
+host can't keep up). For PLC tests keep 1x: the PLC's own timers (jam
+time, scan) run on wall time.
+
+```bash
+python main.py test_config.json --speed max --render-fps 20
+```
+
+`--no-sim-thread` steps physics once per frame instead (the old behaviour;
+"max" is then 8x). `--headless` always uses the simulation thread.
 
 ### Belt drives, traction, and timing
 
