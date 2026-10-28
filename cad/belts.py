@@ -55,12 +55,12 @@ def outline_belt(belt_id: str, points: Sequence[Point], flow_heading: Optional[f
 
 
 def path_belt(belt_id: str, points: Sequence[Point], bulges: Sequence[float], closed: bool, width: float,
-              speed: float = 1.0, color: str = "#3b82f6") -> Belt:
+              speed: float = 1.0, color: str = "#3b82f6", corner_radius: float = 0.0) -> Belt:
     if len(points) < 2:
         raise ValueError("A belt path needs at least 2 anchors.")
     (cx, cy), local = recenter(points)
     return Belt(id=belt_id, type="path", shape="path", x=cx, y=cy, rotation=0.0, beltWidth=width,
-                speed=speed, directionAngle=0.0, color=color, closed=closed,
+                speed=speed, directionAngle=0.0, color=color, closed=closed, cornerRadius=corner_radius,
                 path=[PathNode(x=x, y=y, bulge=b) for (x, y), b in zip(local, bulges)])
 
 

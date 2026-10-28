@@ -134,7 +134,9 @@ class PathToolTest(unittest.TestCase):
             self.click(x, y)
         belt = self.drawn()[0].model
         self.assertTrue(belt.closed)
-        self.assertEqual(len(belt.path), 6)  # 3 corners, each filleted into 2 anchors
+        self.assertEqual(len(belt.path), 3)          # the 3 corners you clicked stay the anchors
+        self.assertEqual(belt.cornerRadius, 0.5)     # ... rounded when the geometry is built
+        self.assertEqual(len(cpath.belt_local_path(belt)[0]), 6)
         self.assertEqual(len(belt_footprint(belt).interiors), 1)
 
     def test_shift_snaps_the_segment_angle(self):
@@ -213,6 +215,49 @@ class PathToolTest(unittest.TestCase):
         for (x, y), (bx, by) in zip(self.world_anchors(item.model), before):
             self.assertAlmostEqual(x, bx, places=9)
             self.assertAlmostEqual(y, by, places=9)
+
+    def assert_smooth(self, belt):
+        """Every joint of the centerline is tangent (no kinks)."""
+        segs = cpath.segments(*cpath.belt_local_path(belt), belt.closed)
+        for a, b in zip(segs, segs[1:]):
+            turn = math.atan2(math.sin(b.heading_at(0.0) - a.heading_at(1.0)),
+                              math.cos(b.heading_at(0.0) - a.heading_at(1.0)))
+            self.assertAlmostEqual(turn, 0.0, places=6)
+
+    def test_dragging_a_rounded_corner_keeps_it_rounded(self):
+        # Draw an L with a 1 m corner, then drag the corner's handle (the
+        # anchor you clicked) somewhere else: the corner is re-rounded.
+        self.tool.toolbar.corner_spin.setValue(1.0)
+        self.tool.start()
+        for x, y in ((0, 0), (6, 0), (6, 4)):
+            self.click(x, y)
+        self.key(Qt.Key_Return)
+        item = self.drawn()[0]
+        self.window.scene.clearSelection()
+        item.setSelected(True)
+        _app.processEvents()
+        self.assertEqual(len(self.window.cad.grips.grips), 3)    # one handle per corner, not per tangent point
+        self.assert_smooth(item.model)
+        self._mouse(QEvent.MouseButtonPress, 6, 0)
+        self._mouse(QEvent.MouseMove, 7, -1, Qt.NoButton, Qt.LeftButton)
+        self._mouse(QEvent.MouseMove, 8, -2, Qt.NoButton, Qt.LeftButton)
+        self._mouse(QEvent.MouseButtonRelease, 8, -2)
+        corner = cpath.belt_world_path(item.model)[0]
+        self.assertEqual(len(item.model.path), 3)
+        x, y = item.model.path[1].x + item.model.x, item.model.path[1].y + item.model.y
+        self.assertAlmostEqual(x, 8.0, places=6)
+        self.assertAlmostEqual(y, -2.0, places=6)
+        self.assert_smooth(item.model)
+        segs = cpath.segments(*cpath.belt_local_path(item.model), False)
+        self.assertEqual([seg.kind for seg in segs], ["line", "arc", "line"])
+        self.assertAlmostEqual(segs[1].radius, 1.0, places=6)
+        self.assertEqual(len(corner), 4)
+        # Changing the radius in Properties re-rounds it too.
+        panel = self.window.properties_panel
+        panel.spins["cornerRadius"].setValue(1.5)
+        segs = cpath.segments(*cpath.belt_local_path(item.model), False)
+        self.assertAlmostEqual(segs[1].radius, 1.5, places=6)
+        self.assert_smooth(item.model)
 
     def test_ctrl_click_toggles_a_tangent_arc_and_alt_click_deletes(self):
         item = self._draw_straight()

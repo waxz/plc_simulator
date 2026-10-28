@@ -33,7 +33,7 @@ def _geometry_signature(belt: Belt) -> tuple:
     verts = tuple((p["x"], p["y"]) for p in belt.vertexs) if belt.vertexs else None
     path = tuple((n.x, n.y, n.bulge) for n in belt.path) if belt.path else None
     return (belt.type, belt.shape, belt.x, belt.y, belt.length, belt.beltWidth, belt.rotation,
-            belt.radius, belt.startAngle, belt.endAngle, verts, path, belt.closed)
+            belt.radius, belt.startAngle, belt.endAngle, verts, path, belt.closed, belt.cornerRadius)
 
 
 class _PathGeometry:

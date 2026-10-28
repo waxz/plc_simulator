@@ -325,8 +325,14 @@ def recenter(points: Sequence[Point]) -> Tuple[Point, List[Point]]:
 # ---------------------------------------------------------------------------
 
 def belt_local_path(belt) -> Tuple[List[Point], List[float]]:
+    """The centerline in the belt's frame: its anchors, with sharp corners
+    rounded by `cornerRadius` (the anchors themselves stay the corners)."""
     nodes = belt.path or []
-    return [(n.x, n.y) for n in nodes], [n.bulge for n in nodes]
+    pts, bul = [(n.x, n.y) for n in nodes], [n.bulge for n in nodes]
+    radius = getattr(belt, "cornerRadius", 0.0) or 0.0
+    if radius > 0:
+        pts, bul = fillet_corners(pts, bul, belt.closed, radius)
+    return pts, bul
 
 
 def belt_world_path(belt) -> Tuple[List[Point], List[float]]:

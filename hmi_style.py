@@ -127,7 +127,7 @@ PROPERTY_GROUP_ORDER = ("Identity", "Position", "Geometry", "Motion", "Signal", 
 PROPERTY_GROUPS = {
     "id": "Identity", "label": "Identity", "sensorType": "Identity", "commandFormat": "Identity",
     "x": "Position", "y": "Position", "rotation": "Position",
-    "length": "Geometry", "beltWidth": "Geometry", "width": "Geometry", "height": "Geometry",
+    "length": "Geometry", "beltWidth": "Geometry", "cornerRadius": "Geometry", "width": "Geometry", "height": "Geometry",
     "radius": "Geometry", "startAngle": "Geometry", "endAngle": "Geometry", "beltShape": "Geometry",
     "beltVertexs": "Geometry", "laserCount": "Geometry", "beamDistance": "Geometry",
     "minWidth": "Geometry", "maxWidth": "Geometry", "minHeight": "Geometry", "maxHeight": "Geometry",
@@ -143,7 +143,7 @@ PROPERTY_GROUPS = {
 PROPERTY_LABELS = {
     "id": "Id", "label": "Label", "x": "X", "y": "Y", "rotation": "Rotation",
     "length": "Length", "beltWidth": "Width", "width": "Width", "height": "Height",
-    "radius": "Radius", "startAngle": "Start angle", "endAngle": "End angle", "beltShape": "Shape",
+    "radius": "Radius", "cornerRadius": "Corner radius", "startAngle": "Start angle", "endAngle": "End angle", "beltShape": "Shape",
     "beltVertexs": "Corners", "sensorType": "Type", "laserCount": "Beams", "beamDistance": "Beam pitch",
     "minWidth": "Min width", "maxWidth": "Max width", "minHeight": "Min length", "maxHeight": "Max length",
     "speed": "Speed", "directionAngle": "Direction", "transition_momentum_duration": "Transition",
@@ -154,7 +154,7 @@ PROPERTY_LABELS = {
 PROPERTY_UNITS = {
     "x": " m", "y": " m", "rotation": "\u00b0", "directionAngle": "\u00b0", "startAngle": "\u00b0",
     "endAngle": "\u00b0", "length": " m", "beltWidth": " m", "width": " m", "height": " m", "radius": " m",
-    "beamDistance": " m", "minWidth": " m", "maxWidth": " m", "minHeight": " m", "maxHeight": " m",
+    "beamDistance": " m", "cornerRadius": " m", "minWidth": " m", "maxWidth": " m", "minHeight": " m", "maxHeight": " m",
     "speed": " m/s", "transition_momentum_duration": " s", "interval": " s", "onDelay": " s", "offDelay": " s",
 }
 

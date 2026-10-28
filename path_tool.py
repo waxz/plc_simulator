@@ -548,13 +548,13 @@ class PathDrawTool(_PointTool):
             self.stop()
             return
         pts, bulges = list(self.anchors), list(self.bulges)
-        corner = self.toolbar.corner_spin.value()
-        if corner > 0:
-            pts, bulges = cpath.fillet_corners(pts, bulges, closed, corner)
-        belt = path_belt(self._new_id(), pts, bulges, closed, self.toolbar.width_spin.value())
+        # The anchors stay the corners you clicked; the belt rounds them
+        # (Belt.cornerRadius), so dragging one later re-rounds it.
+        belt = path_belt(self._new_id(), pts, bulges, closed, self.toolbar.width_spin.value(),
+                         corner_radius=self.toolbar.corner_spin.value())
         self.stop()
         self._add_belt(belt, "Draw Belt Path")
-        length = cpath.path_length(cpath.segments(pts, bulges, closed))
+        length = cpath.path_length(cpath.segments(*cpath.belt_local_path(belt), closed))
         self._status(f"Drew {belt.id}: {'loop' if closed else 'open path'}, {len(pts)} anchors, "
                      f"{length:.2f} m centerline.", 8000)
 

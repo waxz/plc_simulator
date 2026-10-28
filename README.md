@@ -320,8 +320,11 @@ Shift+click to insert a corner, Alt+click to delete one.
 | Backspace / Esc | remove the last anchor / cancel |
 
 The live preview shows the belt surface, the current segment's length and
-angle, and the total length. When the path is finished, sharp corners are
-rounded with the toolbar's **Corner R** (0 = keep them sharp, mitred).
+angle, and the total length. Sharp corners are rounded with the toolbar's
+**Corner R** (0 = keep them sharp, mitred). The rounding is part of the belt
+(`cornerRadius`, also in Properties), not baked into extra anchors: the
+anchors stay the corners you clicked, so dragging one re-rounds that corner
+and the belt stays smooth.
 For loops of standard shapes, sketch a rectangle, circle or polygon and
 use Belt from Sketch/Drawing with Type Path (on its outline) instead.
 

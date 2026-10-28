@@ -55,6 +55,10 @@ class Belt(BaseModel):
     vertexs: Optional[List[Dict[str, float]]] = None
     path: Optional[List[PathNode]] = None
     closed: bool = False      # path belt: last anchor joins the first (a loop conveyor)
+    # Path belt: every sharp corner between two straight segments is rounded
+    # with this radius when the geometry is built (cad/path.belt_local_path),
+    # so `path` keeps the corners you drew and moving one re-rounds it.
+    cornerRadius: float = 0.0
     speedBinding: Optional[str] = None
     directionAngleBinding: Optional[str] = None
     directionBinding: Optional[str] = None

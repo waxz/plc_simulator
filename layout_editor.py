@@ -100,7 +100,8 @@ from component_library import (
 )
 
 def _path_signature(model) -> tuple:
-    return (tuple((n.x, n.y, n.bulge) for n in (model.path or [])), model.closed, model.beltWidth)
+    return (tuple((n.x, n.y, n.bulge) for n in (model.path or [])), model.closed, model.beltWidth,
+            model.cornerRadius)
 
 
 def _path_footprint_local(model):
@@ -3254,6 +3255,7 @@ def _field_specs_for(item: PlacedItem):
         specs.append(("float", "directionAngle", "Direction", -360.0, 360.0, 1.0))
         if item.is_path():
             specs.append(("float", "beltWidth", "Width", 0.05, 100.0, 0.05))
+            specs.append(("float", "cornerRadius", "Corner radius", 0.0, 50.0, 0.25))
         elif item.is_curved():
             specs.append(("float", "radius", "Radius", 0.1, 100.0, 0.1))
             specs.append(("float", "startAngle", "Start angle", -360.0, 360.0, 1.0))
@@ -3571,7 +3573,7 @@ class PropertiesPanel(QWidget):
             item.setRotation(-value)
         elif isinstance(item, BeltItem) and item.is_curved() and attr in ("radius", "startAngle", "endAngle", "beltWidth"):
             item.set_arc_params(item.model.radius, item.model.startAngle, item.model.endAngle, item.model.beltWidth)
-        elif isinstance(item, BeltItem) and item.is_path() and attr == "beltWidth":
+        elif isinstance(item, BeltItem) and item.is_path() and attr in ("beltWidth", "cornerRadius"):
             item.sync_from_model()
         elif isinstance(item, BeltItem) and not item.is_curved() and attr in ("length", "beltWidth"):
             item.set_size(item.model.length, item.model.beltWidth)
