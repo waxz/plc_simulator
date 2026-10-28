@@ -29,7 +29,15 @@ from mqtt_data_exchange import apply_exchange_config
 from physics import ParcelView
 
 # Runtime fields copied from the simulation to the window's mirror.
-BELT_FIELDS = ("speed", "run", "reverse", "actualSpeed", "running", "fault", "atSpeed", "encoderCount", "load")
+BELT_FIELDS = ("speed", "run", "reverse", "actualSpeed", "running", "fault", "atSpeed", "encoderCount", "load",
+               "level")
+# Machines' runtime fields (machines.py), per config list.
+MACHINE_FIELDS = {
+    "pallets": ("loadCount",),
+    "stoppers": ("isUp", "occupied", "release"),
+    "robots": ("busy", "holding", "partAtPick", "placeReady", "cycles", "toolX", "toolY", "start"),
+    "elevators": ("level", "moving", "atLevel", "occupied", "position", "targetLevel"),
+}
 SNAPSHOT_TIMEOUT_S = 5.0
 
 
@@ -39,6 +47,8 @@ def _component_state(config: SimulatorConfig) -> dict:
         "sensors": {s.id: s.sensor_states for s in config.sensors},
         "buttons": {b.id: b.sensor_states for b in config.buttons},
         "leds": {l.id: l.isOn for l in config.leds},
+        "machines": {kind: {c.id: tuple(getattr(c, f) for f in fields) for c in getattr(config, kind)}
+                     for kind, fields in MACHINE_FIELDS.items()},
     }
 
 
@@ -55,6 +65,13 @@ def _apply_component_state(config: SimulatorConfig, state: dict) -> None:
         for component in getattr(config, kind):
             if component.id in values:
                 setattr(component, attr, values[component.id])
+    for kind, fields in MACHINE_FIELDS.items():
+        values = state.get("machines", {}).get(kind, {})
+        for component in getattr(config, kind):
+            row = values.get(component.id)
+            if row is not None:
+                for field, value in zip(fields, row):
+                    setattr(component, field, value)
 
 
 # ---------------------------------------------------------------------------

@@ -10,10 +10,11 @@ JSON files; the simulation runs them in the pygame app
 (Formerly cad_editor_prototype.py, which could also run the simulation.)
 
 Features:
-  - Six component kinds: linear belts (rectangle, curved arc, or a
+  - Ten component kinds: linear belts (rectangle, curved arc, or a
     hand-drawn/parametric custom polygon), sensors (IR / laser banner), a
-    parcel source generator, a sink, a momentary push-button, and an LED
-    indicator - each backed directly by the existing `config_parser`
+    parcel source generator, a sink, a momentary push-button, an LED
+    indicator, and the machines - pallet, stopper, robot arm, elevator
+    (machines.py) - each backed directly by the existing `config_parser`
     pydantic models, proving the domain model survives an engine swap
     unchanged. `ITEM_CLASS_FOR_KIND`/`KIND_FOR_MODEL_CLASS`/
     `CONFIG_LIST_ATTR_FOR_KIND` are the single place that map a kind to its
@@ -88,7 +89,10 @@ from PySide6.QtWidgets import (
     QAbstractItemView, QHeaderView,
 )
 
-from config_parser import Belt, Sensor, Source, Sink, ControlButton, LedIndicator, SimulatorConfig, load_config
+from config_parser import (
+    Belt, ControlButton, Elevator, LedIndicator, Pallet, RobotArm, Sensor, SimulatorConfig, Sink, Source, Stopper,
+    load_config,
+)
 import hmi_style as hmi
 from cad.path import (
     belt_local_path, flatten as path_flatten, footprint as path_footprint, path_flow_sign, path_length,
@@ -1668,6 +1672,192 @@ class LedItem(PlacedItem):
         return 1e9 if self.model.radius * 2 * SCALE * scale >= 9 else 0.0
 
 
+# ---------------------------------------------------------------------------
+# Machines (machines.py runs them in the simulator)
+# ---------------------------------------------------------------------------
+
+def _rect_points(w: float, h: float) -> list[QPointF]:
+    hw, hh = w * SCALE / 2.0, h * SCALE / 2.0
+    return [QPointF(-hw, -hh), QPointF(hw, -hh), QPointF(hw, hh), QPointF(-hw, hh)]
+
+
+class _MachineItem(PlacedItem):
+    """A machine on the canvas: its outline follows the model
+    (refresh_shape after any property edit)."""
+
+    def _outline(self) -> list[QPointF]:
+        raise NotImplementedError
+
+    def refresh_shape(self):
+        self.prepareGeometryChange()
+        self.setPolygon(QPolygonF(self._outline()))
+
+    def _tag_spec(self):
+        bottom = max((p.y() for p in self._outline()), default=0.0)
+        return (_device_label(self.model), QPointF(0, bottom), "below", hmi.TEXT_DIM)
+
+    def _tag_room(self, scale: float) -> float:
+        return 1e9 if self.polygon().boundingRect().width() * scale >= 14 else 0.0
+
+
+class PalletItem(_MachineItem):
+    """A pallet at its start position (it rides the belts in the
+    simulator): deck boards across its travel (local x)."""
+
+    kind = "pallet"
+
+    def __init__(self, model: Pallet):
+        super().__init__(model, _rect_points(model.width, model.height))
+        self.setPen(Qt.NoPen)
+
+    def _outline(self):
+        return _rect_points(self.model.width, self.model.height)
+
+    def paint(self, painter: QPainter, option, widget=None):
+        color = QColor(self.model.color)
+        self.setBrush(QBrush(color))
+        self.setPen(QPen(color.darker(220), 0))
+        super().paint(painter, option, widget)
+        rect = self.polygon().boundingRect()
+        painter.setPen(QPen(color.darker(160), 0))
+        for f in (0.25, 0.5, 0.75):
+            x = rect.left() + rect.width() * f
+            painter.drawLine(QPointF(x, rect.top()), QPointF(x, rect.bottom()))
+
+
+class StopperItem(_MachineItem):
+    """A pop-up stopper: the bar across the belt (`width` across the
+    travel, `depth` along it) and an arrow showing the travel it stops.
+    The clickable outline is a little deeper than a thin bar."""
+
+    kind = "stopper"
+    MIN_PICK = 0.15     # m: outline depth, at least
+
+    def __init__(self, model: Stopper):
+        super().__init__(model, self._outline_for(model))
+        self.setBrush(Qt.NoBrush)
+        self.setPen(Qt.NoPen)
+
+    @classmethod
+    def _outline_for(cls, model):
+        return _rect_points(max(model.depth, cls.MIN_PICK), model.width)
+
+    def _outline(self):
+        return self._outline_for(self.model)
+
+    def paint(self, painter: QPainter, option, widget=None):
+        super().paint(painter, option, widget)       # selection outline
+        color = QColor(self.model.color)
+        d, w = max(self.model.depth, 0.02) * SCALE, self.model.width * SCALE
+        painter.setPen(QPen(color.darker(180), 0))
+        painter.setBrush(QBrush(color))
+        painter.drawRect(QRectF(-d / 2, -w / 2, d, w))
+        # The travel it stops: an arrow pointing at the bar from upstream.
+        a = min(w * 0.25, 0.3 * SCALE)
+        painter.setPen(QPen(color, max(1.0, a * 0.12)))
+        painter.drawLine(QPointF(-d / 2 - a * 1.6, 0), QPointF(-d / 2 - a * 0.3, 0))
+        painter.drawLine(QPointF(-d / 2 - a * 0.3, 0), QPointF(-d / 2 - a * 0.8, -a * 0.4))
+        painter.drawLine(QPointF(-d / 2 - a * 0.3, 0), QPointF(-d / 2 - a * 0.8, a * 0.4))
+
+
+class RobotItem(_MachineItem):
+    """A robot arm's base; its reach (dashed) and the pick (green) / place
+    (orange) points it works between, which stay put in the layout when
+    the base moves - edit them in Properties."""
+
+    kind = "robot"
+    BASE = 0.25         # m, the base's radius (visualizer.ROBOT_BASE_R)
+    SEGMENTS = 16
+
+    def __init__(self, model: RobotArm):
+        super().__init__(model, self._outline_for(model))
+        self.setPen(Qt.NoPen)
+
+    @classmethod
+    def _outline_for(cls, model):
+        r = cls.BASE * SCALE
+        return [QPointF(r * math.cos(2 * math.pi * i / cls.SEGMENTS), -r * math.sin(2 * math.pi * i / cls.SEGMENTS))
+                for i in range(cls.SEGMENTS)]
+
+    def _outline(self):
+        return self._outline_for(self.model)
+
+    def _local(self, x: float, y: float) -> QPointF:
+        return QPointF((x - self.model.x) * SCALE, -(y - self.model.y) * SCALE)
+
+    def boundingRect(self) -> QRectF:
+        rect = super().boundingRect()
+        r = self.model.reach * SCALE
+        rect = rect.united(QRectF(-r, -r, 2 * r, 2 * r))
+        for x, y in ((self.model.pickX, self.model.pickY), (self.model.placeX, self.model.placeY)):
+            p = self._local(x, y)
+            rect = rect.united(QRectF(p.x() - 12, p.y() - 12, 24, 24))
+        return rect.adjusted(-2, -2, 2, 2)
+
+    def itemChange(self, change, value):
+        if change == QGraphicsItem.ItemPositionChange:
+            self.prepareGeometryChange()        # the markers stay put: local coordinates change
+        return super().itemChange(change, value)
+
+    def _local_key_points(self):
+        return [QPointF(0, 0)]
+
+    def _local_edges(self):
+        return []
+
+    def paint(self, painter: QPainter, option, widget=None):
+        color = QColor(self.model.color)
+        # The fixed points are in world coordinates: this item never rotates.
+        reach = QPen(color, 0, Qt.DashLine)
+        painter.setPen(reach)
+        painter.setBrush(Qt.NoBrush)
+        r = self.model.reach * SCALE
+        painter.drawEllipse(QPointF(0, 0), r, r)
+        for (x, y), c in (((self.model.pickX, self.model.pickY), hmi.RUNNING),
+                          ((self.model.placeX, self.model.placeY), hmi.SINK)):
+            p = self._local(x, y)
+            q = hmi.qcolor(c)
+            painter.setPen(QPen(q, 0, Qt.DotLine))
+            painter.drawLine(QPointF(0, 0), p)
+            painter.setPen(QPen(q, 0))
+            m = max(0.08 * SCALE, 3.0)
+            painter.drawEllipse(p, m, m)
+            painter.drawLine(p - QPointF(m, 0), p + QPointF(m, 0))
+            painter.drawLine(p - QPointF(0, m), p + QPointF(0, m))
+        self.setBrush(QBrush(color.darker(150)))
+        self.setPen(QPen(color, 0))
+        super().paint(painter, option, widget)
+
+
+class ElevatorItem(_MachineItem):
+    """An elevator's footprint (its platform belt sits on it): a braced
+    shaft with the number of levels it serves."""
+
+    kind = "elevator"
+
+    def __init__(self, model: Elevator):
+        super().__init__(model, _rect_points(model.width, model.height))
+        self.setPen(Qt.NoPen)
+
+    def _outline(self):
+        return _rect_points(self.model.width, self.model.height)
+
+    def paint(self, painter: QPainter, option, widget=None):
+        color = QColor(self.model.color)
+        fill = QColor(color)
+        fill.setAlpha(70)
+        self.setBrush(QBrush(fill))
+        self.setPen(QPen(color, 0))
+        super().paint(painter, option, widget)
+        rect = self.polygon().boundingRect()
+        painter.setPen(QPen(color, 0, Qt.DashLine))
+        painter.drawLine(rect.topLeft(), rect.bottomRight())
+        painter.drawLine(rect.topRight(), rect.bottomLeft())
+        painter.setPen(QPen(hmi.qcolor(hmi.TEXT), 0))
+        text = f"L0-{max(1, self.model.levels) - 1}"
+        painter.drawText(rect, Qt.AlignCenter, text)
+
+
 class FreeDrawScene(QGraphicsScene):
     def __init__(self):
         super().__init__(-300, -300, 600, 600)
@@ -2167,6 +2357,35 @@ def _make_led(new_id: str) -> LedIndicator:
     return LedIndicator(id=new_id, x=0.0, y=0.0, radius=0.2, label="LED", color="#22c55e")
 
 
+def _make_pallet(new_id: str) -> Pallet:
+    return Pallet(id=new_id, x=0.0, y=0.0, label="Pallet")
+
+
+def _make_stopper(new_id: str) -> Stopper:
+    return Stopper(id=new_id, x=0.0, y=0.0, width=1.0, label="Stopper")
+
+
+def _make_robot(new_id: str) -> RobotArm:
+    # Pick on its right, place on its left (relative to the base: moved with it on drop).
+    return RobotArm(id=new_id, x=0.0, y=0.0, pickX=1.2, pickY=0.0, placeX=-1.2, placeY=0.0, reach=2.0,
+                    label="Robot")
+
+
+def _make_elevator(new_id: str) -> Elevator:
+    return Elevator(id=new_id, x=0.0, y=0.0, label="Elevator")
+
+
+def move_model(model, dx: float, dy: float):
+    """Move a component by (dx, dy) - a robot arm's pick / place points too."""
+    model.x += dx
+    model.y += dy
+    if isinstance(model, RobotArm):
+        model.pickX += dx
+        model.pickY += dy
+        model.placeX += dx
+        model.placeY += dy
+
+
 # Maps a template's `kind` string (also each component's `.kind` attribute)
 # to the QGraphicsItem class that renders it - used wherever a new item
 # needs to be constructed generically (drop, copy/paste), so adding a new
@@ -2179,6 +2398,10 @@ ITEM_CLASS_FOR_KIND = {
     "sink": SinkItem,
     "button": ButtonItem,
     "led": LedItem,
+    "pallet": PalletItem,
+    "stopper": StopperItem,
+    "robot": RobotItem,
+    "elevator": ElevatorItem,
 }
 
 # Reverse lookup: a copied/pasted model's own pydantic class tells us its
@@ -2190,6 +2413,10 @@ KIND_FOR_MODEL_CLASS = {
     Sink: "sink",
     ControlButton: "button",
     LedIndicator: "led",
+    Pallet: "pallet",
+    Stopper: "stopper",
+    RobotArm: "robot",
+    Elevator: "elevator",
 }
 
 # Which SimulatorConfig list attribute holds each kind's models -
@@ -2205,6 +2432,10 @@ CONFIG_LIST_ATTR_FOR_KIND = {
     "sink": "sinks",
     "button": "buttons",
     "led": "leds",
+    "pallet": "pallets",
+    "stopper": "stoppers",
+    "robot": "robots",
+    "elevator": "elevators",
 }
 
 
@@ -2239,6 +2470,11 @@ def build_items_from_config(config, scene: QGraphicsScene, items_list: list):
         item = LedItem(model)
         scene.addItem(item)
         items_list.append(item)
+    for kind in ("elevator", "pallet", "stopper", "robot"):
+        for model in getattr(config, CONFIG_LIST_ATTR_FOR_KIND[kind]):
+            item = ITEM_CLASS_FOR_KIND[kind](model)
+            scene.addItem(item)
+            items_list.append(item)
 
 
 def _make_curved_belt(new_id: str) -> Belt:
@@ -2262,8 +2498,9 @@ class ComponentLibrary(QTreeWidget):
 
     MY_COMPONENTS = "My Components"
     FOLDER_FOR_KIND = {"belt": "Belts", "sensor": "Sensors", "source": "Parcel Flow", "sink": "Parcel Flow",
-                       "button": "Operator Panel", "led": "Operator Panel"}
-    FOLDER_ORDER = ("Belts", "Sensors", "Parcel Flow", "Operator Panel", MY_COMPONENTS)
+                       "button": "Operator Panel", "led": "Operator Panel", "pallet": "Machines",
+                       "stopper": "Machines", "robot": "Machines", "elevator": "Machines"}
+    FOLDER_ORDER = ("Belts", "Sensors", "Parcel Flow", "Machines", "Operator Panel", MY_COMPONENTS)
     BUILT_INS = (
         ("Linear Belt", "belt", _make_linear_belt),
         ("Curved Belt", "belt", _make_curved_belt),
@@ -2273,6 +2510,10 @@ class ComponentLibrary(QTreeWidget):
         ("Sink", "sink", _make_sink),
         ("Push Button", "button", _make_button),
         ("LED Indicator", "led", _make_led),
+        ("Pallet", "pallet", _make_pallet),
+        ("Stopper", "stopper", _make_stopper),
+        ("Robot Arm", "robot", _make_robot),
+        ("Elevator", "elevator", _make_elevator),
     )
     FOLDER_ROLE = Qt.UserRole + 1  # folder items carry their path ("" for a built-in top folder)
 
@@ -2945,7 +3186,7 @@ class CanvasView(QGraphicsView):
         model = template.factory(next_indexed_id(existing_ids, template.kind))
         for key, value in overrides.items():
             setattr(model, key, value)
-        model.x, model.y = x, y
+        move_model(model, x - model.x, y - model.y)
         item_cls = ITEM_CLASS_FOR_KIND[template.kind]
         return self._add_item(item_cls(model), text=f"Add {template.kind}")
 
@@ -3225,8 +3466,7 @@ class CanvasView(QGraphicsView):
             kind = KIND_FOR_MODEL_CLASS[type(new_model)]
             existing_ids = {i.model.id for i in self.items_list if i.kind == kind}
             new_model.id = unique_incremented_id(existing_ids, new_model.id)
-            new_model.x += offset_x
-            new_model.y += offset_y
+            move_model(new_model, offset_x, offset_y)
             item_cls = ITEM_CLASS_FOR_KIND[kind]
             new_items.append(self._add_item(item_cls(new_model), text=text))
         if with_sketch:
@@ -3304,6 +3544,7 @@ def _field_specs_for(item: PlacedItem):
             specs.append(("float", "beltWidth", "Width", 0.1, 100.0, 0.1))
         specs.append(("float", "speed", "Speed", -50.0, 50.0, 0.1))
         specs.append(("float", "transition_momentum_duration", "Transition", 0.0, 10.0, 0.1))
+        specs.append(("int", "level", "Level", 0, 20))
     elif isinstance(item, SensorItem):
         specs.append(("float", "width", "Width", 0.05, 50.0, 0.05))
         specs.append(("float", "height", "Height", 0.05, 50.0, 0.05))
@@ -3316,6 +3557,7 @@ def _field_specs_for(item: PlacedItem):
         specs.append(("float", "offDelay", "Off delay", 0.0, 10.0, 0.01))
         specs.append(("bool", "invert", "Light-on (NC)"))
         specs.append(("combo", "packFormat", "Packing", PACK_FORMATS))
+        specs.append(("int", "level", "Level", 0, 20))
     elif isinstance(item, SourceItem):
         specs.append(("float", "interval", "Interval", 0.1, 3600.0, 0.1))
         specs.append(("float", "minWidth", "Min width", 0.05, 50.0, 0.05))
@@ -3323,6 +3565,7 @@ def _field_specs_for(item: PlacedItem):
         specs.append(("float", "minHeight", "Min length", 0.05, 50.0, 0.05))
         specs.append(("float", "maxHeight", "Max length", 0.05, 50.0, 0.05))
         specs.append(("text", "label", "Label"))
+        specs.append(("int", "level", "Level", 0, 20))
     elif isinstance(item, SinkItem):
         specs.append(("float", "width", "Width", 0.05, 50.0, 0.05))
         specs.append(("float", "height", "Height", 0.05, 50.0, 0.05))
@@ -3341,6 +3584,34 @@ def _field_specs_for(item: PlacedItem):
         specs.append(("text", "label", "Label"))
         specs.append(("bool", "isOn", "On"))
         specs.append(("combo", "packFormat", "Signal", ["bit", "byte"]))
+    elif isinstance(item, PalletItem):
+        specs += [("float", "width", "Length", 0.1, 10.0, 0.05), ("float", "height", "Width", 0.1, 10.0, 0.05),
+                  ("float", "mass", "Mass", 0.1, 5000.0, 0.5), ("int", "capacity", "Capacity", 1, 20),
+                  ("int", "level", "Level", 0, 20), ("text", "label", "Label")]
+    elif isinstance(item, StopperItem):
+        specs += [("float", "width", "Width", 0.05, 10.0, 0.05), ("float", "depth", "Depth", 0.01, 1.0, 0.01),
+                  ("int", "level", "Level", 0, 20), ("combo", "control", "Control", ["auto", "plc"]),
+                  ("float", "actuationTime", "Actuation", 0.0, 10.0, 0.05),
+                  ("float", "holdTime", "Hold time", 0.0, 3600.0, 0.5),
+                  ("float", "releaseTime", "Release time", 0.0, 3600.0, 0.5), ("text", "label", "Label")]
+    elif isinstance(item, RobotItem):
+        specs += [("float", "reach", "Reach", 0.2, 20.0, 0.1),
+                  ("float", "pickX", "Pick X", -1000.0, 1000.0, 0.05),
+                  ("float", "pickY", "Pick Y", -1000.0, 1000.0, 0.05),
+                  ("float", "placeX", "Place X", -1000.0, 1000.0, 0.05),
+                  ("float", "placeY", "Place Y", -1000.0, 1000.0, 0.05),
+                  ("float", "pickRadius", "Pick radius", 0.05, 5.0, 0.05),
+                  ("float", "cycleTime", "Cycle time", 0.3, 120.0, 0.1),
+                  ("int", "pickLevel", "Pick level", 0, 20), ("int", "placeLevel", "Place level", 0, 20),
+                  ("combo", "placeTarget", "Place on", ["any", "pallet"]),
+                  ("combo", "control", "Control", ["auto", "plc"]), ("text", "label", "Label")]
+    elif isinstance(item, ElevatorItem):
+        specs += [("float", "width", "Length", 0.2, 20.0, 0.05), ("float", "height", "Width", 0.2, 20.0, 0.05),
+                  ("text", "beltId", "Platform belt"), ("int", "levels", "Levels", 2, 20),
+                  ("float", "levelHeight", "Level height", 0.1, 50.0, 0.1),
+                  ("float", "liftSpeed", "Lift speed", 0.01, 10.0, 0.05),
+                  ("combo", "control", "Control", ["auto", "plc"]), ("int", "autoFrom", "Auto from", 0, 20),
+                  ("int", "autoTo", "Auto to", 0, 20), ("text", "label", "Label")]
     return specs
 
 
@@ -3631,6 +3902,8 @@ class PropertiesPanel(QWidget):
             item.set_size(item.model.maxWidth, item.model.maxHeight)
         elif attr == "radius" and isinstance(item, LedItem):
             item.set_size(item.model.radius)
+        elif hasattr(item, "refresh_shape"):
+            item.refresh_shape()
         item.update()
         # This is the only field-edit path that can move/resize an item's
         # keypoints (position, rotation, length, size, arc params) - the
@@ -3777,9 +4050,11 @@ class PropertiesPanel(QWidget):
             self.color_btn.setText("-")
 
 
-_KIND_ORDER = {"belt": 0, "sensor": 1, "source": 2, "sink": 3, "button": 4, "led": 5}
+_KIND_ORDER = {"belt": 0, "sensor": 1, "source": 2, "sink": 3, "button": 4, "led": 5, "pallet": 6, "stopper": 7,
+               "robot": 8, "elevator": 9}
 _KIND_COLORS = {"belt": (156, 163, 175), "sensor": hmi.ALARM, "source": hmi.SOURCE, "sink": hmi.SINK,
-                "button": hmi.ACCENT, "led": hmi.RUNNING}
+                "button": hmi.ACCENT, "led": hmi.RUNNING, "pallet": (180, 83, 9), "stopper": (220, 38, 38),
+                "robot": (124, 58, 237), "elevator": (8, 145, 178)}
 _KIND_ICONS = {}
 
 
@@ -3802,7 +4077,8 @@ class ComponentManagerPanel(QWidget):
     for Select / Duplicate / Delete / Add to Library."""
 
     FOLDERS = (("belt", "Belts"), ("sensor", "Sensors"), ("source", "Sources"), ("sink", "Sinks"),
-               ("button", "Buttons"), ("led", "LEDs"))
+               ("button", "Buttons"), ("led", "LEDs"), ("pallet", "Pallets"), ("stopper", "Stoppers"),
+               ("robot", "Robot Arms"), ("elevator", "Elevators"))
 
     def __init__(self, scene: SnapGuideScene, items, view: QGraphicsView, config=None):
         super().__init__()
@@ -3882,6 +4158,14 @@ class ComponentManagerPanel(QWidget):
             return f"{getattr(m, 'buttonType', 'momentary')} {contact}{key}"
         if kind == "led":
             return "mode byte" if m.packFormat == "byte" else "on/off"
+        if kind == "pallet":
+            return f"{m.width:g} × {m.height:g} m, {m.capacity} load{'s' if m.capacity != 1 else ''}"
+        if kind == "stopper":
+            return f"{m.control}, hold {m.holdTime:g} s" if m.control == "auto" else "plc"
+        if kind == "robot":
+            return f"{m.control}, reach {m.reach:g} m, {m.cycleTime:g} s cycle"
+        if kind == "elevator":
+            return f"{m.control}, {m.levels} levels" + (f", belt {m.beltId}" if m.beltId else ", no belt")
         return ""
 
     def refresh(self):
@@ -4022,8 +4306,7 @@ class ComponentManagerPanel(QWidget):
         new_model = deepcopy(item.model)
         existing_ids = {i.model.id for i in self.items_list if i.kind == item.kind}
         new_model.id = unique_incremented_id(existing_ids, item.model.id)
-        new_model.x += 0.5
-        new_model.y += 0.5
+        move_model(new_model, 0.5, 0.5)
         item_cls = type(item)
         # Routed through CanvasView's own add (undo-aware, and the single
         # place that already knows how to update scene/items_list/config

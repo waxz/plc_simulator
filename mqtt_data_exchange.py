@@ -77,15 +77,20 @@ def io_topics(config: SimulatorConfig) -> Tuple[Dict[str, Dict[str, Any]], Dict[
     A layout that has all of them keeps exactly that wire layout; any other
     layout (e.g. one designed in the layout editor, with ids like sensor_1,
     button_1, belt_1) gets channels derived from its own components:
-      input  (simulator -> PLC): every button, then every sensor, then clock
-      output (PLC -> simulator): every LED, then every belt
-    in the layout's order. The simulator (MQTTSyncEngine) and the PLC side
-    (plc_mock.py) both call this, so they always agree on the byte layout."""
+      input  (simulator -> PLC): every button, then every sensor, then every
+                                 machine's feedback, then clock
+      output (PLC -> simulator): every LED, then every belt, then every
+                                 machine's command
+    in the layout's order (machines: stoppers, robot arms, elevators - see
+    mqtt_message_binding.MACHINE_FIELDS). The simulator (MQTTSyncEngine)
+    and the PLC side (plc_mock.py) both call this, so they always agree on
+    the byte layout."""
     legacy = PUBLISH_TOPICS["input"]["custom_ids"] + SUBSCRIBE_TOPICS["output"]["custom_ids"]
     if set(legacy) <= known_component_ids(config):
         return PUBLISH_TOPICS, SUBSCRIBE_TOPICS
-    inputs = [b.id for b in config.buttons] + [s.id for s in config.sensors] + ["clock"]
-    outputs = [l.id for l in config.leds] + [b.id for b in config.belts]
+    machines = [m.id for m in (*config.stoppers, *config.robots, *config.elevators)]
+    inputs = [b.id for b in config.buttons] + [s.id for s in config.sensors] + machines + ["clock"]
+    outputs = [l.id for l in config.leds] + [b.id for b in config.belts] + machines
     return ({"input": {**PUBLISH_TOPICS["input"], "custom_ids": inputs}},
             {"output": {**SUBSCRIBE_TOPICS["output"], "custom_ids": outputs}})
 

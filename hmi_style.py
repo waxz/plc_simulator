@@ -136,6 +136,14 @@ PROPERTY_GROUPS = {
     "onDelay": "Signal", "offDelay": "Signal", "invert": "Signal", "packFormat": "Signal",
     "buttonType": "Operation", "normallyClosed": "Operation", "key": "Operation", "isOn": "Operation",
     "color": "Display",
+    # Machines (machines.py) and floor levels.
+    "level": "Position", "depth": "Geometry", "reach": "Geometry", "pickRadius": "Geometry",
+    "mass": "Geometry", "capacity": "Geometry", "levels": "Geometry", "levelHeight": "Geometry",
+    "liftSpeed": "Motion", "cycleTime": "Motion", "actuationTime": "Motion",
+    "pickX": "Operation", "pickY": "Operation", "placeX": "Operation", "placeY": "Operation",
+    "pickLevel": "Operation", "placeLevel": "Operation", "placeTarget": "Operation", "control": "Operation",
+    "holdTime": "Operation", "releaseTime": "Operation", "beltId": "Operation", "autoFrom": "Operation",
+    "autoTo": "Operation",
 }
 
 
@@ -148,6 +156,12 @@ PROPERTY_LABELS = {
     "minWidth": "Min width", "maxWidth": "Max width", "minHeight": "Min length", "maxHeight": "Max length",
     "speed": "Speed", "directionAngle": "Direction", "transition_momentum_duration": "Transition",
     "interval": "Interval", "isOn": "On", "color": "Color",
+    "level": "Level", "depth": "Depth", "reach": "Reach", "pickRadius": "Pick radius", "mass": "Mass",
+    "capacity": "Capacity", "levels": "Levels", "levelHeight": "Level height", "liftSpeed": "Lift speed",
+    "cycleTime": "Cycle time", "actuationTime": "Actuation", "pickX": "Pick X", "pickY": "Pick Y",
+    "placeX": "Place X", "placeY": "Place Y", "pickLevel": "Pick level", "placeLevel": "Place level",
+    "placeTarget": "Place on", "control": "Control", "holdTime": "Hold time", "releaseTime": "Release time",
+    "beltId": "Platform belt", "autoFrom": "Auto from", "autoTo": "Auto to",
 }
 
 
@@ -156,6 +170,9 @@ PROPERTY_UNITS = {
     "endAngle": "\u00b0", "length": " m", "beltWidth": " m", "width": " m", "height": " m", "radius": " m",
     "beamDistance": " m", "cornerRadius": " m", "minWidth": " m", "maxWidth": " m", "minHeight": " m", "maxHeight": " m",
     "speed": " m/s", "transition_momentum_duration": " s", "interval": " s", "onDelay": " s", "offDelay": " s",
+    "depth": " m", "reach": " m", "pickRadius": " m", "levelHeight": " m", "pickX": " m", "pickY": " m",
+    "placeX": " m", "placeY": " m", "mass": " kg", "liftSpeed": " m/s", "cycleTime": " s", "actuationTime": " s",
+    "holdTime": " s", "releaseTime": " s",
 }
 
 

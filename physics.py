@@ -13,6 +13,7 @@ from typing import List, NamedTuple, Tuple, Optional
 from config_parser import SimulatorConfig
 from math_utils import point_in_polygon, get_rect_vertices
 import devices
+import machines
 from drive import step_drive
 from surface import (
     BeltGrid, belt_bounds, belt_contains, belt_surface_speed, curved_direction, geometry_frame, surface_velocity,
@@ -20,16 +21,37 @@ from surface import (
 from traction import FrictionTraction
 
 class Parcel:
-    def __init__(self, id: str, body: pymunk.Body, shape: pymunk.Poly, label: str, color: str):
+    """A body on the belts: a parcel, or (kind "pallet") a pallet, whose
+    `loads` ride on it out of the space (machines.py)."""
+
+    def __init__(self, id: str, body: pymunk.Body, shape: pymunk.Poly, label: str, color: str,
+                 kind: str = "parcel", level: int = 0):
         self.id = id
         self.body = body
         self.shape = shape
         self.label = label
         self.color = color
+        self.kind = kind
+        self.level = level
+        self.loads: List["Parcel"] = []
+        self.model = None                   # config_parser.Pallet for a pallet
+        self.offset = (0.0, 0.0, 0.0)       # a load's place on its pallet (dx, dy, dangle)
         self.max_extent = max(math.hypot(v.x, v.y) for v in shape.get_vertices()) if hasattr(shape, 'get_vertices') else 0.5
         # FrictionTraction state (carrier body + joints), None for kinematic parcels.
         self.traction: Optional[dict] = None
         self.belt_id: Optional[str] = None
+
+
+def _level_get(self):
+    return self.body.__dict__.get("level", 0)
+
+
+def _level_set(self, value):
+    # On the body too: the collision handlers see bodies, not Parcels.
+    self.body.__dict__["level"] = value
+
+
+Parcel.level = property(_level_get, _level_set)
 
 
 def parcel_speed_info(parcel: Parcel) -> Tuple[float, Optional[float]]:
@@ -64,6 +86,8 @@ class ParcelView(NamedTuple):
     color: str
     actual_speed: float
     target_speed: Optional[float]
+    kind: str = "parcel"                # "parcel" or "pallet"
+    level: int = 0
 
 
 def _smootherstep(t: float) -> float:
@@ -209,11 +233,17 @@ class PhysicsEngine:
         self._last_belts_sig = None
         self._sensor_shapes_cache = {}
         
+        # Floor levels in play: only then are bodies, belts and sensors
+        # filtered by level (a single-level layout runs exactly as before).
+        self.multi_level = machines.is_multi_level(config)
         # self.build_walls()
         self._setup_collision_handlers()
         # Buttons start released: an NC contact (STOP, E-stop) reads 1.
         for button in self.config.buttons:
             devices.sync_button(button)
+        # Pallets, stoppers, robot arms, elevators (machines.py).
+        self.machines = machines.MachineRuntime(self)
+        self.machines.reset()
 
     def _setup_collision_handlers(self):
         """Install a parcel-parcel collision handler that eliminates bouncing.
@@ -237,6 +267,21 @@ class PhysicsEngine:
             # process_collision=True keeps the physical separation response
             # (prevents overlap), but with zero bounce.
             arbiter.process_collision = True
+        if self.multi_level:
+            def _pre_solve_parcel_parcel(arbiter: pymunk.Arbiter, space, data, _plain=_pre_solve_parcel_parcel):
+                a, b = arbiter.shapes
+                if a.body.__dict__.get("level", 0) != b.body.__dict__.get("level", 0):
+                    arbiter.process_collision = False      # different floors
+                    return
+                _plain(arbiter, space, data)
+
+            def _pre_solve_parcel_wall(arbiter: pymunk.Arbiter, space, data):
+                a, b = arbiter.shapes
+                arbiter.process_collision = a.body.__dict__.get("level", 0) == b.body.__dict__.get("level", 0)
+                arbiter.restitution = 0.0
+
+            self.space.on_collision(self.COLLISION_TYPE_PARCEL, self.COLLISION_TYPE_WALL,
+                                    pre_solve=_pre_solve_parcel_wall)
         self.space.on_collision(
             self.COLLISION_TYPE_PARCEL,
             self.COLLISION_TYPE_PARCEL,
@@ -260,11 +305,16 @@ class PhysicsEngine:
         self._pre_xy = {}          # each parcel's position before the solver (read once, shared)
         if kernels.AVAILABLE:
             self._under_compiled(grid)
-            return
-        for parcel in self.parcels:
-            x, y = parcel.body.position
-            self._pre_xy[parcel] = (x, y)
-            self._under[parcel] = grid.belts_at(x, y)
+        else:
+            for parcel in self.parcels:
+                x, y = parcel.body.position
+                self._pre_xy[parcel] = (x, y)
+                self._under[parcel] = grid.belts_at(x, y)
+        if self.multi_level:
+            under = self._under
+            for parcel, belts in under.items():
+                level = parcel.level
+                under[parcel] = [b for b in belts if b.level == level]
 
     def _under_compiled(self, grid: BeltGrid):
         """_prepare_belt_lookup's search for all parcels in one compiled
@@ -316,7 +366,10 @@ class PhysicsEngine:
         if under is not None and parcel in under:
             return under[parcel]
         x, y = parcel.body.position
-        return self._belts_under(x, y)     # spawned this step
+        found = self._belts_under(x, y)     # spawned this step
+        if self.multi_level:
+            found = [b for b in found if b.level == parcel.level]
+        return found
 
     def _is_point_on_belt(self, px: float, py: float, belt) -> bool:
         """Returns True if the point (px, py) is physically on the given belt."""
@@ -442,13 +495,28 @@ class PhysicsEngine:
                 temp_shape = pymunk.Poly.create_box(temp_body, (w, h))
                 
                 query_results = self.space.shape_query(temp_shape)
-                
+
                 conflict = False
                 for info in query_results:
                     if info.shape.filter.categories & self.CATEGORY_PARCEL:
+                        if self.multi_level and info.shape.body.__dict__.get("level", 0) != source.level:
+                            continue
                         conflict = True
                         break
-                        
+
+                if conflict and self.machines.pallets:
+                    # Right above a pallet with room: the parcel is its load.
+                    pallet = self.machines.pallet_with_room_at(sx, sy, source.level)
+                    if pallet is not None:
+                        mass = random.uniform(source.minMass, source.maxMass) \
+                            if self.config.tractionModel == "friction" else 1.0
+                        load = self.add_parcel(sx, sy, w, h, source.rotation, mass, level=source.level,
+                                               label=getattr(source, 'label', 'PKG'))
+                        self.lift_out(load)
+                        self.machines.put_on_pallet(load, pallet)
+                        self.source_timers[source.id] = 0.0
+                        continue
+
                 if not conflict:
                     # Spawn
                     friction_mode = self.config.tractionModel == "friction"
@@ -482,13 +550,17 @@ class PhysicsEngine:
                     )
                     if friction_mode:
                         parcel.traction = self.friction.attach(body, w / 2.0, h / 2.0)
+                    if source.level:
+                        parcel.level = source.level
                     self.parcels.append(parcel)
                     self.source_timers[source.id] = 0.0 # reset timer only if spawned
 
     def add_parcel(self, x: float, y: float, width: float, height: float,
-                   angle_deg: float = 0.0, mass: float = 1.0) -> Parcel:
-        """Place one parcel directly (tests, scripted scenarios), using the
-        same body/shape/traction setup as a source spawn."""
+                   angle_deg: float = 0.0, mass: float = 1.0, *, kind: str = "parcel", level: int = 0,
+                   label: str = "PKG", color: str = "#ffaa00", parcel_id: Optional[str] = None) -> Parcel:
+        """Place one parcel (or a pallet: kind "pallet") directly - tests,
+        scripted scenarios, machines.py - using the same body/shape/traction
+        setup as a source spawn."""
         friction_mode = self.config.tractionModel == "friction"
         body = pymunk.Body(mass, pymunk.moment_for_box(mass, (width, height)))
         body.position = (x, y)
@@ -504,12 +576,37 @@ class PhysicsEngine:
             mask=self.CATEGORY_WALL | self.CATEGORY_PARCEL,
         )
         self.space.add(body, shape)
-        self.parcel_id_counter += 1
-        parcel = Parcel(id=f"p_{self.parcel_id_counter}", body=body, shape=shape, label="PKG", color="#ffaa00")
+        if parcel_id is None:
+            self.parcel_id_counter += 1
+            parcel_id = f"p_{self.parcel_id_counter}"
+        parcel = Parcel(id=parcel_id, body=body, shape=shape, label=label, color=color, kind=kind, level=level)
         if friction_mode:
             parcel.traction = self.friction.attach(body, width / 2.0, height / 2.0)
         self.parcels.append(parcel)
         return parcel
+
+    def lift_out(self, parcel: Parcel) -> None:
+        """Take a parcel out of the space (onto a pallet, into a gripper):
+        machines.py moves it from then on."""
+        if parcel in self.parcels:
+            self.parcels.remove(parcel)
+            self._remove_parcel(parcel)
+
+    def set_down(self, parcel: Parcel, x: float, y: float) -> None:
+        """Put a lifted parcel back into the space at (x, y), at rest."""
+        body = parcel.body
+        body.position = (x, y)
+        body.velocity = (0.0, 0.0)
+        body.angular_velocity = 0.0
+        bd = body.__dict__
+        for key in ("current_belt_id", "target_w_belt_id", "transition_momentum_v"):
+            bd.pop(key, None)
+        bd["target_v_enable"] = False
+        self.space.add(body, parcel.shape)
+        if self.config.tractionModel == "friction":
+            bb = parcel.shape.bb
+            parcel.traction = self.friction.attach(body, (bb.right - bb.left) / 2.0, (bb.top - bb.bottom) / 2.0)
+        self.parcels.append(parcel)
 
     def _remove_parcel(self, parcel: Parcel) -> None:
         if parcel.traction is not None:
@@ -521,9 +618,11 @@ class PhysicsEngine:
         """Remove every parcel (the simulator's Clear Parcels button);
         returns how many. Sources keep spawning."""
         with self._lock:
-            parcels, self.parcels = list(self.parcels), []
+            parcels = [p for p in self.parcels if p.kind != "pallet"]
+            self.parcels = [p for p in self.parcels if p.kind == "pallet"]
             for parcel in parcels:
                 self._remove_parcel(parcel)
+            self.machines.clear_parts()
         return len(parcels)
 
     def reset(self) -> None:
@@ -551,6 +650,7 @@ class PhysicsEngine:
                 belt._drive_ref = 0.0
                 belt._encoder_frac = 0.0
                 belt._overload_s = 0.0
+            self.machines.reset()
 
     def _play_area_bounds(self) -> Optional[Tuple[float, float, float, float]]:
         """Bounding box covering every belt/source/sink, padded generously -
@@ -591,6 +691,15 @@ class PhysicsEngine:
         before = list(self.parcels)
         positions = [parcel.body.position for parcel in before]
         for parcel, (px, py) in zip(before, positions):
+            if parcel.kind == "pallet":
+                # Pallets stay; a sink they cross takes their load.
+                if parcel.loads:
+                    for sink_id, x0, y0, x1, y1 in boxes:
+                        if x0 <= px <= x1 and y0 <= py <= y1:
+                            self.delivered[sink_id] = self.delivered.get(sink_id, 0) + \
+                                self.machines.take_loads(parcel)
+                            break
+                continue
             in_a_sink = False
             for sink_id, x0, y0, x1, y1 in boxes:
                 if x0 <= px <= x1 and y0 <= py <= y1:
@@ -619,9 +728,12 @@ class PhysicsEngine:
         self.parcels.clear()
 
     def apply_friction_traction(self):
+        belts = self.config.belts
         for parcel in self.parcels:
             if parcel.traction is not None:
-                parcel.belt_id = self.friction.pre_step(parcel.body, parcel.traction, self.config.belts)
+                if self.multi_level:
+                    belts = [b for b in self.config.belts if b.level == parcel.level]
+                parcel.belt_id = self.friction.pre_step(parcel.body, parcel.traction, belts)
 
     def apply_conveyor_kinematics(self):
         """Drive each parcel using the belt velocity sampled at its center
@@ -1027,6 +1139,7 @@ class PhysicsEngine:
         """evaluate_sensors with the compiled kernels (physics_kernels):
         False - nothing done - when a parcel isn't a 4-corner box."""
         xy, reach = self._parcel_arrays
+        parcels = self.parcels
         verts = self._parcel_corner_array(xy) if len(reach) else np.empty((0, 4, 2))
         if verts is None:
             return False
@@ -1040,6 +1153,8 @@ class PhysicsEngine:
             if len(reach):
                 d2 = (xy[:, 0] - sensor.x) ** 2 + (xy[:, 1] - sensor.y) ** 2
                 close = np.flatnonzero(d2 <= (extent + reach) ** 2)
+                if self.multi_level and len(close):
+                    close = np.array([i for i in close if parcels[i].level == sensor.level], dtype=np.int64)
             else:
                 close = np.empty(0, np.int64)
             if sensor.sensorType == "ir":
@@ -1076,7 +1191,10 @@ class PhysicsEngine:
         if not len(reach):
             return []
         d2 = (xy[:, 0] - sensor.x) ** 2 + (xy[:, 1] - sensor.y) ** 2
-        return [self.parcels[i] for i in np.flatnonzero(d2 <= (extent + reach) ** 2)]
+        close = [self.parcels[i] for i in np.flatnonzero(d2 <= (extent + reach) ** 2)]
+        if self.multi_level:
+            close = [p for p in close if p.level == sensor.level]
+        return close
 
     def _raw_beams(self, sensor) -> List[bool]:
         if sensor.sensorType == "ir":
@@ -1162,6 +1280,7 @@ class PhysicsEngine:
             step_drive(belt, h)
         for led in self.config.leds:
             devices.update_led(led, self.sim_time)
+        self.machines.before_step(h)
         self.handle_sources(h)
         if self.config.tractionModel == "friction":
             # Velocities persist between steps; friction alone slows parcels.
@@ -1172,6 +1291,7 @@ class PhysicsEngine:
         self.apply_conveyor_kinematics()
         self.space.step(h)
         self.handle_sinks()
+        self.machines.after_step(h)
         self.evaluate_sensors(h)
         self._post_positions = None
         self.sim_time += h
@@ -1210,7 +1330,13 @@ class PhysicsEngine:
         for parcel in list(self.parcels):
             actual, target = parcel_speed_info(parcel)
             x, y = parcel.body.position
-            views.append(ParcelView(parcel.id, self._parcel_vertices(parcel), x, y, parcel.color, actual, target))
+            views.append(ParcelView(parcel.id, self._parcel_vertices(parcel), x, y, parcel.color, actual, target,
+                                    parcel.kind, parcel.level))
+        # Loads and gripped parts: drawn on top of their pallets.
+        for part in self.machines.carried_parts():
+            x, y = part.body.position
+            views.append(ParcelView(part.id, self._parcel_vertices(part), x, y, part.color, 0.0, None,
+                                    part.kind, part.level))
         return views
 
     def step_for(self, wall_seconds: float) -> int:

@@ -8,7 +8,7 @@ import pygame_gui
 import math
 import time
 from typing import Tuple, Optional, List
-from config_parser import SimulatorConfig, Belt, Sensor, ControlButton, LedIndicator
+from config_parser import SimulatorConfig, Belt, Sensor, ControlButton, LedIndicator, Elevator, RobotArm, Stopper
 from math_utils import get_rect_vertices, point_in_polygon, point_in_arc, get_belt_polygon, get_default_quad_vertices
 from surface import belt_contains
 import devices
@@ -24,6 +24,9 @@ from editor_ui import EditorUI
 
 SPEEDS = (1.0, 2.0, 4.0, 8.0, None)   # real-time factors the Speed button cycles; None = max
 FRAME_LOCKED_MAX_SPEED = 8.0          # "max" when physics runs once per frame (--no-sim-thread)
+
+
+ROBOT_BASE_R = 0.25          # m: a robot arm's base, as drawn and clicked
 
 
 def speed_label(speed: Optional[float]) -> str:
@@ -384,6 +387,18 @@ class Renderer:
         for led in self.config.leds:
             if math.hypot(wx - led.x, wy - led.y) <= led.radius:
                 return led
+
+        for robot in self.config.robots:
+            if math.hypot(wx - robot.x, wy - robot.y) <= ROBOT_BASE_R:
+                return robot
+        for stopper in self.config.stoppers:
+            verts = get_rect_vertices(stopper.x, stopper.y, max(stopper.depth, 0.15), stopper.width, stopper.rotation)
+            if point_in_polygon(wx, wy, verts):
+                return stopper
+        for elevator in self.config.elevators:
+            verts = get_rect_vertices(elevator.x, elevator.y, elevator.width, elevator.height, elevator.rotation)
+            if point_in_polygon(wx, wy, verts):
+                return elevator
                 
         # Check sources
         for source in self.config.sources:
@@ -850,6 +865,16 @@ class Renderer:
                 py = item.y + r * math.sin(rad)
                 pygame.draw.circle(self.screen, GREEN, self._world_to_screen(px, py), 5)
 
+        elif isinstance(item, RobotArm):
+            # Its reach.
+            pygame.draw.circle(self.screen, GREEN, self._world_to_screen(item.x, item.y),
+                               max(6, self._scale_val(item.reach)), 1)
+
+        elif isinstance(item, (Stopper, Elevator)):
+            w = item.depth if isinstance(item, Stopper) else item.width
+            h = item.width if isinstance(item, Stopper) else item.height
+            pygame.draw.polygon(self.screen, GREEN, self._rect_screen(item.x, item.y, max(w, 0.1), h, item.rotation), 2)
+
     def draw_parcels(self, physics_engine):
         if not physics_engine: return
         # Plain data (physics.ParcelView), from this process's engine or a
@@ -862,7 +887,15 @@ class Renderer:
             points = [self._world_to_screen(x, y) for x, y in parcel.points]
             if len(points) >= 3:
                 pygame.draw.polygon(self.screen, color, points)
-                pygame.draw.polygon(self.screen, hmi.PARCEL_EDGE, points, outline)
+                if parcel.kind == "pallet" and len(points) == 4:
+                    # Deck boards across the pallet.
+                    a, b, c, d = points
+                    for f in (0.25, 0.5, 0.75):
+                        p = (a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f)
+                        q = (d[0] + (c[0] - d[0]) * f, d[1] + (c[1] - d[1]) * f)
+                        pygame.draw.line(self.screen, hmi.shade(color, 0.6), p, q, 1)
+                edge = hmi.ACCENT if parcel.level > 0 else hmi.PARCEL_EDGE
+                pygame.draw.polygon(self.screen, edge, points, outline)
 
             # [V] shows actual vs. belt speed per parcel (red when it lags
             # more than 10 %) - a check, not something to look at all day.
@@ -930,10 +963,24 @@ class Renderer:
 
         for sink in self.config.sinks:
             self.draw_sink(sink)
-        for belt in self.config.belts:
+        for elevator in self.config.elevators:
+            self.draw_elevator(elevator)
+        # Lower floors first: an upper-level belt is drawn over what runs beneath it.
+        belts = self.config.belts
+        if any(b.level for b in belts):
+            belts = sorted(belts, key=lambda b: b.level)
+        for belt in belts:
             self.draw_belt(belt)
             if belt.fault:
                 self._draw_fault_outline(belt)
+            elif belt.level > 0:
+                points = self._belt_outline_points(belt)
+                if len(points) >= 3:
+                    pygame.draw.polygon(self.screen, hmi.ACCENT, points, 1)
+        for elevator in self.config.elevators:
+            self.draw_elevator(elevator, over=True)       # frame and gauge over its platform belt
+        for stopper in self.config.stoppers:
+            self.draw_stopper(stopper)
         for source in self.config.sources:
             self.draw_source(source)
         for sensor in self.config.sensors:
@@ -944,6 +991,8 @@ class Renderer:
             self.draw_led(led)
         if physics_engine:
             self.draw_parcels(physics_engine)
+        for robot in self.config.robots:
+            self.draw_robot(robot)
 
         # The selected item: outline, origin/heading and its coordinates.
         if self.selected_item is not None:
@@ -953,6 +1002,94 @@ class Renderer:
 
         if physics_engine:
             self.editor_ui.update_sensor_state(physics_engine)
+
+    # -- machines (machines.py) --------------------------------------------------
+
+    def _rect_screen(self, x, y, w, h, rotation):
+        return [self._world_to_screen(px, py) for px, py in get_rect_vertices(x, y, w, h, rotation)]
+
+    def draw_stopper(self, stopper: Stopper):
+        """Up: a solid bar across the belt; down: its outline. A dot while
+        something waits at it."""
+        color = self._hex_to_rgb(stopper.color)
+        pts = self._rect_screen(stopper.x, stopper.y, max(stopper.depth, 0.04), stopper.width, stopper.rotation)
+        if stopper.isUp:
+            pygame.draw.polygon(self.screen, color, pts)
+            pygame.draw.polygon(self.screen, hmi.shade(color, 0.5), pts, 1)
+        else:
+            pygame.draw.polygon(self.screen, hmi.shade(color, 0.6), pts, 1)
+        if stopper.occupied:
+            a = math.radians(stopper.rotation)
+            sx, sy = self._world_to_screen(stopper.x - 0.15 * math.cos(a), stopper.y - 0.15 * math.sin(a))
+            pygame.draw.circle(self.screen, hmi.WARNING, (sx, sy), max(2, self._scale_val(0.04)))
+        cx, cy = self._world_to_screen(stopper.x, stopper.y)
+        self._queue_label(stopper.label or stopper.id, (cx, cy + self._scale_val(stopper.width / 2) + 2),
+                          self.PRIORITY_DEVICE, hmi.TEXT if stopper.isUp else hmi.TEXT_DIM, align="below")
+
+    def draw_robot(self, robot: RobotArm):
+        """Base, a two-link arm reaching the tool (toolX, toolY), the
+        gripper, and the pick / place points."""
+        color = self._hex_to_rgb(robot.color)
+        marker = max(3, self._scale_val(0.08))
+        for (x, y), c in (((robot.pickX, robot.pickY), hmi.RUNNING), ((robot.placeX, robot.placeY), hmi.SINK)):
+            px, py = self._world_to_screen(x, y)
+            pygame.draw.circle(self.screen, c, (px, py), marker, 1)
+            pygame.draw.line(self.screen, c, (px - marker, py), (px + marker, py), 1)
+            pygame.draw.line(self.screen, c, (px, py - marker), (px, py + marker), 1)
+        bx, by = robot.x, robot.y
+        tx, ty = robot.toolX, robot.toolY
+        if tx == 0.0 and ty == 0.0 and (bx, by) != (0.0, 0.0):
+            tx, ty = bx + robot.reach * 0.4, by           # not simulated yet (designer preview)
+        link = robot.reach / 2.0
+        d = min(math.hypot(tx - bx, ty - by), robot.reach * 0.999)
+        a = math.atan2(ty - by, tx - bx)
+        off = math.acos(max(-1.0, min(1.0, d / (2 * link)))) if link > 0 else 0.0
+        ex, ey = bx + link * math.cos(a + off), by + link * math.sin(a + off)
+        base = self._world_to_screen(bx, by)
+        elbow = self._world_to_screen(ex, ey)
+        tool = self._world_to_screen(tx, ty)
+        width = max(3, self._scale_val(0.12))
+        pygame.draw.circle(self.screen, hmi.shade(color, 0.6), base, max(5, self._scale_val(ROBOT_BASE_R)))
+        pygame.draw.line(self.screen, color, base, elbow, width)
+        pygame.draw.line(self.screen, hmi.shade(color, 1.3), elbow, tool, max(2, width - 1))
+        pygame.draw.circle(self.screen, hmi.shade(color, 1.5), elbow, max(2, width // 2))
+        g = max(3, self._scale_val(0.1))
+        grip = pygame.Rect(tool[0] - g, tool[1] - g, 2 * g, 2 * g)
+        pygame.draw.rect(self.screen, hmi.WARNING if robot.holding else hmi.shade(color, 1.6), grip, 0 if robot.holding else 2)
+        self._queue_label(robot.label or robot.id, (base[0], base[1] + self._scale_val(ROBOT_BASE_R) + 2),
+                          self.PRIORITY_DEVICE, hmi.TEXT if robot.busy else hmi.TEXT_DIM, align="below")
+
+    def draw_elevator(self, elevator: Elevator, over: bool = False):
+        """The shaft (cross-braced, under the belts); then (`over`) its
+        frame, a level gauge with the platform's height, and the level it
+        is at or travelling to."""
+        color = self._hex_to_rgb(elevator.color)
+        pts = self._rect_screen(elevator.x, elevator.y, elevator.width, elevator.height, elevator.rotation)
+        if not over:
+            pygame.draw.polygon(self.screen, hmi.shade(color, 0.3), pts)
+            pygame.draw.line(self.screen, hmi.shade(color, 0.6), pts[0], pts[2], 1)
+            pygame.draw.line(self.screen, hmi.shade(color, 0.6), pts[1], pts[3], 1)
+            return
+        pygame.draw.polygon(self.screen, color, pts, 3 if elevator.moving else 2)
+        # Gauge: one tick per level, the platform as a bar at its height.
+        right = max(p[0] for p in pts) + 6
+        bottom = max(p[1] for p in pts)
+        top = min(p[1] for p in pts)
+        levels = max(2, elevator.levels)
+        span = max(12, bottom - top)
+        for k in range(levels):
+            y = bottom - span * k / (levels - 1)
+            pygame.draw.line(self.screen, hmi.TEXT_DIM, (right, y), (right + 6, y), 1)
+        pygame.draw.line(self.screen, hmi.TEXT_DIM, (right + 3, bottom), (right + 3, bottom - span), 1)
+        y = bottom - span * max(0.0, min(levels - 1.0, elevator.position)) / (levels - 1)
+        pygame.draw.rect(self.screen, color, pygame.Rect(right - 1, int(y) - 2, 9, 5))
+        if elevator.moving:
+            text = f"{elevator.label or elevator.id}  {'up' if elevator.targetLevel > elevator.position else 'down'}" \
+                   f" to L{elevator.targetLevel}"
+        else:
+            text = f"{elevator.label or elevator.id}  L{elevator.level}"
+        cx = sum(p[0] for p in pts) / 4
+        self._queue_label(text, (cx, bottom + 2), self.PRIORITY_DEVICE, hmi.TEXT, align="below")
 
     def load_drawing(self) -> bool:
         """(Re)read the layout's DXF background; the View > drawing button is

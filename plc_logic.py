@@ -31,6 +31,13 @@ Behaviour, once per scan (step()):
     running, "jam"/"fault"/"alarm"/"error" (else the second LED) a jam or a
     drive fault.
 
+Machines with control "plc" (machines.py: stoppers, robot arms, elevators)
+are run by MachineControl, with the same decisions as their built-in auto
+mode, while the line runs: a stopper holds what arrives for its holdTime and
+then lets it pass, a robot starts a cycle when a part waits and there is
+somewhere to put it, an elevator loads, lifts, unloads and comes back
+(running its platform belt only for that). Stopped, every stopper stays up.
+
 step() returns the events of that scan as text, for logs.
 
 LineController (below) does the same per line for layouts with several
@@ -45,6 +52,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
 
 import devices
+import machines
 from config_parser import SimulatorConfig
 
 DEFAULT_SPEED = 1.0  # m/s for belts whose layout speed is 0
@@ -89,6 +97,59 @@ def _design_speed(belt) -> float:
     return speed
 
 
+LOADED_AFTER_S = 0.5   # elevator: a part on the platform this long is on board (its belt stops)
+
+
+class MachineControl:
+    """The PLC side of control "plc" machines: writes their commands
+    (stopper release, robot start, elevator targetLevel and platform belt)
+    from their feedback, once per scan, after the belts' own outputs."""
+
+    def __init__(self, config: SimulatorConfig):
+        self.config = config
+        self._stoppers: Dict[str, dict] = {}
+        self._elevators: Dict[str, dict] = {}
+        self._last: Optional[float] = None
+
+    def step(self, now: float, running: bool, speeds: Dict[str, float], events: List[str]) -> None:
+        dt = 0.0 if self._last is None else max(0.0, now - self._last)
+        self._last = now
+        cfg = self.config
+        for stopper in cfg.stoppers:
+            if stopper.control != "plc":
+                continue
+            state = self._stoppers.setdefault(stopper.id, {})
+            release = running and not machines.stopper_wants_up(stopper, state, dt)
+            if release != stopper.release:
+                events.append(f"stopper {stopper.id} {'released' if release else 'up'}")
+            stopper.release = release
+        for robot in cfg.robots:
+            if robot.control == "plc":
+                robot.start = running and not robot.busy and robot.partAtPick and robot.placeReady
+        belts = {b.id: b for b in cfg.belts}
+        for elevator in cfg.elevators:
+            if elevator.control != "plc":
+                continue
+            state = self._elevators.setdefault(elevator.id, {})
+            on_board = elevator.occupied and elevator.atLevel
+            state["on_s"] = state.get("on_s", 0.0) + dt if on_board else 0.0
+            state["loaded"] = state["on_s"] >= LOADED_AFTER_S
+            target, run = machines.elevator_auto(elevator, state, dt)
+            if not running:
+                run = False
+            elif target != elevator.targetLevel:
+                events.append(f"elevator {elevator.id} to level {target}")
+                elevator.targetLevel = target
+            belt = belts.get(elevator.beltId) if elevator.beltId else None
+            if belt is not None:
+                nominal = speeds.get(belt.id, DEFAULT_SPEED)
+                if belt.commandFormat == "vfd":
+                    belt.run = run
+                    belt.speed = abs(nominal)
+                else:
+                    belt.speed = nominal if run else 0.0
+
+
 @dataclass
 class SensorTrack:
     occupied: bool = False
@@ -130,6 +191,7 @@ class DeliveryController:
         self._pressed = {b.id: False for b in buttons}
         self.sensors = {s.id: SensorTrack() for s in cfg.sensors}
         self.running = self.autostart
+        self.machines = MachineControl(cfg)
         self._write_outputs()
 
     def _sensor_nearest_a_sink(self):
@@ -158,6 +220,7 @@ class DeliveryController:
         self._sensors(now, events)
         self._drive_faults(events)
         self._write_outputs()
+        self.machines.step(now, self.running and self.jammed is None and not self.faulted, self.speeds, events)
         return events
 
     def _buttons(self, events: List[str]):
@@ -360,6 +423,7 @@ class LineController:
             if line.name != self.main.name:
                 self._plan_merge(line)
         self.speeds = {b.id: _design_speed(b) for b in config.belts}
+        self.machines = MachineControl(config)
         self.sensors = {s.id: SensorTrack() for s in config.sensors}
         self.delivery_sensor = self._delivery_sensor()
         self._pressed = {b.id: False for b in config.buttons}
@@ -423,6 +487,7 @@ class LineController:
         self._buttons(events)
         self._merges(events)
         self._write_outputs()
+        self.machines.step(now, any(line.moving for line in self.lines.values()), self.speeds, events)
         return events
 
     def _buttons(self, events: List[str]):

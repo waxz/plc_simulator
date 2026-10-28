@@ -38,7 +38,8 @@ def find_component_by_id(component_id: str, config: SimulatorConfig) -> Optional
     if component_id == "clock":
         return True
 
-    for collection_name in ("sensors", "belts", "buttons", "leds", "sources", "sinks"):
+    for collection_name in ("sensors", "belts", "buttons", "leds", "sources", "sinks", "stoppers", "robots",
+                            "elevators", "pallets"):
         collection = getattr(config, collection_name, [])
         for component in collection:
             if component.id == component_id:
@@ -241,6 +242,9 @@ def paddng_component(config: SimulatorConfig, sensor_id: Optional[Union[str, Lis
            - packFormat "byte" / "uint16" / "uint32" / "float": one register
              holding the whole state (BYTE / WORD / DWORD / REAL); an LED
              with packFormat "byte" sends its blink `mode` (devices.py)
+           - a stopper / robot arm / elevator (machines.py), by
+             `direction`: its command ("in") or feedback ("out") bits (in
+             step 1) and values - see MACHINE_FIELDS
            - a belt (motor), by `direction`:
                "in"  (PLC -> simulator, the command): commandFormat "vfd":
                      run + reverse bits (in step 1) and speed REAL;
@@ -259,6 +263,7 @@ def paddng_component(config: SimulatorConfig, sensor_id: Optional[Union[str, Lis
     buttons_in_config = {b.id: b for b in config.buttons}
     leds_in_config = {b.id: b for b in config.leds}
     belts_in_config = {b.id: b for b in getattr(config, "belts", [])}
+    machines_in_config = {m.id: m for kind in MACHINE_FIELDS for m in getattr(config, kind, [])}
 
     bits: List[Tuple[ByteType, str]] = []
     wide: List[List[Tuple[ByteType, str]]] = []  # one chunk per multi-bit / register component
@@ -268,6 +273,13 @@ def paddng_component(config: SimulatorConfig, sensor_id: Optional[Union[str, Lis
             belt_bits, belt_values = belt_fields(belt, direction)
             bits.extend((bt, f"{sid}/{field}") for bt, field in belt_bits)
             wide.append([(bt, f"{sid}/{field}") for bt, field in belt_values])
+            continue
+        machine = machines_in_config.get(sid)
+        if machine is not None:
+            machine_bits, machine_values = machine_fields(machine, direction)
+            bits.extend((bt, f"{sid}/{field}") for bt, field in machine_bits)
+            if machine_values:
+                wide.append([(bt, f"{sid}/{field}") for bt, field in machine_values])
             continue
         component = sensors_in_config.get(sid) or buttons_in_config.get(sid) or leds_in_config.get(sid)
         if component is None:
@@ -391,8 +403,33 @@ def known_component_ids(config: SimulatorConfig) -> "set[str]":
     component id" has exactly one answer everywhere it's asked."""
     ids = {s.id for s in config.sensors} | {b.id for b in config.belts}
     ids |= {b.id for b in config.buttons} | {l.id for l in config.leds}
+    for kind in MACHINE_FIELDS:
+        ids |= {m.id for m in getattr(config, kind, [])}
     ids.add("clock")
     return ids
+
+
+# Machines' fields per channel direction ("in" = PLC -> simulator, the
+# command; "out" = simulator -> PLC, the feedback): (bits, values) like
+# belt_fields. Pallets carry no signals.
+MACHINE_FIELDS = {
+    "stoppers": {"in": ([(ByteType.BIT, "release")], []),
+                 "out": ([(ByteType.BIT, "isUp"), (ByteType.BIT, "occupied")], [])},
+    "robots": {"in": ([(ByteType.BIT, "start")], []),
+               "out": ([(ByteType.BIT, "busy"), (ByteType.BIT, "holding"), (ByteType.BIT, "partAtPick"),
+                        (ByteType.BIT, "placeReady")], [(ByteType.UINT16, "cycles")])},
+    "elevators": {"in": ([], [(ByteType.BYTE, "targetLevel")]),
+                  "out": ([(ByteType.BIT, "moving"), (ByteType.BIT, "atLevel"), (ByteType.BIT, "occupied")],
+                          [(ByteType.BYTE, "level")])},
+}
+_MACHINE_KIND = {"Stopper": "stoppers", "RobotArm": "robots", "Elevator": "elevators"}
+
+
+def machine_fields(machine, direction: str) -> Tuple[List[Tuple[ByteType, str]], List[Tuple[ByteType, str]]]:
+    """(bits, values) a stopper / robot arm / elevator contributes to a
+    frame: its command ("in") or its feedback ("out")."""
+    kind = _MACHINE_KIND[type(machine).__name__]
+    return MACHINE_FIELDS[kind]["out" if direction == "out" else "in"]
 
 
 # Belt fields per channel direction (channel_registry's convention: "in" =

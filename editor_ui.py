@@ -5,7 +5,7 @@ runs and watches them."""
 import pygame
 import hmi_style as hmi
 import pygame_gui
-from config_parser import Belt, Sensor, Source, Sink, ControlButton, LedIndicator
+from config_parser import Belt, Sensor, Source, Sink, ControlButton, LedIndicator, Pallet, Stopper, RobotArm, Elevator
 from physics import PhysicsEngine
 
 
@@ -32,6 +32,12 @@ INSPECTOR_FIELDS = {
     Sink: ("id", "label", "x", "y", "width", "height"),
     ControlButton: ("id", "label", "x", "y", "rotation", "width", "height"),
     LedIndicator: ("id", "label", "x", "y", "radius"),
+    Pallet: ("id", "label", "x", "y", "rotation", "width", "height", "mass", "capacity", "level"),
+    Stopper: ("id", "label", "x", "y", "rotation", "width", "depth", "level", "control", "holdTime",
+              "releaseTime"),
+    RobotArm: ("id", "label", "x", "y", "reach", "pickX", "pickY", "placeX", "placeY", "cycleTime", "control"),
+    Elevator: ("id", "label", "x", "y", "rotation", "width", "height", "levels", "levelHeight", "liftSpeed",
+               "beltId", "control"),
 }
 BELT_GEOMETRY = {
     "linear": ("length", "beltWidth", "beltShape"),
@@ -46,7 +52,8 @@ def _kind_name(item) -> str:
     if isinstance(item, Belt):
         return f"{item.type} belt"
     return {Sensor: "sensor", Source: "source", Sink: "sink", ControlButton: "push button",
-            LedIndicator: "LED"}.get(type(item), "component")
+            LedIndicator: "LED", Pallet: "pallet", Stopper: "stopper", RobotArm: "robot arm",
+            Elevator: "elevator"}.get(type(item), "component")
 
 
 def format_value(attr: str, value) -> str:
@@ -226,6 +233,16 @@ class EditorUI:
             return {"Contact": "PRESSED" if getattr(item, "sensor_states", False) else "released"}
         if isinstance(item, LedIndicator):
             return {"Lamp": "ON" if item.isOn else "off"}
+        if isinstance(item, Pallet):
+            return {"Loads": f"{item.loadCount} of {item.capacity}"}
+        if isinstance(item, Stopper):
+            return {"Bar": "UP" if item.isUp else "down", "Waiting": "yes" if item.occupied else "no"}
+        if isinstance(item, RobotArm):
+            state = "holding a part" if item.holding else ("moving" if item.busy else "idle")
+            return {"Robot": state, "Cycles": str(item.cycles)}
+        if isinstance(item, Elevator):
+            where = f"to level {item.targetLevel}" if item.moving else f"at level {item.level}"
+            return {"Lift": where, "Platform": "loaded" if item.occupied else "empty"}
         return {}
 
     def update_live(self, physics_engine: PhysicsEngine = None):
@@ -310,6 +327,10 @@ class EditorUI:
             ("sink", "Sinks", self.config.sinks),
             ("button", "Buttons", self.config.buttons),
             ("led", "LEDs", self.config.leds),
+            ("pallet", "Pallets", self.config.pallets),
+            ("stopper", "Stoppers", self.config.stoppers),
+            ("robot", "Robot Arms", self.config.robots),
+            ("elevator", "Elevators", self.config.elevators),
         ]
         for kind, title, items in groups:
             if not items:

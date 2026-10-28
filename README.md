@@ -27,6 +27,8 @@ The Python simulation runs as a standalone process that:
   GUI loop (or a headless loop).
 - `physics.py` - The core Pymunk simulation. Handles belt kinematics, vertex-based
   impulse application, parcel collision, and sensor state evaluation.
+- `machines.py` - Pallets, stoppers, robot arms and elevators, and floor
+  levels (see [Machines](#machines-pallets-stoppers-robot-arms-elevators)).
 - `visualizer.py` - The Pygame rendering loop. Draws belts, sensors, parcels, and
   selection highlights based on the simulation state.
 - `editor_ui.py` - The Pygame GUI panel for viewing read-only properties of the
@@ -596,6 +598,60 @@ How the simulated devices behave (`devices.py`, `drive.py`, `physics.py`):
 `plc_mock.py`'s program (`plc_logic.py`) understands all of these: NC buttons,
 light-on sensors, vfd belts, and a drive fault in the feedback stops the line
 until it has reset and Start is pressed.
+
+### Machines: pallets, stoppers, robot arms, elevators
+
+`machines.py` runs them in the simulation; in the designer they are in the
+library's **Machines** folder. Each stopper, robot arm and elevator has a
+`control` setting:
+
+- `"auto"` (the default): a small built-in controller runs it, so a layout
+  works without a PLC.
+- `"plc"`: it follows its command fields from the PLC.
+
+Its feedback fields go to the PLC either way.
+
+| Machine | Settings | Behaviour | PLC command / feedback |
+|---|---|---|---|
+| Pallet | `width` (along travel) x `height`, `mass`, `capacity`, `level` | Rides the belts like a parcel (same drive, sensors, collisions) and is never taken by a sink or Clear Parcels; Reset puts it back at its start. Its **load** rides on it: parcels a robot puts on it, or that a source makes right above it. A sink it crosses takes the load (counted as delivered) and lets the pallet go on. | - |
+| Stopper | `width` across the belt, `depth`, `rotation` = the travel it stops, `actuationTime`; auto: `holdTime`, `releaseTime` | While up, a bar across the belt holds whatever arrives - typically a pallet before an intersection, a robot or a lift. It never rises under a pallet. Auto: holds an arrival for `holdTime`, then lowers for `releaseTime`. | `release` BOOL / `isUp`, `occupied` (something waiting) BOOLs |
+| Robot arm | base at `x, y`, `reach`, `pickX/Y`, `placeX/Y`, `pickRadius`, `cycleTime`, `pickLevel`, `placeLevel`, `placeTarget` "any" / "pallet" | A cycle: reach to the pick point, grip the part there (a pallet's load first, else a parcel), carry it to the place point and let go - onto a pallet with room there, else (`placeTarget` "any") onto the belt / floor. Auto: starts when a part waits and there is somewhere to put it. The designer shows its reach and the pick (green) / place (orange) points; dropping or pasting a robot moves them along. | `start` BOOL (rising edge) / `busy`, `holding`, `partAtPick`, `placeReady` BOOLs, `cycles` WORD |
+| Elevator | footprint `width` x `height`, `beltId` (its platform belt: an ordinary belt on the footprint), `levels`, `levelHeight`, `liftSpeed`; auto: `autoFrom`, `autoTo` | A lift between floor levels. Whatever is on the platform - and the platform belt - travels with it and arrives on the new level. Auto: runs its belt until a part is on board at `autoFrom`, lifts it to `autoTo`, runs the belt until the platform is empty, and comes back. | `targetLevel` BYTE / `moving`, `atLevel`, `occupied` BOOLs, `level` BYTE |
+
+**Floor levels.** Belts, sensors, sources, pallets and stoppers have a
+`level` (0 = ground):
+
+- A belt moves only what is on its level, and a sensor sees only its level.
+- Only bodies on the same level collide, so an upper conveyor can run
+  above a lower one.
+- In the simulator, upper-level belts are drawn over the lower ones with
+  a blue outline, and so are parcels on an upper level.
+
+A layout that uses only level 0 runs exactly as before; the physics is
+bit-identical.
+
+**PLC.** Machines join the generated I/O frames (`io_topics`):
+
+- Feedback goes on input, after the sensors.
+- Commands go on output, after the belts.
+- The bits come first, as for every component (`MACHINE_FIELDS` in
+  `mqtt_message_binding.py`).
+
+`plc_logic.py` (the program `plc_mock.py` runs) drives `control: "plc"`
+machines with the same decisions as auto mode, while the line runs. When
+the line is stopped, every stopper stays up.
+
+`machines_demo.json` uses all four:
+
+- A pallet loop where a robot loads parts from a stopped feeder onto
+  pallets held by a stopper.
+- A sink that unloads the pallets.
+- A lift that carries cartons up to a level-1 belt, which runs above a
+  level-0 belt that never sees them.
+
+```bash
+python main.py machines_demo.json
+```
 
 `test_config.json` is Station_1 of the SIMATIC AX project: three lanes (an IR
 sensor on lane 1, 32-beam laser banners on lanes 2 and 3) merging into lane 1

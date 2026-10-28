@@ -76,6 +76,10 @@ class Belt(BaseModel):
     # turns it into `actualSpeed`, which is what physics uses.
     drive: Optional[DriveConfig] = None
     friction: float = 0.5     # belt/parcel friction coefficient (friction traction)
+    # Floor level (0 = ground, 1 = the level above, ...): a belt moves only
+    # what is on its level. An elevator's platform belt changes level with
+    # the platform (-1 while travelling: it moves nothing).
+    level: int = 0
     # Runtime outputs (drive.py) - the motor feedback: actualSpeed (FLOAT),
     # encoderCount (UINT32) and the status bits running, atSpeed, reversing,
     # fault. Never saved into layout files.
@@ -136,6 +140,7 @@ class Sensor(BaseModel):
     onDelay: float = 0.0
     offDelay: float = 0.0
     invert: bool = False
+    level: int = 0            # sees only what is on this floor level
     # Runtime: detections (beam(s) becoming blocked, after onDelay) since
     # start - wraps when packed - so the PLC can count a pulse shorter than
     # the exchange interval; blockedBeams = beams blocked now. Never saved.
@@ -159,6 +164,7 @@ class Source(BaseModel):
     intervalBinding: Optional[str] = None
     minMass: float = 1.0      # kg, parcel mass range (friction traction)
     maxMass: float = 1.0
+    level: int = 0            # floor level of the parcels it makes
 
 class Sink(BaseModel):
     id: str
@@ -204,6 +210,149 @@ class LedIndicator(BaseModel):
     # (isOn) follows it in the simulator (devices.update_led).
     packFormat: PackFormat = "bit"
     mode: int = Field(default=0, exclude=True)
+
+# ---------------------------------------------------------------------------
+# Machines (machines.py runs them in the simulation). Each one either runs
+# itself (control "auto": a small built-in controller, so a layout works
+# without a PLC) or follows the PLC's command fields (control "plc") - its
+# feedback fields go to the PLC either way.
+# ---------------------------------------------------------------------------
+
+ControlMode = Literal["auto", "plc"]
+
+
+class Pallet(BaseModel):
+    """A carrier that rides the belts like a parcel (the same belt drive,
+    sensors and collisions) and is never taken by a sink. Parcels put on it -
+    by a robot arm, or made by a source right above it - ride along as its
+    load; a sink it crosses takes the load and leaves the pallet. `x`, `y`,
+    `rotation` are where it starts (and returns to on Reset)."""
+    id: str
+    x: float
+    y: float
+    rotation: float = 0.0
+    width: float = 0.8        # m, along its travel (local x)
+    height: float = 0.6       # m, across
+    mass: float = 8.0         # kg, empty
+    capacity: int = 1         # loads it carries at most
+    label: str = ""
+    color: str = "#b45309"
+    level: int = 0
+    # Runtime: loads on it now. Never saved.
+    loadCount: int = Field(default=0, exclude=True)
+
+
+class Stopper(BaseModel):
+    """A pop-up stop at a belt: while up it is a bar across the belt that
+    holds a pallet (or parcel) - typically before an intersection, a robot
+    or an elevator. `rotation` is the direction of travel it stops; the bar
+    is `width` across it and `depth` deep along it, centred at (x, y).
+
+    Command (PLC -> simulator, control "plc"): `release` - 1 lowers it.
+    Feedback (simulator -> PLC): `isUp` (actual position, after
+    `actuationTime`) and `occupied` (something waiting at it).
+    control "auto": it holds whatever arrives for `holdTime` s, then lowers
+    for `releaseTime` s."""
+    id: str
+    x: float
+    y: float
+    rotation: float = 0.0
+    width: float = 1.0
+    depth: float = 0.05
+    label: str = ""
+    color: str = "#dc2626"
+    level: int = 0
+    control: ControlMode = "auto"
+    actuationTime: float = 0.15
+    holdTime: float = 2.0
+    releaseTime: float = 1.0
+    release: bool = False                                  # command
+    isUp: bool = Field(default=True, exclude=True)         # feedback
+    occupied: bool = Field(default=False, exclude=True)    # feedback
+
+
+class RobotArm(BaseModel):
+    """A pick-and-place robot on a base at (x, y): each cycle it reaches to
+    the pick point, grips the parcel there (a pallet's load first, else a
+    parcel on the belt), carries it to the place point and lets go - onto a
+    pallet with room there as its load, else onto the belt / floor. Both
+    points must be within `reach` of the base. One cycle takes
+    `cycleTime` s (reach, carry, return: a third each).
+
+    `placeTarget` "pallet": it only sets parts down on a pallet (waits for
+    one with room at the place point); "any": on a pallet if there is one,
+    else wherever the place point is.
+
+    Command (control "plc"): `start` - a cycle begins when it turns on.
+    Feedback: `busy`, `holding`, `partAtPick` (something to pick now),
+    `placeReady` (somewhere to put it now) and `cycles` (finished cycles,
+    UINT16, wraps).
+    control "auto": it starts a cycle whenever a part is at the pick point
+    and the place point is ready."""
+    id: str
+    x: float
+    y: float
+    pickX: float
+    pickY: float
+    placeX: float
+    placeY: float
+    reach: float = 2.5
+    cycleTime: float = 3.0
+    pickRadius: float = 0.4   # m: how close to the pick point a part's centre must be
+    label: str = ""
+    color: str = "#7c3aed"
+    level: int = 0
+    pickLevel: int = 0
+    placeLevel: int = 0
+    placeTarget: Literal["any", "pallet"] = "any"
+    control: ControlMode = "auto"
+    start: bool = False                                    # command
+    busy: bool = Field(default=False, exclude=True)        # feedback
+    holding: bool = Field(default=False, exclude=True)
+    partAtPick: bool = Field(default=False, exclude=True)
+    placeReady: bool = Field(default=False, exclude=True)
+    cycles: int = Field(default=0, exclude=True)
+    # Runtime pose for drawing: the tool (gripper) position.
+    toolX: float = Field(default=0.0, exclude=True)
+    toolY: float = Field(default=0.0, exclude=True)
+
+
+class Elevator(BaseModel):
+    """A lift between floor levels: a platform with its own conveyor - the
+    belt `beltId`, an ordinary belt the elevator carries (put it on the
+    elevator's footprint; the PLC or the auto mode runs it like any belt).
+    Whatever is on the platform travels with it and arrives on the new
+    level. `levels` floors (0 .. levels-1), `levelHeight` m apart, moving
+    at `liftSpeed` m/s.
+
+    Command (control "plc"): `targetLevel` (BYTE).
+    Feedback: `level` (the floor it is at, or last left), `moving`,
+    `atLevel` (stopped at a floor) and `occupied` (something on the
+    platform).
+    control "auto": loaded at `autoFrom` it carries the load to `autoTo`,
+    runs its belt until the platform is empty, and goes back."""
+    id: str
+    x: float
+    y: float
+    rotation: float = 0.0
+    width: float = 1.4        # m, along the platform conveyor
+    height: float = 1.0       # m, across
+    beltId: Optional[str] = None
+    levels: int = 2
+    levelHeight: float = 1.0
+    liftSpeed: float = 0.5
+    label: str = ""
+    color: str = "#0891b2"
+    control: ControlMode = "auto"
+    autoFrom: int = 0
+    autoTo: int = 1
+    targetLevel: int = 0                                   # command
+    level: int = Field(default=0, exclude=True)            # feedback
+    moving: bool = Field(default=False, exclude=True)
+    atLevel: bool = Field(default=True, exclude=True)
+    occupied: bool = Field(default=False, exclude=True)
+    position: float = Field(default=0.0, exclude=True)     # runtime: height in levels (0.5 = halfway)
+
 
 class TopicComponent(BaseModel):
     id: str
@@ -283,6 +432,10 @@ class SimulatorConfig(BaseModel):
     sinks: List[Sink] = Field(default_factory=list)
     buttons: List[ControlButton] = Field(default_factory=list)
     leds: List[LedIndicator] = Field(default_factory=list)
+    pallets: List[Pallet] = Field(default_factory=list)
+    stoppers: List[Stopper] = Field(default_factory=list)
+    robots: List[RobotArm] = Field(default_factory=list)
+    elevators: List[Elevator] = Field(default_factory=list)
     mqttSettings: MqttSettings = Field(default_factory=MqttSettings)
     connections: List[BeltConnection] = Field(default_factory=list)
     sketch: List[SketchEntity] = Field(default_factory=list)
