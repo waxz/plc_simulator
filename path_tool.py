@@ -152,7 +152,8 @@ class SnapEngine:
 
 class PathToolbar(QToolBar):
     """Options shared by the drawing tools: segment mode, belt width, corner
-    radius, typed-coordinate input. Each tool enables what applies to it."""
+    radius, typed-coordinate input. Each tool shows only what applies to it,
+    so the bar stays short."""
 
     def __init__(self, parent, on_input: Callable[[str], None]):
         super().__init__("Draw", parent)
@@ -164,16 +165,13 @@ class PathToolbar(QToolBar):
         group.setExclusive(True)
         group.addButton(self.line_button)
         group.addButton(self.arc_button)
-        self.addWidget(self.line_button)
-        self.addWidget(self.arc_button)
+        self.segment_actions = [self.addWidget(self.line_button), self.addWidget(self.arc_button)]
         self.addSeparator()
-        self.addWidget(QLabel(" Width "))
         self.width_spin = QDoubleSpinBox(minimum=0.05, maximum=20.0, singleStep=0.1, value=1.0, decimals=3, suffix=" m")
-        self.addWidget(self.width_spin)
-        self.addWidget(QLabel(" Corner R "))
+        self.width_actions = [self.addWidget(QLabel(" Width ")), self.addWidget(self.width_spin)]
         self.corner_spin = QDoubleSpinBox(minimum=0.0, maximum=50.0, singleStep=0.25, value=1.0, decimals=3, suffix=" m")
         self.corner_spin.setToolTip("Path: sharp corners are rounded with this radius when finished (0 = sharp)")
-        self.addWidget(self.corner_spin)
+        self.corner_actions = [self.addWidget(QLabel(" Corner R ")), self.addWidget(self.corner_spin)]
         # Draw Belt Path: one belt (and motor) per straight run / curve, or one path belt.
         self.split_check = QCheckBox("Separate belts")
         self.split_check.setChecked(True)
@@ -181,6 +179,19 @@ class PathToolbar(QToolBar):
                                     "curve or rounded corner, each with its own motor, joined in flow order.\n"
                                     "Off: one path belt (one motor) along the whole path.")
         self.split_actions = [self.addWidget(self.split_check)]
+        # Arc tools (Sketch Arc, Draw Curved Belt): how the arc is given.
+        self.arc_method_actions = [self.addWidget(QLabel(" Arc "))]
+        self.arc_method_combo = QComboBox()
+        for label, key in (("3 points: start, end, on arc", "3pt"), ("Center, start, end", "center")):
+            self.arc_method_combo.addItem(label, key)
+        self.arc_method_combo.setToolTip(
+            "3 points: click the start, the end, then a point the arc passes through.\n"
+            "Center, start, end: click the center, the start (sets the radius), then sweep round to "
+            "the end - the way you sweep sets clockwise / counter-clockwise.")
+        self.arc_method_actions.append(self.addWidget(self.arc_method_combo))
+        self.on_arc_method_changed: Optional[Callable[[], None]] = None
+        self.arc_method_combo.currentIndexChanged.connect(
+            lambda _i: self.on_arc_method_changed() if self.on_arc_method_changed else None)
         self.sides_actions = [self.addWidget(QLabel(" Sides "))]
         self.sides_spin = QSpinBox(minimum=3, maximum=64, value=6)
         self.sides_actions.append(self.addWidget(self.sides_spin))
@@ -246,13 +257,13 @@ class PathToolbar(QToolBar):
             self.on_options_changed()
 
     def configure(self, title: str, *, segments: bool, width: bool, corner: bool, points: bool,
-                  belt_type: bool = False, sides: bool = False, split: bool = False):
+                  belt_type: bool = False, sides: bool = False, split: bool = False, arc_method: bool = False):
         self.setEnabled(True)
         self.mode_label.setText(f"  {title}  ")
-        for w in (self.line_button, self.arc_button):
-            w.setEnabled(segments)
-        self.width_spin.setEnabled(width)
-        self.corner_spin.setEnabled(corner)
+        for actions, shown in ((self.segment_actions, segments), (self.width_actions, width),
+                               (self.corner_actions, corner)):
+            for action in actions:
+                action.setVisible(shown)
         self.input.setEnabled(points)
         for action in self.pick_actions:
             action.setVisible(belt_type)
@@ -260,6 +271,9 @@ class PathToolbar(QToolBar):
             action.setVisible(sides)
         for action in self.split_actions:
             action.setVisible(split)
+        for action in self.arc_method_actions:
+            action.setVisible(arc_method)
+        self.on_arc_method_changed = None
         self.on_options_changed = None  # the tool that wants live updates sets it after configure()
 
 
@@ -659,21 +673,99 @@ class SketchLineTool(PathDrawTool):
 
 
 class SketchArcTool(_PointTool):
-    """3-point arc: start, end, then a point the arc passes through."""
+    """An arc, given by the toolbar's Arc method: 3 points (start, end, then
+    a point the arc passes through) or center, start, end (the way the
+    cursor sweeps round the center sets the direction)."""
 
     title = "Sketch Arc"
-    hint = "Sketch Arc: click the start point, the end point, then a point on the arc (OSNAP). Esc to cancel."
+    hints = {
+        "3pt": "Sketch Arc: click the start point, the end point, then a point on the arc (OSNAP). Esc to cancel.",
+        "center": "Sketch Arc: click the center, the start point (sets the radius), then sweep round and click "
+                  "the end (OSNAP). Esc to cancel.",
+    }
     on_sketch: Optional[Callable[[SketchEntity], None]] = None
+    toolbar_title = "Sketch arc"
+    toolbar_width = False
+
+    @property
+    def method(self) -> str:
+        return self.toolbar.arc_method_combo.currentData()
+
+    @property
+    def hint(self) -> str:
+        return self.hints[self.method]
 
     def _configure_toolbar(self):
-        self.toolbar.configure("Sketch arc", segments=False, width=False, corner=False, points=True)
+        self.toolbar.configure(self.toolbar_title, segments=False, width=self.toolbar_width, corner=False,
+                               points=True, arc_method=True)
+        self.toolbar.on_arc_method_changed = self._method_changed
+
+    def _method_changed(self):
+        """Switching method mid-arc starts the arc again."""
+        if self.active:
+            self.anchors, self.bulges, self._sweep = [], [], None
+            self._update_preview()
+            self._status(self.hint)
+
+    # -- center method: follow the sweep round the center ---------------------------
+
+    _sweep: Optional[float] = None
+    _last_angle: Optional[float] = None
+
+    def _track_sweep(self, p):
+        """Accumulate how far the cursor has gone round the center since the
+        start point, so the arc follows the way it is swept (and may pass
+        half a turn)."""
+        if self.method != "center" or len(self.anchors) != 2 or p is None:
+            return
+        c = self.anchors[0]
+        if math.hypot(p[0] - c[0], p[1] - c[1]) < 1e-9:
+            return
+        angle = math.atan2(p[1] - c[1], p[0] - c[0])
+        if self._sweep is None:
+            start = self.anchors[1]
+            self._last_angle = math.atan2(start[1] - c[1], start[0] - c[0])
+            self._sweep = 0.0
+        delta = math.atan2(math.sin(angle - self._last_angle), math.cos(angle - self._last_angle))
+        self._sweep = max(-2 * math.pi, min(2 * math.pi, self._sweep + delta))
+        self._last_angle = angle
+
+    def mouse_move(self, event) -> bool:
+        self.cursor = self._pick(event.position().toPoint(), bool(event.modifiers() & Qt.ShiftModifier))
+        self._track_sweep(self.cursor)
+        self._update_preview()
+        return True
+
+    def arc(self, pts) -> Optional[Tuple[Tuple[float, float], Tuple[float, float], float]]:
+        """(start, end, bulge) from the clicked points (+ cursor) for the
+        current method; None until there is one."""
+        if len(pts) < 3:
+            return None
+        if self.method == "center":
+            sweep = self._sweep if self._sweep is not None and abs(self._sweep) > 1e-6 else None
+            return cpath.center_arc(pts[0], pts[1], pts[2], sweep)
+        return pts[0], pts[1], cpath.three_point_bulge(pts[0], pts[1], pts[2])
 
     def add_anchor(self, p):
         if len(self.anchors) < 2:
             super().add_anchor(p)
+            if len(self.anchors) == 2:
+                self._sweep = None
             return
+        if self._sweep is not None:   # swept with the mouse; a typed end point goes counter-clockwise
+            self._track_sweep(p)
         self.anchors.append(p)
         self.finish()
+
+    def _guide_lines(self, pts):
+        """Center method: the radius lines from the center."""
+        if self.method != "center" or not pts:
+            return
+        for p in pts[1:3]:
+            line = QPainterPath()
+            line.moveTo(self.to_scene(*pts[0]))
+            line.lineTo(self.to_scene(*p))
+            self._add_preview(QGraphicsPathItem(line)).setPen(QPen(QColor(148, 163, 184), 0, Qt.DotLine))
 
     def close_path(self):
         pass
@@ -683,8 +775,13 @@ class SketchArcTool(_PointTool):
             if not self.anchors:
                 self.stop()
             return
-        p0, p1, through = self.anchors[:3]
-        bulge = cpath.three_point_bulge(p0, p1, through)
+        arc = self.arc(self.anchors[:3])
+        if arc is None:
+            del self.anchors[2:]
+            self._status("No arc there - click a point away from the center / start.", 5000)
+            self._update_preview()
+            return
+        p0, p1, bulge = arc
         entity = SketchEntity(points=[p0, p1], bulges=[bulge, 0.0], closed=False)
         self.stop()
         if self.on_sketch:
@@ -698,14 +795,16 @@ class SketchArcTool(_PointTool):
         if not self.active:
             return
         pts = list(self.anchors) + ([self.cursor] if self.cursor is not None else [])
-        if len(pts) >= 2:
-            bulge = cpath.three_point_bulge(pts[0], pts[1], pts[2]) if len(pts) >= 3 else 0.0
-            seg = cpath.bulge_to_segment(pts[0], pts[1], bulge)
+        self._guide_lines(pts)
+        arc = self.arc(pts)
+        if arc is not None or (len(pts) == 2 and self.method == "3pt"):
+            p0, p1, bulge = arc if arc is not None else (pts[0], pts[1], 0.0)
+            seg = cpath.bulge_to_segment(p0, p1, bulge)
             flat, _ = cpath.flatten([seg], tolerance=0.01)
             line = QPainterPath()
             line.addPolygon(QPolygonF([self.to_scene(x, y) for x, y in flat]))
             self._add_preview(QGraphicsPathItem(line)).setPen(QPen(QColor("#22d3ee"), 2))
-            if len(pts) >= 3 and seg.kind == "arc":
+            if arc is not None and seg.kind == "arc":
                 self._draw_readout(f"R {seg.radius:.3f} m   {math.degrees(abs(seg.sweep)):.1f} deg")
         self._draw_anchor_markers()
         self._draw_snap_marker()
@@ -722,25 +821,32 @@ def curved_belt_through(belt_id: str, start, end, through, width: float) -> Belt
 
 
 class CurvedBeltDrawTool(SketchArcTool):
-    """3-point arc -> a curved belt (type "curved"): click the start, the
-    end, then a point on the arc. Width from the toolbar; parcels run from
-    the start to the end point."""
+    """An arc (either Arc method) -> a curved belt (type "curved"). Width
+    from the toolbar; parcels run from the start to the end point."""
 
     title = "Draw Curved Belt"
-    hint = ("Draw Curved Belt: click the start, the end, then a point on the arc (OSNAP, typed points work). "
-            "Parcels run start -> end; the toolbar's Width sets the belt width. Esc to cancel.")
-
-    def _configure_toolbar(self):
-        self.toolbar.configure("Curved belt", segments=False, width=True, corner=False, points=True)
+    hints = {
+        "3pt": "Draw Curved Belt: click the start, the end, then a point on the arc (OSNAP, typed points work). "
+               "Parcels run start -> end; the toolbar's Width sets the belt width. Esc to cancel.",
+        "center": "Draw Curved Belt: click the center, the start (sets the radius), then sweep round and click "
+                  "the end. Parcels run start -> end, the way you swept; Width sets the belt width. Esc to cancel.",
+    }
+    toolbar_title = "Curved belt"
+    toolbar_width = True
 
     def finish(self, closed: bool = False):
         if len(self.anchors) < 3:
             if not self.anchors:
                 self.stop()
             return
-        start, end, through = self.anchors[:3]
         try:
-            belt = curved_belt_through(self._new_id(), start, end, through, self.toolbar.width_spin.value())
+            arc = self.arc(self.anchors[:3])
+            if arc is None:
+                raise ValueError("No arc there - click a point away from the center / start.")
+            seg = cpath.bulge_to_segment(*arc)
+            if seg.kind != "arc":
+                raise ValueError("The three points are in a line - click a point off the chord to bend the belt.")
+            belt = curved_belt_from_segment(self._new_id(), seg, self.toolbar.width_spin.value())
         except ValueError as exc:
             del self.anchors[2:]            # keep start and end: click another point on the arc
             self._status(str(exc), 6000)
@@ -757,12 +863,14 @@ class CurvedBeltDrawTool(SketchArcTool):
         if not self.active:
             return
         pts = list(self.anchors) + ([self.cursor] if self.cursor is not None else [])
-        if len(pts) >= 2:
-            bulge = cpath.three_point_bulge(pts[0], pts[1], pts[2]) if len(pts) >= 3 else 0.0
+        self._guide_lines(pts)
+        arc = self.arc(pts)
+        if arc is not None or (len(pts) == 2 and self.method == "3pt"):
+            p0, p1, bulge = arc if arc is not None else (pts[0], pts[1], 0.0)
             width = self.toolbar.width_spin.value()
-            seg = cpath.bulge_to_segment(pts[0], pts[1], bulge)
+            seg = cpath.bulge_to_segment(p0, p1, bulge)
             if seg.kind != "arc" or seg.radius > width / 2.0:
-                surface = cpath.footprint([pts[0], pts[1]], [bulge, 0.0], False, width, tolerance=0.005)
+                surface = cpath.footprint([p0, p1], [bulge, 0.0], False, width, tolerance=0.005)
                 body = self._add_preview(QGraphicsPathItem(_world_painter_path(surface, self.to_scene)))
                 body.setBrush(QBrush(QColor(59, 130, 246, 90)))
                 body.setPen(QPen(QColor(147, 197, 253), 0))
@@ -770,7 +878,7 @@ class CurvedBeltDrawTool(SketchArcTool):
             line = QPainterPath()
             line.addPolygon(QPolygonF([self.to_scene(x, y) for x, y in flat]))
             self._add_preview(QGraphicsPathItem(line)).setPen(QPen(QColor(255, 140, 0), 0, Qt.DashLine))
-            if len(pts) >= 3 and seg.kind == "arc":
+            if arc is not None and seg.kind == "arc":
                 turn = "CCW" if seg.sweep > 0 else "CW"
                 self._draw_readout(f"R {seg.radius:.3f} m   {math.degrees(abs(seg.sweep)):.1f} deg   {turn}")
         self._draw_anchor_markers()

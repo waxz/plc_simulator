@@ -26,7 +26,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication, QDialog, QFileDialog, QGraphicsEllipseItem, QGraphicsPathItem, QGraphicsPolygonItem, QInputDialog,
-    QListWidget, QListWidgetItem, QMessageBox, QPushButton, QStyle, QVBoxLayout, QWidget,
+    QLabel, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QStyle, QToolBar, QVBoxLayout, QWidget,
 )
 
 from background_dialog import BackgroundImportDialog
@@ -489,18 +489,41 @@ class CadController:
 
         tools = w.menuBar().addMenu("Tools")
         sketch = tools.addMenu("Sketch")
-        add(sketch, "Line", self.sketch_line_tool.start, "S")
-        add(sketch, "Arc (3 points)", self.sketch_arc_tool.start, "Shift+S")
-        add(sketch, "Rectangle", self.sketch_rect_tool.start, "Shift+R")
-        add(sketch, "Circle", self.sketch_circle_tool.start, "Shift+C")
-        add(sketch, "Polygon", self.sketch_polygon_tool.start, "Shift+G")
+        sketch_actions = [
+            add(sketch, "Line", self.sketch_line_tool.start, "S"),
+            add(sketch, "Arc", self.sketch_arc_tool.start, "Shift+S"),
+            add(sketch, "Rectangle", self.sketch_rect_tool.start, "Shift+R"),
+            add(sketch, "Circle", self.sketch_circle_tool.start, "Shift+C"),
+            add(sketch, "Polygon", self.sketch_polygon_tool.start, "Shift+G"),
+        ]
         sketch.addSeparator()
-        add(sketch, "Clear Sketch", self.clear_sketch)
+        clear_action = add(sketch, "Clear Sketch", self.clear_sketch)
         belts = tools.addMenu("Belts")
-        add(belts, "Belt from Sketch/Drawing", self.pick_tool.start, "B")
-        add(belts, "Draw Belt Path", self.path_tool.start, "P")
-        add(belts, "Draw Curved Belt", self.curved_tool.start, "U")
-        add(belts, "Draw Belt Outline", self.outline_tool.start, "O")
+        belt_actions = [
+            add(belts, "Belt from Sketch/Drawing", self.pick_tool.start, "B"),
+            add(belts, "Draw Belt Path", self.path_tool.start, "P"),
+            add(belts, "Draw Curved Belt", self.curved_tool.start, "U"),
+            add(belts, "Draw Belt Outline", self.outline_tool.start, "O"),
+        ]
+        # The same actions as buttons on a top-level tool bar: sketch first,
+        # then the tools that turn sketch / drawing / clicks into belts.
+        bar = QToolBar("Sketch", w)
+        bar.setObjectName("sketchToolbar")
+        w.addToolBarBreak(Qt.TopToolBarArea)     # its own row: never folded into an overflow menu
+        w.addToolBar(Qt.TopToolBarArea, bar)
+        bar.addWidget(QLabel("  Sketch "))
+        short = {"Belt from Sketch/Drawing": "Belt from Sketch", "Draw Belt Path": "Belt Path",
+                 "Draw Curved Belt": "Curved Belt", "Draw Belt Outline": "Outline Belt"}
+        for group in (sketch_actions + [clear_action], belt_actions):
+            if group is belt_actions:
+                bar.addSeparator()
+                bar.addWidget(QLabel("  Belts "))
+            for action in group:
+                action.setIconText(short.get(action.text(), action.text()))
+                key = action.shortcut().toString()
+                action.setToolTip(f"{action.text()} ({key})" if key else action.text())
+                bar.addAction(action)
+        self.sketch_toolbar = bar
         connections = tools.addMenu("Connections")
         add(connections, "Connect Belts", self.connect_selected, "Ctrl+J")
         add(connections, "Fillet Belts...", self.fillet_selected, "Ctrl+Shift+F")

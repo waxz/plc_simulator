@@ -352,6 +352,28 @@ def path_flow_sign(belt) -> float:
     return sign
 
 
+def center_arc(center: Point, start: Point, toward: Point, sweep: Optional[float] = None
+               ) -> Optional[Tuple[Point, Point, float]]:
+    """Arc about `center` from `start` (which sets the radius) to the point
+    at radius in the direction of `toward`: (start, end, bulge). `sweep`
+    (radians, + CCW / - CW) is how far the user swept round, e.g. tracked
+    from the cursor; None = counter-clockwise from start to end. None when
+    there is no arc (no radius, or no angle swept)."""
+    radius = math.hypot(start[0] - center[0], start[1] - center[1])
+    if radius < 1e-9 or math.hypot(toward[0] - center[0], toward[1] - center[1]) < 1e-9:
+        return None
+    a0 = math.atan2(start[1] - center[1], start[0] - center[0])
+    a1 = math.atan2(toward[1] - center[1], toward[0] - center[0])
+    if sweep is None:
+        sweep = (a1 - a0) % (2 * math.pi)
+    # One bulge can't describe a full turn: stop just short of it.
+    sweep = max(-2 * math.pi + 1e-3, min(2 * math.pi - 1e-3, sweep))
+    if abs(sweep) < 1e-6:
+        return None
+    end = (center[0] + radius * math.cos(a0 + sweep), center[1] + radius * math.sin(a0 + sweep))
+    return start, end, math.tan(sweep / 4.0)
+
+
 def three_point_bulge(p0: Point, p1: Point, through: Point) -> float:
     """Bulge of the arc from p0 to p1 that passes through `through`
     (0 if the three points are collinear)."""

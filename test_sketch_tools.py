@@ -133,6 +133,19 @@ class CoreGeometryTest(unittest.TestCase):
             self.assertEqual([round(b, 6) for *_xy, b in line.get_points("xyb")], [1.0, 0.0])
 
 
+class CenterArcTest(unittest.TestCase):
+    def test_center_start_end(self):
+        start, end, bulge = cpath.center_arc((0, 0), (2, 0), (0, 5))          # CCW by default
+        self.assertAlmostEqual(end[0], 0.0)
+        self.assertAlmostEqual(end[1], 2.0)                                   # on the radius, toward (0, 5)
+        self.assertAlmostEqual(bulge, math.tan(math.pi / 8))                  # a quarter turn
+        _, end, bulge = cpath.center_arc((0, 0), (2, 0), (0, 5), sweep=-3 * math.pi / 2)
+        self.assertAlmostEqual(end[1], 2.0)
+        self.assertLess(bulge, 0)                                             # the long way, clockwise
+        self.assertIsNone(cpath.center_arc((0, 0), (0, 0), (1, 1)))           # no radius
+        self.assertIsNone(cpath.center_arc((0, 0), (2, 0), (5, 0), sweep=0.0))
+
+
 class CurvedBeltThroughTest(unittest.TestCase):
     def test_ccw_and_cw_quarter_arcs(self):
         from path_tool import curved_belt_through
@@ -206,6 +219,96 @@ class EditorWorkflowTest(unittest.TestCase):
         for x, y in points:
             self.click(x, y)
         self.key(Qt.Key_Return)
+
+    # -- top-level Sketch tool bar ---------------------------------------------------
+
+    def test_sketch_tool_bar_buttons_start_the_tools(self):
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QToolBar
+        bar = self.window.findChild(QToolBar, "sketchToolbar")
+        self.assertTrue(bar.isVisible())
+        labels = [a.iconText() for a in bar.actions() if a.text()]
+        for name in ("Line", "Arc", "Rectangle", "Circle", "Polygon", "Clear Sketch",
+                     "Belt from Sketch", "Belt Path", "Curved Belt", "Outline Belt"):
+            self.assertIn(name, labels)
+        arc = next(a for a in bar.actions() if a.iconText() == "Arc")
+        self.assertEqual(arc.toolTip(), "Arc (Shift+S)")
+        QTest.mouseClick(bar.widgetForAction(arc), Qt.LeftButton)
+        self.assertTrue(self.cad.sketch_arc_tool.active)
+        self.assertTrue(all(a.isVisible() for a in self.cad.draw_toolbar.arc_method_actions))   # Arc method shown
+        line = next(a for a in bar.actions() if a.iconText() == "Line")
+        QTest.mouseClick(bar.widgetForAction(line), Qt.LeftButton)
+        self.assertTrue(self.cad.sketch_line_tool.active)
+        self.assertFalse(self.cad.sketch_arc_tool.active)
+        self.assertFalse(any(a.isVisible() for a in self.cad.draw_toolbar.arc_method_actions))
+
+    # -- center, start, end arcs ----------------------------------------------------
+
+    def use_center_method(self):
+        combo = self.cad.draw_toolbar.arc_method_combo
+        combo.setCurrentIndex(combo.findData("center"))
+
+    def sweep(self, *points):
+        for x, y in points:
+            self._mouse(QEvent.MouseMove, x, y, Qt.NoButton, Qt.NoButton)
+
+    def test_sketch_arc_center_start_end_follows_the_sweep(self):
+        for way, through, expect_ccw in (("ccw", (0.3, 2.0), True), ("cw", (0.3, -2.0), False)):
+            self.cad.sketch_arc_tool.start()
+            self.use_center_method()
+            self.assertIn("center", self.window.statusBar().currentMessage())
+            self.click(0, 0)                                  # center
+            self.click(2, 0)                                  # start: radius 2
+            self.sweep((1.5, 1.3 if expect_ccw else -1.3), through, (-1.5, 1.3 if expect_ccw else -1.3))
+            self.click(-2, 0)                                 # end: half a turn, the way swept
+            entity = self.window.config.sketch[-1]
+            seg = cpath.bulge_to_segment(entity.points[0], entity.points[1], entity.bulges[0])
+            self.assertEqual(seg.kind, "arc", way)
+            self.assertAlmostEqual(seg.radius, 2.0, places=2)
+            self.assertAlmostEqual(abs(math.degrees(seg.sweep)), 180.0, places=0)
+            self.assertEqual(seg.sweep > 0, expect_ccw, way)
+            self.assertAlmostEqual(seg.center[0], 0.0, places=2)
+
+    def test_more_than_half_a_turn_and_a_typed_end(self):
+        self.cad.sketch_arc_tool.start()
+        self.use_center_method()
+        self.click(0, 0)
+        self.click(2, 0)
+        self.sweep((1.4, 1.4), (0, 2), (-1.4, 1.4), (-2, 0), (-1.4, -1.4))
+        self.click(0, -2)                                     # three quarters, CCW
+        entity = self.window.config.sketch[-1]
+        self.assertAlmostEqual(math.degrees(4 * math.atan(entity.bulges[0])), 270.0, places=0)
+        # A typed end point (no sweep) goes counter-clockwise.
+        self.cad.sketch_arc_tool.start()
+        self.cad.sketch_arc_tool.typed_input("0,0")
+        self.cad.sketch_arc_tool.typed_input("2,0")
+        self.cad.sketch_arc_tool.typed_input("0,-5")          # direction only: ends at (0, -2)
+        entity = self.window.config.sketch[-1]
+        self.assertAlmostEqual(entity.points[1][1], -2.0)
+        self.assertAlmostEqual(math.degrees(4 * math.atan(entity.bulges[0])), 270.0)
+
+    def test_switching_method_mid_arc_starts_again(self):
+        self.cad.sketch_arc_tool.start()
+        self.click(0, 0)
+        self.use_center_method()
+        self.assertEqual(self.cad.sketch_arc_tool.anchors, [])
+        self.assertTrue(self.cad.sketch_arc_tool.active)
+
+    def test_curved_belt_by_center_start_end(self):
+        self.cad.draw_toolbar.width_spin.setValue(0.8)
+        self.cad.curved_tool.start()
+        self.use_center_method()
+        self.click(3, 2)                                      # center
+        self.click(3, 4)                                      # start, R 2
+        self.sweep((4.4, 3.4), (5, 2))
+        self.click(5, 2)                                      # a quarter turn clockwise
+        belt = self.belts()[0]
+        self.assertEqual(belt.type, "curved")
+        self.assertAlmostEqual(belt.x, 3.0, places=2)
+        self.assertAlmostEqual(belt.y, 2.0, places=2)
+        self.assertAlmostEqual(belt.radius, 2.0, places=2)
+        self.assertAlmostEqual((belt.endAngle - belt.startAngle) % 360.0, 90.0, places=0)
+        self.assertLess(belt.directionAngle, 0)               # parcels run the way it was swept
 
     # -- draw a curved belt directly ------------------------------------------------
 

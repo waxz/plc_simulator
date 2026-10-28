@@ -217,10 +217,22 @@ The Qt layout editor is where belt shapes and positions are designed:
 
 ![Sketch and connect into belts](docs/sketch_tools.png)
 
+The **Sketch** tool bar (second row, under the main one) has every sketch
+tool and, after **Belts**, the tools that make belts (Belt from Sketch, Belt
+Path, Curved Belt, Outline Belt) - the same commands as Tools > Sketch / Belts,
+with the same shortcuts (shown in each button's tooltip). The drawing options
+(Width, Corner R, Arc method, coordinate input, ...) appear on the first row,
+showing only what the active tool uses.
+
 1. **Geometry first**, like any CAD tool:
-   - **Tools > Sketch Line (S)** draws construction lines and tangent arcs
-     (L / A), and **Tools > Sketch Arc (Shift+S)** draws a 3-point arc
-     (start, end, a point on the arc).
+   - **Sketch Line (S)** draws construction lines and tangent arcs (L / A),
+     and **Sketch Arc (Shift+S)** draws an arc, by the toolbar's **Arc**
+     method:
+     - *3 points*: the start, the end, then a point the arc passes through;
+     - *Center, start, end*: the center, the start (sets the radius), then
+       sweep round and click the end - the way you sweep sets clockwise or
+       counter-clockwise, and it may go past half a turn. A typed end point
+       goes counter-clockwise.
    - Basic shapes: **Sketch Rectangle (Shift+R)** (two corners),
      **Sketch Circle (Shift+C)** (center, radius) and **Sketch Polygon
      (Shift+G)** (center, a corner; toolbar Sides). Corner R rounds the
@@ -292,8 +304,8 @@ Sketch geometry is saved in the layout (`sketch`), exported to DXF on the
 SKETCH layer, and ignored by physics. Select a sketch line and press Delete
 to remove it, or use Tools > Clear Sketch. Shortcuts that skip the sketch
 step:
-- **Draw Curved Belt (U)**: click the start, the end, then a point on the
-  arc (or type it as `x,y`) for a real curved belt - parcels turn about the
+- **Draw Curved Belt (U)**: an arc by either Arc method (3 points, or
+  center, start, end) for a real curved belt - parcels turn about the
   arc's center, from the start towards the end. The toolbar's Width sets the
   belt width; the preview shows the band with its radius, sweep and CW / CCW.
 - **Draw Belt Outline (O)**: click the corners of any polygon. The first edge
