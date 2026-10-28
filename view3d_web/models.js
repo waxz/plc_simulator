@@ -90,6 +90,7 @@ export function buildConsole(panel) {
   // Title plate along the back edge.
   const title = textPlate(panel.title || panel.id, Math.min(W - 0.04, 0.32), 0.035, { bold: true, bg: "#d9dcdf", fg: "#1c2024" });
   title.position.set(0, -D / 2 + 0.03, 0.005);
+  title.rotation.z = Math.PI;                    // read from the operator's side (+y)
   desk.add(title);
   const devices = new Map();
   for (const d of panel.devices) {
@@ -100,6 +101,7 @@ export function buildConsole(panel) {
     desk.add(unit.group);
     const legend = textPlate(d.label, 0.088, 0.02);
     legend.position.set(x, y + 0.048, 0.005);
+    legend.rotation.z = Math.PI;
     desk.add(legend);
     devices.set(d.id, unit);
   }
@@ -143,9 +145,11 @@ function buildDevice(d) {
     unit.rest = 0.017;
     unit.travel = 0.006;
   }
-  if (unit.cap) unit.cap.userData.button = d.id;
-  if (unit.knob) unit.knob.userData.button = d.id;
-  group.traverse((o) => { o.userData.label = `${d.label} (${d.kind === "led" ? "lamp" : d.style})`; });
+  // The whole operator device (cap, ring, knob) presses it; lamps only show.
+  group.traverse((o) => {
+    o.userData.label = `${d.label} (${d.kind === "led" ? "lamp" : d.style})${d.kind === "led" ? "" : " - click to press"}`;
+    if (d.kind !== "led") o.userData.button = d.id;
+  });
   return unit;
 }
 

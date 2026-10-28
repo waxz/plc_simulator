@@ -56,6 +56,7 @@ const ui = { drawing: true, labels: false };
 // -- small helpers ---------------------------------------------------------------------------
 
 const unitBox = new THREE.BoxGeometry(1, 1, 1).translate(0, 0, 0.5);     // bottom at z = 0
+const noPick = () => {};          // the floor, grid and floor plan: never under the mouse
 const materials = new Map();
 function mat(color, extra = {}) {
   const key = `${color}|${JSON.stringify(extra)}`;
@@ -128,10 +129,12 @@ function buildFloor(bounds) {
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(size, size), mat(COLORS.floor, { roughness: 0.95 }));
   floor.position.set(cx, cy, 0);
   floor.receiveShadow = true;
+  floor.raycast = noPick;
   layout.add(floor);
   const grid = new THREE.GridHelper(Math.ceil(size), Math.ceil(size), COLORS.gridMajor, COLORS.grid);
   grid.rotation.x = Math.PI / 2;
   grid.position.set(Math.round(cx), Math.round(cy), 0.002);
+  grid.raycast = noPick;
   layout.add(grid);
 }
 
@@ -151,6 +154,7 @@ function buildDrawing(polylines) {
   geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
   live.drawing = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: COLORS.drawing }));
   live.drawing.visible = ui.drawing;
+  live.drawing.raycast = noPick;
   layout.add(live.drawing);
 }
 
@@ -479,6 +483,7 @@ function pick(event) {
 }
 renderer.domElement.addEventListener("pointermove", (e) => {
   const hit = e.buttons ? null : pick(e);
+  renderer.domElement.style.cursor = hit && hit.object.userData.button ? "pointer" : "";
   if (hit) {
     tip.textContent = hit.object.userData.label;
     tip.style.left = `${e.clientX + 14}px`;
@@ -539,5 +544,7 @@ function animate() {
   renderer.render(scene, camera);
 }
 
+// For debugging and automated checks in the browser console.
+window.view3d = { THREE, scene, camera, controls, renderer, live, pick: (x, y) => pick({ clientX: x, clientY: y }) };
 loadScene().then(connect);
 animate();
