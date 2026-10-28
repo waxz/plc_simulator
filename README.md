@@ -436,12 +436,20 @@ an LED. Dragging on the canvas always pans the view.
 Add `--exchange-config <file.json>` to override the MQTT/TCP settings baked into
 the workspace config (see `tcp_exchange_config.json` for the shape).
 
-The simulation runs on its own thread, decoupled from the window
-(`sim_runner.py`): physics and the PLC exchange tick every 2 ms of wall time,
-while the window only draws, at `--render-fps` (default 30). A slow frame -
-lots of parcels, a big drawing - never slows the simulation down, and a
-10 ms exchange channel really goes out every 10 ms. The window holds the
-simulation lock only while it draws the scene (a few ms).
+The simulation runs in its own process, decoupled from the window
+(`sim_process.py`): physics, the PLC exchange (its TCP server - the PLC
+connects to that process) and, with `--web-ui`, the web dashboard tick every
+2 ms of wall time on a CPU core of their own (`sim_runner.py`), while the
+window only draws, at `--render-fps` (default 30). Each frame the window
+takes one snapshot - parcels, belt / sensor / lamp / button states - and
+sends play, speed, button presses, Clear and Reset back. A slow frame - lots
+of parcels, a big drawing, dragging the window - never slows the simulation
+down, and a 10 ms exchange channel really goes out every 10 ms. On Windows
+the process opts out of power throttling (a process without a window of its
+own is otherwise run as background work, measured ~20 % slower).
+`--no-sim-process` keeps the simulation on a thread of the window's process
+instead (it then shares the interpreter lock with the window: the window
+holds it only while drawing the scene, a few ms per frame).
 
 Speed: `--speed 1` (real time, default), `--speed 4` (four times faster), or
 `--speed max` (as fast as the host can - physics runs flat out in 8 ms
@@ -456,8 +464,9 @@ time, scan) run on wall time.
 python main.py test_config.json --speed max --render-fps 20
 ```
 
-`--no-sim-thread` steps physics once per frame instead (the old behaviour;
-"max" is then 8x). `--headless` always uses the simulation thread.
+`--no-sim-process --no-sim-thread` steps physics once per frame instead (the
+old behaviour; "max" is then 8x). `--headless` runs in one process, on the
+simulation thread.
 
 How many parcels run in real time: the physics takes 250 steps per simulated
 second and its cost grows with the parcel count. `python bench_physics.py`
@@ -466,12 +475,18 @@ measures it on a synthetic plant (same physics settings as
 
 | Parcels | ms per step | Real-time factor |
 |---|---|---|
-| 50 | 0.57 | 7x |
-| 100 | 1.15 | 3.4x |
-| 200 | 2.2 | 1.8x |
-| 400 | 4.4 | 0.9x |
+| 100 | 0.75 | 5x |
+| 200 | 1.5 | 2.6x |
+| 400 | 3.2 | 1.2x |
 
-The window and the PLC exchange take some of that headroom.
+The per-parcel geometry - which belts hold each parcel, laser banner beams,
+IR sensor boxes - runs as compiled loops over all parcels at once
+(`physics_kernels.py`, numba; compiled on first use and cached, so the very
+first start takes a few seconds longer). They repeat the Python's
+arithmetic exactly - a run gives the same numbers with or without them;
+`CONVEYOR_SIM_KERNELS=0` switches them off. What remains per parcel is
+pymunk's own Python layer (its velocity callback, position / velocity reads),
+which is why the cost still grows with the parcel count.
 
 ### Belt drives, traction, and timing
 

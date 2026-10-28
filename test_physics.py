@@ -282,6 +282,94 @@ class BeltHandoffWiringTest(unittest.TestCase):
         self.assertAlmostEqual(parcel.body.velocity.x, 3.0, places=1)
 
 
+
+class CompiledKernelTest(unittest.TestCase):
+    """physics_kernels against the Python they replace."""
+
+    def setUp(self):
+        import physics_kernels
+        if not physics_kernels.AVAILABLE:
+            self.skipTest("numba kernels switched off")
+        self.kernels = physics_kernels
+
+    def test_belts_under_all_matches_testing_every_belt(self):
+        import random
+        from config_parser import Belt, load_config
+        from surface import belt_contains
+        config = load_config("test_config.json")
+        # plus a curved belt (wrapping its angles) and a drawn path belt
+        config.belts.append(Belt(id="curve", type="curved", shape="arc", x=18.0, y=-3.0, radius=2.0, beltWidth=1.0,
+                                 rotation=0.0, startAngle=300.0, endAngle=60.0, speed=1.0, directionAngle=90.0,
+                                 color="#fff"))
+        from cad.belts import path_belt
+        config.belts.append(path_belt("path", [(14.0, 0.0), (17.0, 0.0), (17.0, 3.0)], [0.0, 0.4, 0.0], False, 0.8))
+        arrays = self.kernels.BeltArrays(config.belts)
+        rng = random.Random(3)
+        import numpy as np
+        xy = np.array([(rng.uniform(13.0, 22.0), rng.uniform(-21.0, 16.0)) for _ in range(5000)])
+        hits, counts = self.kernels.belts_under_all(xy, arrays)
+        for i, (x, y) in enumerate(xy.tolist()):
+            fast = [config.belts[k].id for k in hits[i, :counts[i]].tolist()
+                    if arrays.kind[k] != self.kernels.KIND_PATH or belt_contains(config.belts[k], x, y)]
+            slow = [b.id for b in config.belts if belt_contains(b, x, y)]
+            self.assertEqual(fast, slow, (x, y))
+        self.assertGreater(int((counts > 0).sum()), 500)
+
+    def test_banner_and_ir_kernels_match_the_python(self):
+        import random
+        import numpy as np
+        from config_parser import Sensor
+        from math_utils import get_rect_vertices
+        rng = random.Random(5)
+        engine = PhysicsEngine(SimulatorConfig())
+        for trial in range(300):
+            sensor = Sensor(id="s", x=rng.uniform(-1, 1), y=rng.uniform(-1, 1), width=rng.uniform(0.05, 0.6),
+                            height=rng.uniform(0.2, 1.4), rotation=rng.uniform(-180, 180), sensorType="laser_banner",
+                            laserCount=rng.randint(4, 40), beamDistance=rng.uniform(0.01, 0.06), label="", color="#f00")
+            engine.parcels = []
+            for _ in range(rng.randint(1, 4)):
+                engine.add_parcel(sensor.x + rng.uniform(-0.8, 0.8), sensor.y + rng.uniform(-0.8, 0.8),
+                                  rng.uniform(0.1, 0.7), rng.uniform(0.1, 0.7), angle_deg=rng.uniform(0, 360))
+            verts = np.array([engine._parcel_vertices(p) for p in engine.parcels])
+            slow = engine._banner_beams(sensor, sensor.laserCount, sensor.beamDistance, engine.parcels)
+            out = np.zeros(sensor.laserCount, dtype=np.bool_)
+            rad = math.radians(sensor.rotation)
+            self.kernels.banner_beams(sensor.x, sensor.y, math.cos(rad), math.sin(rad), sensor.width / 2.0,
+                                      sensor.laserCount, sensor.beamDistance, verts, out)
+            self.assertEqual(out.tolist(), slow, f"banner trial {trial}")
+            box = get_rect_vertices(sensor.x, sensor.y, sensor.width, sensor.height, sensor.rotation)
+            slow_ir = any(engine._polygons_overlap(box, engine._parcel_vertices(p)) for p in engine.parcels)
+            self.assertEqual(bool(self.kernels.boxes_overlap(np.array(box), verts)), slow_ir, f"ir trial {trial}")
+        # the per-step corner array is _parcel_vertices for every parcel, bit for bit
+        xy = np.array([p.body.position for p in engine.parcels])
+        self.assertEqual(engine._parcel_corner_array(xy).tolist(),
+                         [[list(v) for v in engine._parcel_vertices(p)] for p in engine.parcels])
+
+    def test_a_run_is_the_same_with_and_without_the_kernels(self):
+        import random
+        from config_parser import load_config
+
+        def run():
+            random.seed(99)
+            config = load_config("test_config.json")
+            for belt in config.belts:
+                belt.speed = 1.5
+            engine = PhysicsEngine(config)
+            for _ in range(240):                                     # 12 s
+                engine.update(0.05)
+            return ([(round(p.body.position.x, 9), round(p.body.position.y, 9)) for p in engine.parcels],
+                    {s.id: s.risingEdges for s in config.sensors}, dict(engine.delivered))
+
+        with_kernels = run()
+        self.kernels.AVAILABLE = False
+        try:
+            without = run()
+        finally:
+            self.kernels.AVAILABLE = True
+        self.assertEqual(with_kernels, without)
+        self.assertGreater(len(with_kernels[0]), 10)
+
+
 if __name__ == "__main__":
     unittest.main()
 

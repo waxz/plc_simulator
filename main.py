@@ -48,7 +48,16 @@ def run_pygame(config, physics_engine, mqtt, headless: bool, runner=None, config
             elif cmd == 'CLEAR':
                 print("Parcels cleared")
 
-            if runner is not None:
+            if hasattr(physics_engine, "poll"):
+                # Simulation process (sim_process.py): take its newest
+                # snapshot, forward play / speed.
+                physics_engine.poll()
+                physics_engine.set_playing(renderer.playing)
+                physics_engine.set_speed(renderer.speed)
+                if not physics_engine.alive:
+                    print("[main] The simulation process stopped.")
+                    running = False
+            elif runner is not None:
                 # Physics + exchange run on the runner's own thread; this
                 # loop only renders and forwards play/pause.
                 runner.playing = renderer.playing
@@ -147,6 +156,12 @@ def build_argparser() -> argparse.ArgumentParser:
              "exchange channels their interval (default on; --no-sim-thread steps physics once per frame). "
              "Always on with --headless.",
     )
+    parser.add_argument(
+        "--sim-process", action=argparse.BooleanOptionalAction, default=True,
+        help="Run the simulation (physics, PLC exchange, web UI) in its own process, with a CPU core of "
+             "its own, and only the window here (default on; --no-sim-process keeps it on a thread of this "
+             "process). Not with --headless.",
+    )
     parser.add_argument("--sim-tick-ms", type=float, default=2.0, help="Tick period of the simulation thread (default 2 ms)")
     parser.add_argument(
         "--speed", default="1",
@@ -156,6 +171,26 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--render-fps", type=int, default=30,
                         help="Window frame rate (default 30); the simulation doesn't wait for it")
     return parser
+
+
+def run_with_simulation_process(args, config, speed):
+    """The window here, the simulation (physics, PLC exchange, web UI) in a
+    child process with a CPU core of its own - see sim_process.py."""
+    from sim_process import PhysicsProxy
+    settings = {"config": args.config, "exchange_config": args.exchange_config,
+                "channel_registry": args.channel_registry, "show_layout": args.show_layout,
+                "web_ui": args.web_ui, "web_host": args.web_host, "web_port": args.web_port,
+                "tick_s": args.sim_tick_ms / 1000.0, "speed": speed}
+    proxy = PhysicsProxy(config, settings)
+    print("[main] Starting the simulation process...")
+    proxy.start()
+    print(f"[main] Physics + exchange in their own process (pid {proxy.process.pid}, speed "
+          f"{'max' if speed is None else f'{speed:g}x'}); the window renders at {args.render_fps} fps.")
+    try:
+        run_pygame(config, proxy, proxy.exchange, False, config_path=args.config, speed=speed,
+                   render_fps=args.render_fps)
+    finally:
+        proxy.stop()
 
 
 def main():
@@ -173,6 +208,10 @@ def main():
         apply_exchange_config(config, args.exchange_config)
         print(f"Loaded exchange settings from {args.exchange_config}.")
     print(f"Loaded {len(config.belts)} belts, {len(config.sensors)} sensors.")
+
+    if args.sim_process and not args.headless:
+        run_with_simulation_process(args, config, speed)
+        return
 
     # Shared by both: physics mutates config.belts/config.sensors on this
     # (main) thread every update(), while MQTTSyncEngine reads/writes those

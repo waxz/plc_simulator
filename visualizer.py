@@ -10,7 +10,6 @@ import time
 from typing import Tuple, Optional, List
 from config_parser import SimulatorConfig, Belt, Sensor, ControlButton, LedIndicator
 from math_utils import get_rect_vertices, point_in_polygon, point_in_arc, get_belt_polygon, get_default_quad_vertices
-from physics import parcel_speed_info
 from surface import belt_contains
 import devices
 import hmi_style as hmi
@@ -261,7 +260,7 @@ class Renderer:
             if event.type in (pygame.KEYDOWN, pygame.KEYUP) and self._button_for_key(event) is not None:
                 if self.playing:
                     button = self._button_for_key(event)
-                    (devices.press if event.type == pygame.KEYDOWN else devices.release)(button)
+                    self._set_button(button, event.type == pygame.KEYDOWN)
                     if self.selected_item == button:
                         self.editor_ui.refresh_button_state()
                 continue
@@ -298,7 +297,7 @@ class Renderer:
 
                     if isinstance(clicked_item, ControlButton):
                         if  self.playing:
-                            devices.press(clicked_item)  # momentary/latching, NO/NC contact
+                            self._set_button(clicked_item, True)  # momentary/latching, NO/NC contact
                             self.pressed_button = clicked_item
                             self.editor_ui.show_props_for(clicked_item)
                             self.editor_ui.refresh_button_state()
@@ -318,7 +317,7 @@ class Renderer:
             elif event.type == pygame.MOUSEBUTTONUP:
                 if event.button == 1:
                     if self.pressed_button:
-                        devices.release(self.pressed_button)
+                        self._set_button(self.pressed_button, False)
                         if self.selected_item == self.pressed_button:
                             self.editor_ui.show_props_for(self.pressed_button)
                             self.editor_ui.refresh_button_state()
@@ -340,6 +339,15 @@ class Renderer:
         elif cmd == "OPEN_MANAGER":
             self.editor_ui.open_manager_panel()
         return cmd
+
+    def _set_button(self, button, pressed: bool):
+        """Press / release an operator button: here (the lamp-and-contact
+        state shown at once) and, when the simulation runs in its own
+        process, there too (sim_process.PhysicsProxy.set_button)."""
+        (devices.press if pressed else devices.release)(button)
+        remote = getattr(self.physics, "set_button", None)
+        if remote is not None:
+            remote(button.id, pressed)
 
     def _button_for_key(self, event):
         """The button whose `key` is this key event's character, if any."""
@@ -835,14 +843,14 @@ class Renderer:
 
     def draw_parcels(self, physics_engine):
         if not physics_engine: return
-        # Snapshot: with --sim-thread the runner thread adds/removes parcels concurrently.
+        # Plain data (physics.ParcelView), from this process's engine or a
+        # simulation process's snapshot (sim_process.py).
+        views = physics_engine.parcel_views()
+        self._parcel_count = len(views)
         outline = 1 if self.zoom * self.scale < 60 else 2
-        for parcel in list(physics_engine.parcels):
+        for parcel in views:
             color = self._hex_to_rgb(parcel.color)
-            points = []
-            for v in parcel.shape.get_vertices():
-                wv = parcel.body.position + v.rotated(parcel.body.angle)
-                points.append(self._world_to_screen(wv.x, wv.y))
+            points = [self._world_to_screen(x, y) for x, y in parcel.points]
             if len(points) >= 3:
                 pygame.draw.polygon(self.screen, color, points)
                 pygame.draw.polygon(self.screen, hmi.PARCEL_EDGE, points, outline)
@@ -850,13 +858,13 @@ class Renderer:
             # [V] shows actual vs. belt speed per parcel (red when it lags
             # more than 10 %) - a check, not something to look at all day.
             if self.show_values:
-                actual, target = parcel_speed_info(parcel)
+                actual, target = parcel.actual_speed, parcel.target_speed
                 if target is not None:
                     text = f"{actual:.2f}/{target:.2f}"
                     lagging = actual < target * 0.9
                 else:
                     text, lagging = f"{actual:.2f}", False
-                sx, sy = self._world_to_screen(parcel.body.position.x, parcel.body.position.y)
+                sx, sy = self._world_to_screen(parcel.x, parcel.y)
                 self._queue_label(text, (sx, sy), self.PRIORITY_DEVICE, hmi.ALARM if lagging else hmi.TEXT)
 
     def _recent_ratio(self, sim_time: float) -> float:
@@ -983,7 +991,7 @@ class Renderer:
             # Amber when the simulation can't keep the speed asked for.
             behind = self.playing and self.speed is not None and ratio < 0.9 * self.speed
             fields.append(("REAL", f"{ratio:4.2f}x", hmi.WARNING if behind else hmi.TEXT))
-            fields.append(("PARCELS", f"{len(physics_engine.parcels)}", hmi.TEXT))
+            fields.append(("PARCELS", f"{getattr(self, '_parcel_count', 0)}", hmi.TEXT))
             delivered = sum(getattr(physics_engine, "delivered", {}).values())
             fields.append(("DELIVERED", f"{delivered}", hmi.TEXT))
             faults = sum(1 for b in self.config.belts if b.fault)
