@@ -32,11 +32,11 @@ Behaviour, once per scan (step()):
     drive fault.
 
 Machines with control "plc" (machines.py: stoppers, robot arms, elevators)
-are run by MachineControl, with the same decisions as their built-in auto
-mode, while the line runs: a stopper holds what arrives for its holdTime and
-then lets it pass, a robot starts a cycle when a part waits and there is
-somewhere to put it, an elevator loads, lifts, unloads and comes back
-(running its platform belt only for that). Stopped, every stopper stays up.
+are run by MachineControl while the line runs: a stopper holds what
+arrives for its holdTime and then lets it pass, a robot starts a cycle
+when its pick sensor sees a part and there is somewhere to put it, an
+elevator loads, lifts, unloads and comes back (running its platform belt
+only for that). Stopped, every stopper stays up.
 
 step() returns the events of that scan as text, for logs.
 
@@ -181,7 +181,7 @@ class MachineControl:
           - tracking: each scanner read gives code -> destination (what a
             warehouse system answers); a "plc" diverter fires when the code
             in its zone is for its destination
-          - "plc" turntables: the same cycle as auto mode
+          - "plc" turntables: load at autoFrom, turn to autoTo, unload, back
           - "plc" accumulators: released while the line runs
           - "plc" right-angle transfers: lift once a pallet stands centred,
             run until it has left

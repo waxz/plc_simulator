@@ -220,8 +220,7 @@ The Qt layout editor is where belt shapes and positions are designed:
   diverter's `divert`, and **Feedback (simulator -> PLC)**, such as a
   sensor's output, a belt's `actualSpeed` or a stopper's `isUp`. Use them to
   check the API before writing the PLC side. **Command source** (the
-  component's `control`: `auto`, `plc` or `manual`; a sensor `sim` or
-  `manual`) is set here as part of the layout. The live values, and setting
+  component's `control`: `plc` or `manual`; a sensor `sim` or `manual`) is set here as part of the layout. The live values, and setting
   commands by hand, are in the simulator window's inspector (see below).
 - **Run in Simulator** (toolbar, `F5`) shows the layout as it is on the
   canvas in the simulator **without saving it**: it writes a run copy to
@@ -542,8 +541,8 @@ The inspector also has the component's **PLC I/O**: its PLC commands and
 feedback by name (`io_signals.py`), with their values live. The panel
 scrolls with the mouse wheel when they don't fit.
 
-- **Command source** buttons: `auto` (its own controller), `plc` (the PLC
-  data exchange) or `manual`; a sensor has `sim` or `manual`. Click one to
+- **Command source** buttons: `plc` (the PLC data exchange) or `manual`;
+  a sensor has `sim` or `manual`. Click one to
   switch the running simulation, even while it runs.
 - In `manual` the commands become controls: an ON / OFF toggle for a BOOL,
   a text box for a number (type it, then Enter). PLC frames leave that
@@ -674,17 +673,16 @@ folders. Each stopper, robot arm and elevator has a `control` setting:
   does nothing.
 - `"manual"`: it follows command fields you set by hand in the simulator
   window's inspector (PLC I/O); PLC frames leave them alone.
-- `"auto"`: a small built-in controller runs it, for a layout that should
-  work without any PLC.
-
-Its feedback fields go to the PLC either way.
+Its feedback fields go to the PLC either way. Layouts saved with the
+former `"auto"` (a built-in controller) load as `"plc"`: that logic is
+the PLC program's (`plc_logic.py`) now.
 
 | Machine | Settings | Behaviour | PLC command / feedback |
 |---|---|---|---|
 | Pallet | `width` (along travel) x `height`, `mass`, `capacity`, `level` | Rides the belts like a parcel (same drive, sensors, collisions) and is never taken by a sink or Clear Parcels; Reset puts it back at its start. Its **load** rides on it: parcels a robot puts on it, or that a source makes right above it. A sink it crosses takes the load (counted as delivered) and lets the pallet go on. | - |
-| Stopper | `width` across the belt, `depth`, `rotation` = the travel it stops, `actuationTime`; auto: `holdTime`, `releaseTime` | While up, a bar across the belt holds whatever arrives - typically a pallet before an intersection, a robot or a lift. It never rises under a pallet. Auto: holds an arrival for `holdTime`, then lowers for `releaseTime`. | `release` BOOL / `isUp`, `occupied` (something waiting) BOOLs |
-| Robot arm | 6-axis robot on a pedestal at `x, y`: `reach`, `mountHeight`, `toolLength`, `pickX/Y`, `placeX/Y`, `pickRadius`, `cycleTime`, `speedOverride`, `pickLevel`, `placeLevel`, `placeTarget` "any" / "pallet", `pickSensorId` | A FANUC-style articulated arm (see [6-axis robot](#6-axis-robot) below). A cycle: above the pick point, straight down onto the part's top, grip (a pallet's load first, else a parcel), lift, carry, down onto the place point and let go - onto a pallet with room there, else (`placeTarget` "any") onto the belt / floor - and back to its perch. Its pick trigger is an external IR sensor at the pick point (`pickSensorId`, a sensor in the layout wired to the PLC): the PLC program starts a cycle when it is blocked and does not count a part waiting there as a jam; auto mode waits for it too. Without one, the robot's own `partAtPick` is used. Auto: starts when a part waits and there is somewhere to put it. The designer shows its reach and the pick (green) / place (orange) points; dropping or pasting a robot moves them along. | see below |
-| Elevator | footprint `width` x `height`, `beltId` (its platform belt: an ordinary belt on the footprint), `levels`, `levelHeight`, `liftSpeed`; auto: `autoFrom`, `autoTo` | A lift between floor levels. Whatever is on the platform - and the platform belt - travels with it and arrives on the new level. Auto: runs its belt until a part is on board at `autoFrom`, lifts it to `autoTo`, runs the belt until the platform is empty, and comes back. | `targetLevel` BYTE / `moving`, `atLevel`, `occupied` BOOLs, `level` BYTE |
+| Stopper | `width` across the belt, `depth`, `rotation` = the travel it stops, `actuationTime`; for the PLC program: `holdTime`, `releaseTime` | While up, a bar across the belt holds whatever arrives - typically a pallet before an intersection, a robot or a lift. It never rises under a pallet. The PLC program holds an arrival for `holdTime`, then lowers it for `releaseTime`. | `release` BOOL / `isUp`, `occupied` (something waiting) BOOLs |
+| Robot arm | 6-axis robot on a pedestal at `x, y`: `reach`, `mountHeight`, `toolLength`, `pickX/Y`, `placeX/Y`, `pickRadius`, `cycleTime`, `speedOverride`, `pickLevel`, `placeLevel`, `placeTarget` "any" / "pallet", `pickSensorId` | A FANUC-style articulated arm (see [6-axis robot](#6-axis-robot) below). A cycle: above the pick point, straight down onto the part's top, grip (a pallet's load first, else a parcel), lift, carry, down onto the place point and let go - onto a pallet with room there, else (`placeTarget` "any") onto the belt / floor - and back to its perch. Its pick trigger is an external IR sensor at the pick point (`pickSensorId`, a sensor in the layout wired to the PLC): the PLC program starts a cycle when it is blocked and there is somewhere to put the part, and does not count a part waiting there as a jam. Without one, it uses the robot's own `partAtPick`. The designer shows its reach and the pick (green) / place (orange) points; dropping or pasting a robot moves them along. | see below |
+| Elevator | footprint `width` x `height`, `beltId` (its platform belt: an ordinary belt on the footprint), `levels`, `levelHeight`, `liftSpeed`; for the PLC program: `autoFrom`, `autoTo` | A lift between floor levels. Whatever is on the platform - and the platform belt - travels with it and arrives on the new level. The PLC program: runs its belt until a part is on board at `autoFrom`, lifts it to `autoTo`, runs the belt until the platform is empty, and comes back. | `targetLevel` BYTE / `moving`, `atLevel`, `occupied` BOOLs, `level` BYTE |
 
 #### 6-axis robot
 
@@ -757,7 +755,7 @@ bit-identical.
   `mqtt_message_binding.py`).
 
 `plc_logic.py` (the program `plc_mock.py` runs) drives `control: "plc"`
-machines with the same decisions as auto mode, while the line runs. When
+machines while the line runs. When
 the line is stopped, every stopper stays up.
 
 `machines_demo.json` uses all four:
@@ -798,10 +796,9 @@ python main.py test_config.json --channel-registry channels.json --web-ui
 ### Logistics equipment: identification, sorting, accumulation, safety
 
 `logistics.py` runs these. They are in the designer's **Identification**,
-**Sorting** and **Safety** library folders. Each device works by itself
-(`control: "auto"`), follows the PLC (`"plc"`) or follows commands set by
-hand (`"manual"`); its feedback goes to the PLC either way. Guard doors,
-safety relays and chutes have no auto mode: `"plc"` or `"manual"`.
+**Sorting** and **Safety** library folders. Each device follows the PLC
+(`control: "plc"`) or commands set by hand (`"manual"`); its feedback goes
+to the PLC either way.
 Like the machines, each one joins the generated I/O frames when a layout has
 it (`MACHINE_FIELDS`).
 
@@ -832,9 +829,9 @@ the source's mass range.
 | Equipment | Set up | Does | PLC signals (in / out) |
 |---|---|---|---|
 | Scanner | zone over the belt, `scannerType` "barcode" / "rfid" / "dws" | Reads each parcel once as it enters. A barcode scanner gives a no-read on an unreadable label, RFID always reads, and a DWS (dimension-weight-scan) also measures the parcel | - / `code` UDINT, `destination` BYTE (as a warehouse system would answer), `readCount` UINT (+1 per parcel), `noRead`, `present`; DWS: `weight`, `measuredLength`, `measuredWidth`, `measuredHeight` REALs |
-| Diverter | zone on the belt, `diverterType` "pusher" / "wheels", `divertAngle` (+-90 pusher, ~30 wheels), `speed`, `destination` | Steers the parcels in its zone onto the branch while active. Auto: active while a readable parcel for its destination is there. Following commands: active while `divert` is on, at `commandSpeed` m/s and `commandAngle` degrees exactly as commanded (both start at the layout's `speed` / `divertAngle`; `plc_mock.py` sends those) | `divert` BOOL, `commandSpeed` REAL, `commandAngle` REAL / `active`, `present`, `presentCode` UDINT, `diverted` UINT |
-| 90° transfer | zone (`width` along the travel, `height` across), `crossAngle` (+90 left / -90 right), `speed`, `liftTime`, `stop` | The chain transfer of a pallet line, at a corner or junction of roller conveyors. A pallet stops centred on it (`stop`). Chain strands then lift it off the rollers and carry it sideways onto the crossing conveyor, without turning it, and drop. Auto: transfers whatever arrives (a corner) | `transfer` / `present`, `centered` (stopped on it, ready), `up`, `transferred` UINT |
-| Turntable | `radius`, `beltId` (its platform belt), `angles`, `turnSpeed` | Turns its belt, and what is on it, between positions. Auto: loads at `autoFrom`, turns to `autoTo`, unloads, turns back | `targetIndex` BYTE / `index` BYTE, `turning`, `inPosition`, `occupied` |
+| Diverter | zone on the belt, `diverterType` "pusher" / "wheels", `divertAngle` (+-90 pusher, ~30 wheels), `speed`, `destination` | Steers the parcels in its zone onto the branch while active. The PLC program: active while a readable parcel for its destination is there. Following commands: active while `divert` is on, at `commandSpeed` m/s and `commandAngle` degrees exactly as commanded (both start at the layout's `speed` / `divertAngle`; `plc_mock.py` sends those) | `divert` BOOL, `commandSpeed` REAL, `commandAngle` REAL / `active`, `present`, `presentCode` UDINT, `diverted` UINT |
+| 90° transfer | zone (`width` along the travel, `height` across), `crossAngle` (+90 left / -90 right), `speed`, `liftTime`, `stop` | The chain transfer of a pallet line, at a corner or junction of roller conveyors. A pallet stops centred on it (`stop`). Chain strands then lift it off the rollers and carry it sideways onto the crossing conveyor, without turning it, and drop. The PLC program: transfers whatever arrives (a corner) | `transfer` / `present`, `centered` (stopped on it, ready), `up`, `transferred` UINT |
+| Turntable | `radius`, `beltId` (its platform belt), `angles`, `turnSpeed` | Turns its belt, and what is on it, between positions. The PLC program: loads at `autoFrom`, turns to `autoTo`, unloads, turns back | `targetIndex` BYTE / `index` BYTE, `turning`, `inPosition`, `occupied` |
 | Accumulation conveyor | `beltIds` (its zones, in flow order), `mode` "singulation" / "train" | Zero-pressure accumulation, with a photo-eye at each zone's end. A full zone holds its belt while the next zone is occupied ("train": unless the next one is moving). The last zone discharges while released | `release` / `zones` UINT (bit mask), `full` |
 | Chute | a sink with `capacity`, `emptyTime` | Holds `capacity` parcels, then is `full` and parcels back up in front of it. Emptied after `emptyTime`, or by `empty`. Only chutes go on the exchange, not plain sinks | `empty` / `count` UINT, `full` |
 | Guard door | `width` | The operator opens and closes it: click it in the simulator or the 3D view. The PLC can lock it | `lock` / `closed`, `locked` |
@@ -843,7 +840,7 @@ the source's mass range.
 The PLC program (`plc_logic.py`) drives `control: "plc"` equipment:
 - It tracks every scanner read (code to destination) and fires a diverter
   when the code in its zone is for that diverter's destination.
-- It runs turntables through the same cycle as auto mode.
+- It runs turntables: load at `autoFrom`, turn to `autoTo`, unload, turn back.
 - It releases accumulation while the line runs.
 - It empties a chute without an empty time a few seconds after it fills.
 - It locks guard doors while the line runs, and resets safety relays with

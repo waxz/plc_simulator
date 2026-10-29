@@ -1,6 +1,6 @@
 import json
-from typing import List, Optional, Literal, Dict, Any, Tuple, Union
-from pydantic import BaseModel, Field, PrivateAttr
+from typing import Annotated, List, Optional, Literal, Dict, Any, Tuple, Union
+from pydantic import BaseModel, BeforeValidator, Field, PrivateAttr
 
 
 class DriveConfig(BaseModel):
@@ -35,13 +35,19 @@ class PathNode(BaseModel):
 
 
 # Where a component's command fields come from (its `control`):
-#   "plc"    - the PLC data exchange writes them (the default)
-#   "manual" - the operator sets them by hand (the designer's Data Exchange
-#              section, live in the running simulator); frames from the PLC
-#              leave them alone, so a component can be tested on its own
-# Machines also have "auto" (ControlMode below); a sensor's "command" is
-# its own output, forced by hand in "manual" (SensorControl).
-CommandSource = Literal["plc", "manual"]
+#   "plc"    - the PLC data exchange writes them (the default): nothing
+#              moves without a PLC (plc_mock.py's program or a real one)
+#   "manual" - the operator sets them by hand (the simulator window's
+#              inspector, PLC I/O); frames from the PLC leave them alone,
+#              so a component can be tested on its own
+# A sensor's "command" is its own output, forced by hand in "manual"
+# (SensorControl). Layouts saved with the former "auto" (a built-in
+# controller) load as "plc": that logic is the PLC program's now.
+def _from_auto(value):
+    return "plc" if value == "auto" else value
+
+
+CommandSource = Annotated[Literal["plc", "manual"], BeforeValidator(_from_auto)]
 SensorControl = Literal["sim", "manual"]
 
 
@@ -256,13 +262,12 @@ class LedIndicator(BaseModel):
 # ---------------------------------------------------------------------------
 # Machines (machines.py runs them in the simulation). Each one follows the
 # PLC's command fields (control "plc", the default: nothing moves without a
-# PLC - plc_mock.py's program, plc_logic.py, or a real one), the ones set by
-# hand (control "manual", see CommandSource), or runs itself (control
-# "auto": a small built-in controller, for a layout without a PLC) - its
-# feedback fields go to the PLC either way.
+# PLC - plc_mock.py's program, plc_logic.py, or a real one) or the ones set
+# by hand (control "manual", see CommandSource) - its feedback fields go to
+# the PLC either way.
 # ---------------------------------------------------------------------------
 
-ControlMode = Literal["auto", "plc", "manual"]
+ControlMode = CommandSource
 
 
 class Pallet(BaseModel):
@@ -295,8 +300,8 @@ class Stopper(BaseModel):
     Command (PLC -> simulator, control "plc"): `release` - 1 lowers it.
     Feedback (simulator -> PLC): `isUp` (actual position, after
     `actuationTime`) and `occupied` (something waiting at it).
-    control "auto": it holds whatever arrives for `holdTime` s, then lowers
-    for `releaseTime` s."""
+    plc_mock.py's program holds whatever arrives for `holdTime` s, then
+    lowers it for `releaseTime` s."""
     id: str
     x: float
     y: float
@@ -343,7 +348,7 @@ class RobotArm(BaseModel):
                 `placeReady`, `fault` + `faultCode` (BYTE: 1 out of reach,
                 2 joint limit), `cycles` (UINT16, wraps), the joints j1..j6
                 (deg) and the tool centre point tcpX/Y/Z (m) as REALs
-    control "auto": a cycle starts whenever a part is at the pick point and
+    plc_mock.py's program starts a cycle when its pick sensor sees a part and
     the place point is ready. Scripts drive it through
     machines.MachineRuntime.robot(id) (RobotHandle: move_to, grip, ...)."""
     id: str
@@ -358,8 +363,8 @@ class RobotArm(BaseModel):
     pickRadius: float = 0.4   # m: how close to the pick point a part's centre must be
     # The IR sensor (a Sensor id) at the pick point that tells the PLC a part
     # is there - a robot has no part detection of its own on the PLC side.
-    # The PLC program starts a cycle when it is blocked; auto mode waits
-    # for it too. None: the robot's own `partAtPick`.
+    # The PLC program starts a cycle when it is blocked. None: the PLC
+    # program uses the robot's own `partAtPick`.
     pickSensorId: Optional[str] = None
     label: str = ""
     color: str = "#7c3aed"
@@ -414,7 +419,7 @@ class RobotArm(BaseModel):
 class Elevator(BaseModel):
     """A lift between floor levels: a platform with its own conveyor - the
     belt `beltId`, an ordinary belt the elevator carries (put it on the
-    elevator's footprint; the PLC or the auto mode runs it like any belt).
+    elevator's footprint; the PLC runs it like any belt).
     Whatever is on the platform travels with it and arrives on the new
     level. `levels` floors (0 .. levels-1), `levelHeight` m apart, moving
     at `liftSpeed` m/s.
@@ -423,8 +428,8 @@ class Elevator(BaseModel):
     Feedback: `level` (the floor it is at, or last left), `moving`,
     `atLevel` (stopped at a floor) and `occupied` (something on the
     platform).
-    control "auto": loaded at `autoFrom` it carries the load to `autoTo`,
-    runs its belt until the platform is empty, and goes back."""
+    plc_mock.py's program: loaded at `autoFrom` it carries the load to
+    `autoTo`, runs its belt until the platform is empty, and goes back."""
     id: str
     x: float
     y: float
@@ -451,8 +456,7 @@ class Elevator(BaseModel):
 # ---------------------------------------------------------------------------
 # Logistics equipment (logistics.py runs them): identification, sorting,
 # accumulation and safety. Like the machines above, each follows the PLC
-# (control "plc", the default), commands set by hand ("manual") or works by
-# itself ("auto").
+# (control "plc", the default) or commands set by hand ("manual").
 # ---------------------------------------------------------------------------
 
 class Scanner(BaseModel):
@@ -496,12 +500,10 @@ class Diverter(BaseModel):
     travel) are steered at `divertAngle` degrees to the travel - +90 / -90
     for a pusher (left / right), about +-30 for pop-up wheels - at `speed`.
 
-    control "auto": active while a readable parcel for `destination` is in
-    the zone (a sorter's own tracking). control "plc" / "manual": active
-    while `divert` is on, at `commandSpeed` m/s and `commandAngle` degrees
+    Active while `divert` is on, at `commandSpeed` m/s and `commandAngle` degrees
     (logistics.diverter_motion). Both start at the layout's `speed` /
     `divertAngle` (the simulation's start / reset), and plc_mock.py's
-    program sends those.
+    program sends those (it fires for a code tracked to `destination`).
     Feedback: `active`, `present` (a parcel in the zone), `presentCode`
     (UDINT, its barcode; 0 for a no-read) and `diverted` (UINT count)."""
     id: str
@@ -535,9 +537,9 @@ class Turntable(BaseModel):
 
     Command (control "plc"): `targetIndex` (BYTE, into `angles`).
     Feedback: `index`, `turning`, `inPosition`, `occupied`.
-    control "auto": at `autoFrom` it runs its belt until a parcel is on
-    board, turns to `autoTo`, runs the belt until the table is empty, and
-    turns back."""
+    plc_mock.py's program: at `autoFrom` it runs its belt until a parcel is
+    on board, turns to `autoTo`, runs the belt until the table is empty,
+    and turns back."""
     id: str
     x: float
     y: float
@@ -568,9 +570,9 @@ class Transfer(BaseModel):
     without turning it, then drop. The zone is `width` along the travel and
     `height` across, centred at (x, y).
 
-    control "auto": transfers whatever arrives (a corner). control "plc":
-    lifts and runs while `transfer` is on (a junction: on for pallets that
-    turn off, off for those that go straight - then set `stop` false).
+    It lifts and runs while `transfer` is on (plc_mock.py's program: once a
+    pallet stands centred, until it has left; at a junction off for those
+    that go straight - then set `stop` false).
     Feedback: `present` (something in the zone), `centered` (stopped on the
     transfer, ready), `up` (lifted), `transferred` (UINT count)."""
     id: str
@@ -602,7 +604,8 @@ class Accumulator(BaseModel):
     one parcel per zone, gaps kept) or moving ("train": a held queue moves
     off together). The last zone discharges while `release` is on.
 
-    Command (control "plc"): `release`. control "auto": always released.
+    Command (control "plc"): `release` (plc_mock.py's program: while the
+    line runs).
     Feedback: `zones` (UINT bit mask, bit 0 = first zone, set = occupied),
     `full` (every zone occupied)."""
     id: str

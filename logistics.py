@@ -5,7 +5,7 @@ SafetyCircuit, and Sink capacity). PhysicsEngine owns one LogisticsRuntime
 and calls it each fixed step:
 
   before_drives(h)  safety circuits hold their belts stopped; accumulation
-                    zones and auto turntables set their belts' speeds;
+                    zones hold their belts;
                     chutes empty; turntables turn (carrying what is on them)
   steer()           after the belt drive set every parcel's motion: active
                     diverters steer the parcels in their zone onto the branch
@@ -14,11 +14,11 @@ and calls it each fixed step:
 
 Parcel identity: a source gives each parcel a barcode (its next number), a
 destination from its mix and, at its no-read rate, an unreadable label
-(identify). Scanners report them; auto diverters sort by them.
+(identify). Scanners report them; the PLC's tracking sorts by them.
 
-Each device runs itself (control "auto") or follows the PLC's command fields
-(control "plc", or set by hand: "manual"); the decisions are the functions below (accumulator_runs,
-turntable_auto), which plc_logic.py uses too.
+Each device follows its command fields: the PLC's (control "plc") or set by
+hand ("manual"). The decisions of a sorter's controller are functions below
+(accumulator_runs, turntable_auto) that the PLC program, plc_logic.py, uses.
 """
 import math
 import random
@@ -29,7 +29,7 @@ from config_parser import Accumulator, Diverter, SimulatorConfig, Transfer, Turn
 from math_utils import get_rect_vertices, point_in_polygon
 
 EYE_ZONE = 0.3              # m: an accumulation zone's photo-eye sees this far back from the zone's end
-TABLE_LOADED_S = 0.3        # auto turntable: a parcel on board this long -> stop the belt and turn
+TABLE_LOADED_S = 0.3        # the PLC program's turntable: a parcel on board this long -> stop the belt and turn
 TABLE_EMPTY_S = 0.5         # ... the table empty this long -> unloaded
 
 
@@ -83,10 +83,7 @@ def _in_rect(x: float, y: float, cx: float, cy: float, along: float, across: flo
 
 def diverter_motion(d: Diverter):
     """(speed m/s, angle deg to the travel) a diverter steers parcels at:
-    the layout's, or - following commands ("plc" / "manual") - the
-    commanded ones."""
-    if d.control == "auto":
-        return d.speed, d.divertAngle
+    its commands (the PLC's, or set by hand)."""
     return d.commandSpeed, d.commandAngle
 
 
@@ -134,12 +131,11 @@ class LogisticsRuntime:
         self._tables = {}
         for t in c.turntables:
             belt = belts.get(t.beltId) if t.beltId else None
-            start = max(0, min(len(t.angles) - 1, t.autoFrom if t.control == "auto" else t.targetIndex))
+            start = max(0, min(len(t.angles) - 1, t.targetIndex))
             t.index = t.targetIndex = start
             t.turning, t.inPosition, t.occupied = False, True, False
             t.angle = t.angles[start] if t.angles else 0.0
-            state = {"belt": belt, "riders": [], "auto": {},
-                     "design_speed": (belt.speed if belt is not None and belt.speed else 1.0),
+            state = {"belt": belt, "riders": [],
                      "belt_rotation": belt.rotation if belt is not None else 0.0,
                      "belt_xy": (belt.x, belt.y) if belt is not None else (0.0, 0.0)}
             self._tables[t.id] = state
@@ -151,7 +147,7 @@ class LogisticsRuntime:
                 b._zone_hold = False
             self._accumulators[a.id] = {"belts": zone_belts}
             a.zones, a.full = 0, False
-        self._transfers = {t.id: {"phase": "down", "t": 0.0, "settle": 0.0, "empty": 0.0} for t in c.transfers}
+        self._transfers = {t.id: {"phase": "down", "t": 0.0} for t in c.transfers}
         for t in c.transfers:
             t.present = t.centered = t.up = False
             t.transferred, t.lift = 0, 0.0
@@ -286,11 +282,7 @@ class LogisticsRuntime:
         d.present = bool(inside)
         first = inside[0] if inside else None
         d.presentCode = getattr(first, "barcode", 0) if first is not None and getattr(first, "readable", True) else 0
-        if d.control != "auto":
-            d.active = bool(d.divert)
-        else:
-            d.active = any(getattr(p, "readable", True) and getattr(p, "destination", 0) == d.destination
-                           for p in inside)
+        d.active = bool(d.divert)
         if d.active:
             speed, angle = diverter_motion(d)
             a = math.radians(d.rotation + angle)
@@ -299,11 +291,10 @@ class LogisticsRuntime:
     # -- right-angle transfers ----------------------------------------------------------------
 
     def _step_transfer(self, t, h: float) -> None:
-        """down -> (something centred, or the PLC's transfer) lifting -> up:
-        the chains carry it across until the zone is empty (auto) or the
-        command drops (plc) -> lowering -> down. Down or lifting, what
+        """down -> (`transfer` on) lifting -> up: the chains carry it across
+        until the command drops -> lowering -> down. Down or lifting, what
         reaches the zone's centre is held there (`stop`)."""
-        state = self._transfers.setdefault(t.id, {"phase": "down", "t": 0.0, "settle": 0.0, "empty": 0.0})
+        state = self._transfers.setdefault(t.id, {"phase": "down", "t": 0.0})
         inside = self._parcels_in(t.x, t.y, t.width, t.height, t.rotation, t.level)
         a = math.radians(t.rotation)
         ca, sa = math.cos(a), math.sin(a)
@@ -313,9 +304,7 @@ class LogisticsRuntime:
         t.centered = bool(ahead) and state["phase"] == "down"
         phase = state["phase"]
         if phase == "down":
-            state["settle"] = state["settle"] + h if ahead else 0.0
-            want = state["settle"] >= 0.15 if t.control == "auto" else bool(t.transfer)
-            if want and (t.control != "auto" or ahead):
+            if t.transfer:
                 state["phase"], state["t"] = "lifting", 0.0
                 if inside:
                     t.transferred = (t.transferred + 1) & 0xFFFF
@@ -323,18 +312,15 @@ class LogisticsRuntime:
             state["t"] += h
             t.lift = min(1.0, state["t"] / max(1e-3, t.liftTime))
             if t.lift >= 1.0:
-                state["phase"], state["empty"] = "up", 0.0
+                state["phase"] = "up"
         elif phase == "up":
-            state["empty"] = state["empty"] + h if not inside else 0.0
-            done = state["empty"] >= 0.1 if t.control == "auto" else not t.transfer
-            if done:
+            if not t.transfer:
                 state["phase"], state["t"] = "lowering", 0.0
         else:                                                    # lowering
             state["t"] += h
             t.lift = max(0.0, 1.0 - state["t"] / max(1e-3, t.liftTime))
             if t.lift <= 0.0:
                 state["phase"] = "down"
-                state["settle"] = 0.0
         t.up = state["phase"] == "up"
         if t.up:
             c = math.radians(t.rotation + t.crossAngle)
@@ -373,14 +359,6 @@ class LogisticsRuntime:
         state = self._tables.get(table.id)
         if state is None or not table.angles:
             return
-        belt = state["belt"]
-        if table.control == "auto":
-            target, run = turntable_auto(table, state["auto"], h)
-            table.targetIndex = target
-            if belt is not None:
-                belt.speed = state["design_speed"] if run else 0.0
-                if belt.commandFormat == "vfd":
-                    belt.run = run
         target = max(0, min(len(table.angles) - 1, int(table.targetIndex)))
         goal = table.angles[target]
         if not table.turning:
@@ -427,7 +405,7 @@ class LogisticsRuntime:
         occupied = [self._zone_occupied(b) for b in state["belts"]]
         acc.zones = sum(1 << i for i, o in enumerate(occupied) if o) & 0xFFFF
         acc.full = all(occupied)
-        release = True if acc.control == "auto" else bool(acc.release)
+        release = bool(acc.release)
         # A held zone stops its belt (its drive's setpoint); a running one
         # moves at whatever the belt is commanded - by the PLC, or its design
         # speed in a layout without one.

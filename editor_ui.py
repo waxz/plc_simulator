@@ -62,7 +62,6 @@ PANEL_W = 250
 SCROLLBAR_W = 16
 # Tooltips of the PLC I/O section's Source buttons (a component's `control`).
 SOURCE_TIPS = {
-    "auto": "Its own controller sets the commands",
     "plc": "The PLC data exchange sets the commands",
     "manual": "Set the commands here; PLC frames leave them alone",
     "sim": "The simulation decides the output",

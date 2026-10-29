@@ -28,6 +28,20 @@ def source(**kw):
     return Source(**args)
 
 
+def plc_for(config):
+    from plc_logic import make_controller
+    return make_controller(config, autostart=True)
+
+
+def run_under_plc(engine, plc, seconds, scan=0.02):
+    """The simulation with the PLC program (plc_logic, what plc_mock.py runs)
+    scanning every `scan` s: the equipment follows the PLC."""
+    end = engine.sim_time + seconds
+    while engine.sim_time < end - 1e-9:
+        plc.step(now=engine.sim_time)
+        engine.run_for(scan)
+
+
 def line(**kw):
     return SimulatorConfig(belts=[belt("main", 5.0, 0.0, 10.0)], useSurfaceVelocity=True, **kw)
 
@@ -77,25 +91,12 @@ class ScannerTest(unittest.TestCase):
 
 class DiverterTest(unittest.TestCase):
     def layout(self, **diverter):
-        args = dict(id="d", x=5.0, y=0.0, divertAngle=-90.0, destination=2, control="auto")
+        args = dict(id="d", x=5.0, y=0.0, divertAngle=-90.0, destination=2)
         args.update(diverter)
         c = line(diverters=[Diverter(**args)], sinks=[Sink(id="side", x=5.0, y=-3.5, width=1.5, height=1.0,
                                                           label="side")])
         c.belts.append(belt("branch", 5.0, -2.0, 3.0, rotation=-90.0))
         return c
-
-    def test_auto_sends_its_destination_off_and_the_rest_on(self):
-        c = self.layout()
-        e = PhysicsEngine(c)
-        mine = e.add_parcel(2.0, 0.0, 0.3, 0.3)
-        mine.destination = 2
-        other = e.add_parcel(0.8, 0.0, 0.3, 0.3)
-        other.destination = 1
-        e.run_for(9.0)
-        self.assertEqual(e.delivered.get("side"), 1)
-        self.assertNotIn(mine, e.parcels)
-        self.assertGreater(other.body.position.x, 7.0)                   # still on the main belt
-        self.assertEqual(c.diverters[0].diverted, 1)
 
     def test_plc_divert_command_and_present_code(self):
         c = self.layout(control="plc")
@@ -144,7 +145,7 @@ class ChuteTest(unittest.TestCase):
 
 
 class AccumulatorTest(unittest.TestCase):
-    def layout(self, mode="singulation", control="auto"):
+    def layout(self, mode="singulation", control="plc"):
         c = SimulatorConfig(belts=[belt("z1", 1.0, 0.0, 2.0), belt("z2", 3.0, 0.0, 2.0), belt("z3", 5.0, 0.0, 2.0)],
                             accumulators=[Accumulator(id="a", x=3.0, y=-1.0, beltIds=["z1", "z2", "z3"], mode=mode,
                                                       control=control, release=False)],
@@ -176,20 +177,20 @@ class AccumulatorTest(unittest.TestCase):
 
 
 class TurntableTest(unittest.TestCase):
-    def test_auto_turns_a_parcel_onto_the_cross_belt(self):
+    def test_the_plc_program_turns_a_parcel_onto_the_cross_belt(self):
         c = SimulatorConfig(belts=[belt("in", 1.0, 0.0, 2.0), belt("tt", 2.75, 0.0, 1.5),
                                    belt("out", 2.75, 2.25, 3.0, rotation=90.0)],
                             turntables=[Turntable(id="t", x=2.75, y=0.0, radius=0.85, beltId="tt",
-                                                  turnSpeed=180.0, control="auto")],
+                                                  turnSpeed=180.0)],
                             sinks=[Sink(id="end", x=2.75, y=4.2, width=1.2, height=1.0, label="e")],
                             useSurfaceVelocity=True)
-        e = PhysicsEngine(c)
+        e, plc = PhysicsEngine(c), plc_for(c)
         p = e.add_parcel(0.5, 0.0, 0.3, 0.3)
-        e.run_for(3.0)
+        run_under_plc(e, plc, 3.0)
         t = c.turntables[0]
         self.assertEqual(t.index, 1)
         self.assertAlmostEqual(c.belts[1].rotation, 90.0)
-        e.run_for(8.0)
+        run_under_plc(e, plc, 8.0)
         self.assertEqual(e.delivered.get("end"), 1)
         self.assertNotIn(p, e.parcels)
         self.assertEqual(t.index, 0)                                     # back for the next one
@@ -199,7 +200,7 @@ class TurntableTest(unittest.TestCase):
 class TransferTest(unittest.TestCase):
     """A pallet corner of roller conveyors with a 90-degree transfer."""
 
-    def layout(self, control="auto"):
+    def layout(self, control="plc"):
         from config_parser import Pallet, Transfer
         c = SimulatorConfig(belts=[belt("in", 2.5, 0.0, 4.0), belt("out", 4.0, 2.5, 4.0, rotation=90.0)],
                             transfers=[Transfer(id="t", x=4.0, y=0.0, control=control)],
@@ -209,13 +210,16 @@ class TransferTest(unittest.TestCase):
         c.belts[0].length, c.belts[0].x = 5.0, 2.0          # the infeed runs into the corner square
         return c
 
-    def test_auto_stops_the_pallet_centred_and_carries_it_across_unturned(self):
+    def test_the_plc_program_stops_the_pallet_centred_and_carries_it_across_unturned(self):
         c = self.layout()
-        e = PhysicsEngine(c)
+        e, plc = PhysicsEngine(c), plc_for(c)
         pallet = e.machines.pallets[0]
         t = c.transfers[0]
         lifted_at = None
-        for _ in range(int(12.0 / c.physicsDt)):
+        scan = max(1, round(0.02 / c.physicsDt))
+        for i in range(int(12.0 / c.physicsDt)):
+            if i % scan == 0:
+                plc.step(now=e.sim_time)
             e.step(c.physicsDt)
             if t.lift > 0 and lifted_at is None:
                 lifted_at = tuple(pallet.body.position)
@@ -328,19 +332,6 @@ class ExchangeTest(unittest.TestCase):
 
 
 class DemoTest(unittest.TestCase):
-    def test_the_sorting_line_sorts_by_destination(self):
-        """The equipment's own controllers (control "auto"), no PLC."""
-        random.seed(3)
-        c = load_config("logistics_demo.json")
-        for device in (*c.diverters, *c.turntables, *c.accumulators):
-            device.control = "auto"
-        e = PhysicsEngine(c)
-        e.run_for(120.0)
-        for chute in ("chute_1", "chute_2", "chute_3"):
-            self.assertGreater(e.delivered.get(chute, 0), 5)
-        self.assertGreater(c.scanners[0].readCount, 50)
-        self.assertGreater(e.delivered.get("reject_bin", 0), 0)          # the no-reads, via the turntable
-
     def test_the_plc_program_sorts_by_tracking_scanner_reads(self):
         """Diverters, turntable and accumulation on control "plc": plc_logic
         tracks each scanner read (code -> destination) and fires the

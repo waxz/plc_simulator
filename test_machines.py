@@ -20,6 +20,20 @@ def config(**lists) -> SimulatorConfig:
     return SimulatorConfig(useSurfaceVelocity=True, **lists)
 
 
+def run_under_plc(engine, plc, seconds, scan=0.02):
+    """The simulation with the PLC program (plc_logic, what plc_mock.py runs)
+    scanning every `scan` s: machines follow the PLC."""
+    end = engine.sim_time + seconds
+    while engine.sim_time < end - 1e-9:
+        plc.step(now=engine.sim_time)
+        engine.run_for(scan)
+
+
+def plc_for(config):
+    from plc_logic import make_controller
+    return make_controller(config, autostart=True)
+
+
 def pallet_of(engine, pallet_id="pal_1"):
     return next(p for p in engine.parcels if p.id == pallet_id)
 
@@ -86,28 +100,29 @@ class StopperTest(unittest.TestCase):
         e.run_for(3.0)
         self.assertTrue(stopper.isUp)                           # back up once the bar is clear
 
-    def test_auto_stopper_holds_then_lets_go(self):
-        e = PhysicsEngine(self.layout(control="auto", holdTime=1.0, releaseTime=1.0))
-        e.run_for(5.0)
+    def test_the_plc_program_holds_then_lets_go(self):
+        c = self.layout(holdTime=1.0, releaseTime=1.0)
+        e, plc = PhysicsEngine(c), plc_for(c)
+        run_under_plc(e, plc, 5.0)
         self.assertLess(pallet_of(e).body.position.x, 5.0)
-        e.run_for(3.0)
+        run_under_plc(e, plc, 3.0)
         self.assertGreater(pallet_of(e).body.position.x, 6.0)
 
 
 class RobotTest(unittest.TestCase):
-    def test_auto_robot_moves_a_part_onto_a_pallet(self):
+    def test_the_plc_program_has_the_robot_move_a_part_onto_a_pallet(self):
         c = config(pallets=[Pallet(id="pal_1", x=3.0, y=1.0)],
                    robots=[RobotArm(id="r1", x=2.0, y=0.0, pickX=1.0, pickY=1.0, placeX=3.0, placeY=1.0,
-                                    cycleTime=1.5, control="auto")])
-        e = PhysicsEngine(c)
+                                    cycleTime=1.5)])
+        e, plc = PhysicsEngine(c), plc_for(c)
         part = e.add_parcel(1.0, 1.0, 0.3, 0.3)
         robot = c.robots[0]
-        e.run_for(0.02)
+        run_under_plc(e, plc, 0.1)                              # enabled, then started
         self.assertTrue(robot.busy)
-        e.run_for(0.6)                                          # past the pick: in the gripper
+        run_under_plc(e, plc, 0.6)                              # past the pick: in the gripper
         self.assertTrue(robot.holding)
         self.assertNotIn(part, e.parcels)
-        e.run_for(1.2)
+        run_under_plc(e, plc, 1.2)
         self.assertFalse(robot.busy)
         self.assertEqual(robot.cycles, 1)
         self.assertEqual(pallet_of(e).loads, [part])
@@ -130,29 +145,29 @@ class RobotTest(unittest.TestCase):
 
 
 class ElevatorTest(unittest.TestCase):
-    def test_auto_elevator_lifts_a_parcel_to_the_upper_belt(self):
+    def test_the_plc_program_lifts_a_parcel_to_the_upper_belt(self):
         c = config(belts=[belt("in", 2, 0, 4), belt("lift", 4.7, 0, 1.4), belt("up", 7.4, 0, 4, level=1),
                           belt("under", 7.4, 0, 4, speed=0.0)],
                    elevators=[Elevator(id="el_1", x=4.7, y=0.0, width=1.4, height=1.0, beltId="lift",
-                                       levelHeight=1.0, liftSpeed=1.0, control="auto")],
+                                       levelHeight=1.0, liftSpeed=1.0)],
                    sensors=[Sensor(id="s_low", x=7.0, y=0.0, width=0.1, height=1.0, rotation=0.0, label="low",
                                    color="#f00"),
                             Sensor(id="s_up", x=7.0, y=0.0, width=0.1, height=1.0, rotation=0.0, label="up",
                                    color="#f00", level=1)])
-        e = PhysicsEngine(c)
+        e, plc = PhysicsEngine(c), plc_for(c)
         self.assertTrue(e.multi_level)
         part = e.add_parcel(1.0, 0.0, 0.3, 0.3)
         elevator = c.elevators[0]
         seen_moving = False
         for _ in range(400):
-            e.run_for(0.02)
+            run_under_plc(e, plc, 0.02)
             seen_moving |= elevator.moving
         self.assertTrue(seen_moving)
         self.assertEqual(part.level, 1)
         self.assertGreater(part.body.position.x, 7.5)           # carried on along the upper belt
         self.assertGreater(c.sensors[1].risingEdges, 0)
         self.assertEqual(c.sensors[0].risingEdges, 0)           # the floor below never saw it
-        e.run_for(4.0)
+        run_under_plc(e, plc, 4.0)
         self.assertEqual(elevator.level, 0)                     # back down for the next one
 
 
@@ -246,16 +261,3 @@ class PickSensorTest(unittest.TestCase):
         self.assertTrue(part_at_pick(c, robot))
         self.assertTrue(robot.start)
         self.assertIsNone(plc.jammed)               # waiting for the robot is not a jam
-
-    def test_auto_waits_for_the_pick_sensor_too(self):
-        c = self.layout(control="auto")
-        e = PhysicsEngine(c)
-        e.add_parcel(1.0, 0.0, 0.3, 0.3)            # rides to the end of the feed belt
-        e.run_for(6.0)
-        self.assertGreaterEqual(c.robots[0].cycles, 1)
-        c2 = self.layout(control="auto")
-        c2.sensors[0].x = 0.2                       # the sensor away from where the part waits
-        e2 = PhysicsEngine(c2)
-        e2.add_parcel(1.0, 0.0, 0.3, 0.3)
-        e2.run_for(6.0)
-        self.assertEqual(c2.robots[0].cycles, 0)

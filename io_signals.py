@@ -14,14 +14,13 @@ paddng_component), so the list matches the wire exactly:
 
 A component's `control` (config_parser.CommandSource / ControlMode /
 SensorControl) says where its commands come from: the PLC exchange
-("plc"), its built-in controller ("auto", machines) or the operator
-("manual"). Only in "manual" may they be set by hand (apply()); a sensor in
+("plc") or the operator ("manual"). Only in "manual" may they be set by hand (apply()); a sensor in
 "manual" is forced: its output is the value set here.
 
   signals(component)          -> [Signal, ...] (no config needed)
   read(config, ids)           -> {id: {"control": ..., "values": {name: value}}}
   apply(config, id, name, v)  -> None, or why not (a text)
-  control_options(component)  -> ["auto", "plc", "manual"], ... or []
+  control_options(component)  -> ["plc", "manual"], ["sim", "manual"] or []
   at_rest(config)             -> the simulator's start: PLC commands at rest
 """
 import typing

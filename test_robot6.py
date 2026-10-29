@@ -17,10 +17,14 @@ from physics import PhysicsEngine
 
 
 def layout(**robot):
-    args = dict(id="r1", x=0.0, y=0.0, pickX=1.2, pickY=0.0, placeX=0.0, placeY=1.2, cycleTime=1.5,
-                control="auto")
+    args = dict(id="r1", x=0.0, y=0.0, pickX=1.2, pickY=0.0, placeX=0.0, placeY=1.2, cycleTime=1.5)
     args.update(robot)
     return SimulatorConfig(robots=[RobotArm(**args)])
+
+
+def started(**robot):
+    """A robot the PLC has enabled and started on program 1 (pick and place)."""
+    return layout(enable=True, program=1, start=True, **robot)
 
 
 class KinematicsTest(unittest.TestCase):
@@ -57,7 +61,7 @@ class KinematicsTest(unittest.TestCase):
 
 class CycleTest(unittest.TestCase):
     def test_the_cycle_moves_real_joints_and_grips_at_the_part_top(self):
-        c = layout()
+        c = started()
         e = PhysicsEngine(c)
         part = e.add_parcel(1.2, 0.0, 0.3, 0.3)
         r = c.robots[0]
@@ -78,7 +82,7 @@ class CycleTest(unittest.TestCase):
         self.assertAlmostEqual(part.body.position.y, 1.2, places=6)
 
     def test_onto_a_pallet_the_part_lands_on_the_deck(self):
-        c = layout(placeX=0.0, placeY=1.2)
+        c = started(placeX=0.0, placeY=1.2)
         c.pallets.append(Pallet(id="p", x=0.0, y=1.2))
         e = PhysicsEngine(c)
         part = e.add_parcel(1.2, 0.0, 0.3, 0.3)
@@ -94,7 +98,7 @@ class CycleTest(unittest.TestCase):
         self.assertAlmostEqual(released_z - heights.part_height(part), deck, places=3)
 
     def test_speed_override_stretches_the_cycle(self):
-        c = layout(speedOverride=50)
+        c = started(speedOverride=50)
         e = PhysicsEngine(c)
         e.add_parcel(1.2, 0.0, 0.3, 0.3)
         e.run_for(1.6)

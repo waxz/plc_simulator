@@ -21,10 +21,10 @@ its platform - and its platform belt - from one level to another; while
 travelling they are on a level of their own (SHAFT_LEVEL - i), so nothing
 else touches them.
 
-Each machine runs itself (control "auto") or follows the PLC's command
-fields (control "plc", or set by hand: "manual"); the decisions are the small functions below
-(stopper_wants_up, robot_should_start, elevator_auto), which plc_logic.py
-uses too, so auto mode and the PLC program behave alike.
+Each machine follows its command fields: the PLC's (control "plc") or set
+by hand ("manual"). The decisions a PLC makes for them are the small
+functions below (stopper_wants_up, elevator_auto), which the PLC program,
+plc_logic.py, uses.
 """
 import math
 from typing import Dict, List, Optional, Tuple
@@ -41,7 +41,7 @@ SHAFT_LEVEL = -1000          # elevator i's travellers are on SHAFT_LEVEL - i
 NO_LEVEL = -10 ** 6          # a travelling platform belt: matches nothing
 STOPPER_ZONE = 0.12          # m: the "something waiting" zone upstream of a stopper bar
 ELEVATOR_INNER = 0.6         # a part counts as loaded once its centre is within this share of the platform
-UNLOAD_CLEAR_S = 0.5         # auto elevator: platform empty this long -> unloaded
+UNLOAD_CLEAR_S = 0.5         # the PLC program's elevator: platform empty this long -> unloaded
 
 
 def is_multi_level(config: SimulatorConfig) -> bool:
@@ -86,16 +86,11 @@ def stopper_wants_up(stopper: Stopper, state: dict, h: float) -> bool:
     return False
 
 
-def robot_should_start(robot: RobotArm, state: dict, part_ready: Optional[bool] = None) -> bool:
-    """Auto: a part waits at the pick point (`part_ready`: its pick sensor,
-    else the robot's own partAtPick) and the place point is ready.
-    PLC: `start` turned on."""
-    if robot.control != "auto":                       # "plc" or "manual": the command fields
-        edge = robot.start and not state.get("last_start", False)
-        state["last_start"] = robot.start
-        return edge
-    part = robot.partAtPick if part_ready is None else part_ready
-    return part and robot.placeReady
+def robot_should_start(robot: RobotArm, state: dict) -> bool:
+    """A program begins when `start` turns on (the PLC's or set by hand)."""
+    edge = robot.start and not state.get("last_start", False)
+    state["last_start"] = robot.start
+    return edge
 
 
 def elevator_auto(elevator: Elevator, state: dict, h: float) -> Tuple[int, bool]:
@@ -166,15 +161,14 @@ class MachineRuntime:
         self._elevators = {}
         belts = {b.id: b for b in self.config.belts}
         for i, e in enumerate(self.config.elevators):
-            start = max(0, min(e.levels - 1, e.autoFrom if e.control == "auto" else e.targetLevel))
+            start = max(0, min(e.levels - 1, e.targetLevel))
             e.level = e.targetLevel = start
             e.position = float(start)
             e.moving, e.atLevel, e.occupied = False, True, False
             belt = belts.get(e.beltId) if e.beltId else None
             if belt is not None:
                 belt.level = start
-            self._elevators[e.id] = {"index": i, "belt": belt, "riders": [],
-                                     "design_speed": (belt.speed if belt is not None and belt.speed else 1.0)}
+            self._elevators[e.id] = {"index": i, "belt": belt, "riders": []}
 
     def clear_parts(self) -> None:
         """Clear Parcels: pallets stay (empty), grippers let go."""
@@ -295,7 +289,7 @@ class MachineRuntime:
             # The bodies are kept here: a pymunk shape holds its body only weakly,
             # so a bar out of the space (lowered) would lose it.
             state = {"geom": geom, "shape": shape, "body": body, "zone": zone, "zone_body": zone_body,
-                     "added": False, "up_target": True, "t": 0.0, "auto": {}}
+                     "added": False, "up_target": True, "t": 0.0}
             self._stoppers[stopper.id] = state
             if stopper.isUp:
                 engine.space.add(body, shape)
@@ -312,10 +306,7 @@ class MachineRuntime:
     def _step_stopper(self, stopper: Stopper, h: float) -> None:
         state = self._stopper_state(stopper)
         stopper.occupied = self._touching(state["zone"], stopper.level)
-        if stopper.control != "auto":
-            want_up = not stopper.release
-        else:
-            want_up = stopper_wants_up(stopper, state["auto"], h)
+        want_up = not stopper.release
         if want_up != state["up_target"]:
             state["up_target"], state["t"] = want_up, 0.0
         state["t"] += h
@@ -475,12 +466,6 @@ class MachineRuntime:
         duration = max(0.2, robot6.joint_move_time(q_from, q_to) * 1.3) * self._scale(robot)
         return _seg("joint", phase, 0.0, 1.0, duration, tuple(q_from), tuple(q_to))
 
-    def _part_ready(self, robot) -> bool:
-        """Auto mode: a part at the pick point, as the robot's pick sensor
-        sees it (the PLC's view, plc_logic.part_at_pick), else partAtPick."""
-        from plc_logic import part_at_pick
-        return part_at_pick(self.config, robot)
-
     def _start(self, robot: RobotArm, state: dict, program: int) -> None:
         try:
             if program == 1:
@@ -509,31 +494,29 @@ class MachineRuntime:
         if state is None:
             self._reset_robot(robot)
             state = self._robots[robot.id]
-        plc = robot.control != "auto"                   # follows its command fields (PLC or manual)
         # Fault reset and the gripper bit act on their edges.
-        if plc and robot.faultReset and not state.get("last_reset", False) and robot.fault:
+        if robot.faultReset and not state.get("last_reset", False) and robot.fault:
             robot.fault, robot.faultCode = False, 0
         state["last_reset"] = robot.faultReset
         if not state["segs"]:
             robot.partAtPick = self.part_at(robot.pickX, robot.pickY, robot.pickLevel, robot.pickRadius) is not None
             robot.placeReady = self.place_ready(robot)
-            robot.ready = (robot.enable or not plc) and not robot.fault and not (plc and robot.hold)
+            robot.ready = robot.enable and not robot.fault and not robot.hold
             robot.phase, robot.phaseT = "idle", 0.0
-            if plc and robot.gripperClose != state.get("last_grip", False):
+            if robot.gripperClose != state.get("last_grip", False):
                 (self._grip_at_tool if robot.gripperClose else self._release_at_tool)(robot, state)
             state["last_grip"] = robot.gripperClose
             if state.get("api"):
                 state["segs"], state["t"], state["cycle"] = state.pop("api"), 0.0, False
                 robot.busy, robot.inPosition, robot.atHome = True, False, False
-            elif robot.ready and robot_should_start(robot, state, self._part_ready(robot)):
-                self._start(robot, state, int(robot.program) if plc else 1)
+            elif robot.ready and robot_should_start(robot, state):
+                self._start(robot, state, int(robot.program))
             if not state["segs"]:
                 return
         else:
             robot.ready = False
-            if plc:
-                state["last_start"] = robot.start
-        if plc and robot.hold:
+            state["last_start"] = robot.start
+        if robot.hold:
             return                                              # *HOLD: stand still
         state["t"] += h
         while state["segs"]:
@@ -661,15 +644,6 @@ class MachineRuntime:
         if state is None:
             return
         belt = state["belt"]
-        if elevator.control == "auto":
-            state.setdefault("auto", {})["loaded"] = bool(
-                self._on_platform(elevator, elevator.level, ELEVATOR_INNER)) if elevator.atLevel else False
-            target, run = elevator_auto(elevator, state["auto"], h)
-            elevator.targetLevel = target
-            if belt is not None:
-                belt.speed = state["design_speed"] if run else 0.0
-                if belt.commandFormat == "vfd":
-                    belt.run = run
         target = max(0, min(elevator.levels - 1, int(elevator.targetLevel)))
         if not elevator.moving:
             if target == elevator.level:

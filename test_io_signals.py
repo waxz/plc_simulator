@@ -102,7 +102,8 @@ class SignalsTest(unittest.TestCase):
 
     def test_control_options(self):
         config = load_config(DEMO)
-        self.assertEqual(io_signals.control_options(config.diverters[0]), ["auto", "plc", "manual"])
+        self.assertEqual(io_signals.control_options(config.diverters[0]), ["plc", "manual"])
+        self.assertEqual(Diverter(id="d", x=0, y=0, control="auto").control, "plc")   # an older layout
         self.assertEqual(io_signals.control_options(belt()), ["plc", "manual"])
         self.assertEqual(io_signals.control_options(sensor()), ["sim", "manual"])
         self.assertEqual(io_signals.control_options(config.doors[0]), ["plc", "manual"])
@@ -121,7 +122,7 @@ class ApplyTest(unittest.TestCase):
         c = self.config
         self.assertIn("not in manual", io_signals.apply(c, "b", "speed", 0.5))
         self.assertEqual(c.belts[0].speed, 1.0)
-        self.assertIn("one of", io_signals.apply(c, "b", "control", "auto"))         # a belt has no auto
+        self.assertIn("one of", io_signals.apply(c, "b", "control", "auto"))         # no auto any more
         self.assertIsNone(io_signals.apply(c, "b", "control", "manual"))
         self.assertIsNone(io_signals.apply(c, "b", "speed", "0.5"))
         self.assertEqual(c.belts[0].speed, 0.5)
@@ -177,11 +178,8 @@ class ManualModeTest(unittest.TestCase):
         self.assertFalse(io_signals.read(config, ["forced"])["forced"]["values"]["sensor_states"])
 
     def test_a_diverter_runs_at_its_commanded_speed_and_direction(self):
-        d = Diverter(id="d", x=5.0, y=0.0, divertAngle=-90.0, speed=1.0, control="auto")
-        self.assertEqual(logistics.diverter_motion(d), (1.0, -90.0))
+        d = Diverter(id="d", x=5.0, y=0.0, divertAngle=-90.0, speed=1.0, control="manual")
         d.commandSpeed, d.commandAngle = 0.4, 90.0
-        self.assertEqual(logistics.diverter_motion(d), (1.0, -90.0))       # auto: the layout's
-        d.control = "manual"
         self.assertEqual(logistics.diverter_motion(d), (0.4, 90.0))
         d.commandSpeed = d.commandAngle = 0.0
         self.assertEqual(logistics.diverter_motion(d), (0.0, 0.0))         # what it is told, 0 too
@@ -283,7 +281,7 @@ class SimulatorInspectorTest(unittest.TestCase):
 
     def test_live_readouts_until_manual(self):
         d = self.inspect("div_2")
-        self.assertEqual(set(self.ui.io_source_buttons.values()), {"auto", "plc", "manual"})
+        self.assertEqual(set(self.ui.io_source_buttons.values()), {"plc", "manual"})
         self.assertTrue(self.source_button("plc").is_selected)
         self.assertEqual(list(self.ui.io_rows), ["divert", "commandSpeed", "commandAngle", "active", "present",
                                                  "presentCode", "diverted"])
@@ -415,7 +413,7 @@ class DesignerPanelTest(unittest.TestCase):
         self.assertEqual(self.group_rows(IO_FEEDBACK), ["active", "present", "presentCode", "diverted"])
         self.assertEqual(self.panel.tree.itemWidget(self.panel.io_rows["presentCode"], 1).text(), "DWORD")
         combo = self.panel.combos["control"]
-        self.assertEqual([combo.itemText(i) for i in range(combo.count())], ["auto", "plc", "manual"])
+        self.assertEqual([combo.itemText(i) for i in range(combo.count())], ["plc", "manual"])
         combo.setCurrentText("manual")                                  # a layout setting, undoable
         self.assertEqual(self.window.scene.selectedItems()[0].model.control, "manual")
         self.window.undo_stack.undo()

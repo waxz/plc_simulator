@@ -4154,7 +4154,6 @@ IO_GROUP = "PLC I/O"
 IO_COMMANDS = "Commands (PLC -> simulator)"
 IO_FEEDBACK = "Feedback (simulator -> PLC)"
 _CONTROL_TIP = ("Where the commands come from:\n"
-                "  auto - the component's built-in controller (runs without a PLC)\n"
                 "  plc - the PLC data exchange\n"
                 "  manual - set by hand in the simulator window (select it, PLC I/O); PLC frames are ignored\n"
                 "A sensor: sim - the simulation decides its output; manual - forced by hand there.")
@@ -4755,7 +4754,7 @@ class ComponentManagerPanel(QWidget):
         if kind == "pallet":
             return f"{m.width:g} × {m.height:g} m, {m.capacity} load{'s' if m.capacity != 1 else ''}"
         if kind == "stopper":
-            return f"{m.control}, hold {m.holdTime:g} s" if m.control == "auto" else "plc"
+            return f"{m.control}, hold {m.holdTime:g} s"
         if kind == "robot":
             return f"{m.control}, reach {m.reach:g} m, {m.cycleTime:g} s cycle"
         if kind == "elevator":
