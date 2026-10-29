@@ -285,6 +285,14 @@ def _belt_pick(d):
     d.use(d.fg).poly(14, 4, 14, 15, 17, 12, 19.5, 17, 21, 16.2, 18.5, 11.5, 22, 11.2, fill=hmi.qcolor(hmi.PANEL))
 
 
+def _roller_pick(d):
+    """Rollers across a conveyor, picked."""
+    d.use(d.dim).rect(2, 12, 15, 8)
+    for x in (4, 7, 10, 13, 16):
+        d.use(d.accent).line(x, 12, x, 20)
+    d.use(d.fg).poly(14, 4, 14, 15, 17, 12, 19.5, 17, 21, 16.2, 18.5, 11.5, 22, 11.2, fill=hmi.qcolor(hmi.PANEL))
+
+
 def _belt_path(d):
     _band(d, [(3, 18), (11, 18), (11, 7), (21, 7)])
     d.use(d.accent).poly(3, 18, 11, 18, 11, 7, 21, 7, closed=False)
@@ -429,7 +437,7 @@ ICONS: Dict[str, Callable[[_Pen], None]] = {
     "pan": _pan, "measure": _measure, "clear_measure": _clear_measure, "fit": _fit, "ports": _ports,
     "run": _run, "theme": _theme,
     "line": _line, "arc": _arc, "rectangle": _rectangle, "circle": _circle, "polygon": _polygon, "clear": _clear,
-    "belt_pick": _belt_pick, "belt_path": _belt_path, "curved_belt": _curved_belt, "outline_belt": _outline_belt,
+    "belt_pick": _belt_pick, "roller_pick": _roller_pick, "belt_path": _belt_path, "curved_belt": _curved_belt, "outline_belt": _outline_belt,
     "connect": _connect, "disconnect": _disconnect, "fillet_belts": _fillet_belts, "solve": _solve,
     "check": _check,
     "trim": _trim, "extend": _extend, "break": _break, "offset": _offset, "fillet": _fillet, "join": _join,

@@ -779,7 +779,10 @@ class CadController:
         ]
         tools.addSection("Belts")
         belt_actions = [
-            add(tools, "Belt from Sketch/Drawing", self.pick_tool.start, "B", "belt_pick", "Belt from Sketch"),
+            add(tools, "Belt from Sketch/Drawing", lambda: self.pick_tool.start("belt"), "B", "belt_pick",
+                "Belt from Sketch"),
+            add(tools, "Roller from Sketch/Drawing", lambda: self.pick_tool.start("roller"), "Ctrl+Shift+B",
+                "roller_pick", "Roller from Sketch"),
             add(tools, "Draw Belt Path", self.path_tool.start, "P", "belt_path", "Belt Path"),
             add(tools, "Draw Curved Belt", self.curved_tool.start, "U", "curved_belt", "Curved Belt"),
             add(tools, "Draw Belt Outline", self.outline_tool.start, "O", "outline_belt", "Outline Belt"),

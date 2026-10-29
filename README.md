@@ -396,6 +396,16 @@ numbers to type:
      Forward (along the line in its drawn order; in an area along its long
      axis, or counter-clockwise for curved), Reverse, or Across +/-90 deg
      (linear only). It can still be changed in Properties afterwards.
+   - **Roller conveyors from the drawing**: **Tools > Roller from
+     Sketch/Drawing** (`Ctrl+Shift+B`) is the same tool with **Surface**
+     set to Roller. You can also switch **Surface** in the option bar.
+     - It makes driven roller conveyors (0.125 m pitch, 0.3 m/s, as in the
+       catalogue) instead of belts.
+     - A roller conveyor is straight or curved: a straight line or a
+       rectangle makes a straight one, an arc, circle or arc-shaped area a
+       curved one.
+     - A chain that would become a path belt is refused, with the reason.
+       Pick a straight piece or an arc, or set Type to Linear / Curved.
    - **Shapes split into parts**: line ends that miss each other by up to
      the toolbar's **Join gap** (default 2 cm) count as joined, both for
      lines and for closed areas, and a line drawn twice on top of itself

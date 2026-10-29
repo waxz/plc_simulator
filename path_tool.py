@@ -214,6 +214,14 @@ class PathToolbar(QToolBar):
             "curved, other areas -> linear.\nLinear: parcels move one way. Curved: parcels turn about the "
             "arc's center. Path: parcels follow the line.")
         self.pick_actions.append(self.addWidget(self.type_combo))
+        self.pick_actions.append(self.addWidget(QLabel(" Surface ")))
+        self.surface_combo = QComboBox()
+        for label, key in (("Belt", "belt"), ("Roller", "roller")):
+            self.surface_combo.addItem(label, key)
+        self.surface_combo.setToolTip(
+            "Belt: a belt conveyor. Roller: a driven roller conveyor (pallets, totes) - straight or curved, "
+            "so Type Auto makes rollers only from a straight line, an arc or an area.")
+        self.pick_actions.append(self.addWidget(self.surface_combo))
         self.pick_actions.append(self.addWidget(QLabel(" Direction ")))
         self.direction_combo = QComboBox()
         for label, key in (("Forward", "forward"), ("Reverse", "reverse"), ("Across +90°", "across+"),
@@ -229,7 +237,8 @@ class PathToolbar(QToolBar):
         self.gap_spin.setToolTip("Line ends this close count as joined (drawings rarely join exactly)")
         self.pick_actions.append(self.addWidget(self.gap_spin))
         self.on_options_changed: Optional[Callable[[], None]] = None
-        for signal in (self.type_combo.currentIndexChanged, self.direction_combo.currentIndexChanged,
+        for signal in (self.type_combo.currentIndexChanged, self.surface_combo.currentIndexChanged,
+                       self.direction_combo.currentIndexChanged,
                        self.gap_spin.valueChanged, self.width_spin.valueChanged, self.sides_spin.valueChanged,
                        self.corner_spin.valueChanged):
             signal.connect(self._options_changed)
@@ -265,6 +274,13 @@ class PathToolbar(QToolBar):
     @property
     def belt_kind(self) -> str:
         return self.type_combo.currentData()
+
+    @property
+    def surface(self) -> str:
+        return self.surface_combo.currentData()
+
+    def set_surface(self, surface: str):
+        self.surface_combo.setCurrentIndex(max(0, self.surface_combo.findData(surface)))
 
     @property
     def direction(self) -> str:
@@ -1096,9 +1112,19 @@ class PickFromDrawingTool:
 
     Shift+click collects pieces when what you mean is split: several areas
     (merged into one outline) or several lines/arcs (joined into one chain,
-    e.g. across a branch). Enter creates the belt from them, Esc clears."""
+    e.g. across a branch). Enter creates the belt from them, Esc clears.
+
+    With Surface Roller (toolbar, or Roller from Sketch/Drawing) it makes a
+    driven roller conveyor instead: straight or curved, as the catalogue's -
+    a chain that would be a path belt is refused with the reason."""
 
     title = "Belt from Sketch/Drawing"
+    roller_hint = ("Roller from Sketch/Drawing: click on a straight line or an arc (a roller conveyor along it) or "
+                   "inside a closed area (filling it). Toolbar: Type, Surface, Direction, Width, Join gap. "
+                   "Esc to finish.")
+    ROLLER_SPEED = 0.3       # m/s, the catalogue's roller conveyors
+    ROLLER_PITCH = 0.125     # m between roller centres
+    ROLLER_COLOR = "#4b5563"
     hint = ("Belt from Sketch/Drawing: click on a line/arc (belt along it and everything joined to it) or inside "
             "a closed area (belt filling it). Toolbar: Type, Direction, Width, Join gap. Shift+click collects "
             "split pieces, Enter makes one belt of them. Esc to finish.")
@@ -1123,12 +1149,16 @@ class PickFromDrawingTool:
     def picker(self) -> Optional[DrawingPicker]:
         return self.snapper.picker
 
-    def start(self):
+    def start(self, surface: Optional[str] = None):
+        """surface: "belt" / "roller" preselects the toolbar's Surface
+        (Roller from Sketch/Drawing); None keeps it."""
         if self.picker is None:
             self.window.statusBar().showMessage(
                 "Nothing to pick: sketch lines/arcs/shapes first (Tools > Sketch ...) "
                 "or import a DXF background.", 6000)
             return
+        if surface is not None:
+            self.toolbar.set_surface(surface)
         current = getattr(self.view, "tool", None)
         if current is not None and current is not self:
             current.stop()
@@ -1140,7 +1170,7 @@ class PickFromDrawingTool:
         self.toolbar.configure("From drawing", segments=False, width=True, corner=False, points=False,
                                belt_type=True)
         self.toolbar.on_options_changed = self._options_changed
-        self.window.statusBar().showMessage(self.hint)
+        self.window.statusBar().showMessage(self.roller_hint if self.toolbar.surface == "roller" else self.hint)
         self.picker.set_join_gap(self.toolbar.gap_spin.value())
         # Closed areas are found on a worker thread: hovering lines works meanwhile.
         self.picker.start_regions()
@@ -1251,10 +1281,19 @@ class PickFromDrawingTool:
         """The belt for a target with the toolbar's Type/Direction/Width
         (ValueError with the reason if that type doesn't fit)."""
         picker = self.picker
-        return belt_from_target(
-            belt_id or next_indexed_id([i.model.id for i in self.window.items_list], "belt"), target,
+        roller = self.toolbar.surface == "roller"
+        prefix = "roller" if roller else "belt"
+        belt = belt_from_target(
+            belt_id or next_indexed_id([i.model.id for i in self.window.items_list], prefix), target,
             kind=self.toolbar.belt_kind, direction=self.toolbar.direction, width=self.toolbar.width_spin.value(),
             shapes=picker.shapes if picker is not None else (), tol=max(0.01, self.toolbar.gap_spin.value()))
+        if roller:
+            if belt.type not in ("linear", "curved") or belt.vertexs:
+                raise ValueError("A roller conveyor is straight or curved: pick a straight line, an arc or an "
+                                 "area, or set Type to Linear / Curved.")
+            belt.surface, belt.rollerPitch = "roller", self.ROLLER_PITCH
+            belt.speed, belt.color = self.ROLLER_SPEED, self.ROLLER_COLOR
+        return belt
 
     def create(self, target) -> Optional[Belt]:
         try:
@@ -1262,12 +1301,15 @@ class PickFromDrawingTool:
         except ValueError as exc:
             self.window.statusBar().showMessage(str(exc), 6000)
             return None
-        item = self.view._add_item(self.belt_item_cls(belt), text="Belt from Drawing")
+        roller = belt.surface == "roller"
+        item = self.view._add_item(self.belt_item_cls(belt), text="Roller from Drawing" if roller else
+                                   "Belt from Drawing")
         self.window.scene.clearSelection()
         item.setSelected(True)
         kind = {"linear": "linear", "curved": "curved", "path": "path"}[belt.type]
         shape = " polygon" if belt.shape == "quadrilateral" else ""
-        self.window.statusBar().showMessage(f"Created {belt.id}: {kind}{shape} belt. "
+        what = "roller conveyor" if roller else "belt"
+        self.window.statusBar().showMessage(f"Created {belt.id}: {kind}{shape} {what}. "
                                             f"Click another, or Esc to finish.", 8000)
         return belt
 

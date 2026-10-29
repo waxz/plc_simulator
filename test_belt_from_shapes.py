@@ -300,6 +300,45 @@ class EditorTest(unittest.TestCase):
         belt = self.belts()[-1]
         self.assertEqual((belt.type, belt.length, belt.directionAngle), ("linear", 5.0, 180))
 
+    def roller_action(self):
+        return next(a for m in self.window.menuBar().findChildren(type(self.window.menuBar().addMenu("x")))
+                    for a in m.actions() if a.text() == "Roller from Sketch/Drawing")
+
+    def test_roller_from_a_line_and_from_a_circle(self):
+        action = self.roller_action()
+        self.assertEqual(action.shortcut().toString(), "Ctrl+Shift+B")
+        self.cad.sketch_line_tool.start()
+        self.click(0, 0)
+        self.click(5, 0)
+        self.key(Qt.Key_Return)
+        self.sketch(self.cad.sketch_circle_tool, "10,2", "12,2")
+        action.trigger()                                      # the tool, set to rollers
+        self.assertEqual(self.bar.surface, "roller")
+        self.set_type("auto")
+        self.click(2.5, 0)
+        roller = self.belts()[-1]
+        self.assertEqual((roller.type, roller.surface, roller.length), ("linear", "roller", 5.0))
+        self.assertTrue(roller.id.startswith("roller"))
+        self.assertEqual((roller.rollerPitch, roller.speed), (0.125, 0.3))
+        self.assertIn("roller conveyor", self.window.statusBar().currentMessage())
+        self.click(10.3, 2.4)                                 # inside the circle: a curved roller conveyor
+        curved = self.belts()[-1]
+        self.assertEqual((curved.type, curved.surface), ("curved", "roller"))
+        self.cad.pick_tool.start("belt")                      # B: belts again
+        self.click(2.5, 0)
+        self.assertEqual(self.belts()[-1].surface, "belt")
+
+    def test_a_bent_chain_is_no_roller_conveyor(self):
+        self.cad.sketch_line_tool.start()
+        for x, y in ((0, 0), (4, 0), (4, 3)):
+            self.click(x, y)
+        self.key(Qt.Key_Return)
+        self.roller_action().trigger()
+        self.set_type("auto")
+        self.click(2, 0)                                      # Auto would make a path belt
+        self.assertEqual(self.belts(), [])
+        self.assertIn("straight or curved", self.window.statusBar().currentMessage())
+
     def test_wrong_type_shows_why_and_creates_nothing(self):
         self.sketch(self.cad.sketch_rect_tool, "0,0", "4,2")
         self.cad.pick_tool.start()
