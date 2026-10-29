@@ -121,6 +121,15 @@ Migration steps:
 > `apax login` / renew the license, then `apax build` and `apax test` with
 > the generated files to confirm them on the real compiler.
 
+**Checking the interface by hand.** The designer's **PLC I/O** sections
+list each component's signals, named and typed as in the generated STRUCTs
+(`io_signals.py` reads the same mapping), with their live values once
+**Run in Simulator** has the layout running. While you bring up one PLC
+function block, set the other components' **Command source** to `manual`:
+the simulator then ignores their part of the PLC frames, and you set their
+commands from the designer. For example, run a belt or fire a pusher by
+hand, or force a sensor, and watch the PLC's reaction in the feedback rows.
+
 ## 4. TCP exchange: what changed in Python (compatible with the current PLC)
 
 - **Replies go to the asking client only.** `TcpFramedServer.send_to(conn)`

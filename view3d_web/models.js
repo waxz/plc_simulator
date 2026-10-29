@@ -396,7 +396,7 @@ export function stepTransfer(unit, dt) {
 
 // -- logistics equipment (logistics.py) -------------------------------------------------------------
 
-const STEEL = 0x9aa3ad, DARK = 0x2b3038;
+const DARK = 0x2b3038;
 
 // A scanner: an arch over the belt with a read line; a DWS a tunnel with a scale plate.
 export function buildScanner(s) {
@@ -430,48 +430,140 @@ export function setScanner(unit, [present, code, noRead]) {
   void code;
 }
 
-// A pusher: a frame beside the belt with a paddle that strokes across; a wheel
-// diverter: rows of small wheels in the belt that turn and lift when active.
+// Diverters, as equipment_geometry.py lays them out (local x along the travel,
+// y to the left, z up from the belt top; the same numbers):
+//   pusher  an actuator body on a stand beside the belt, on the side it pushes
+//           away from; the push plate with its guide rods strokes across
+//   wheels  a pop-up wheel module in the belt: a steel deck with rows of
+//           rubber wheels that lift and steer to the divert angle, its drive
+//           box and gear motor under the belt
+const DIV = { plateT: 0.04, plateFraction: 0.8, reach: 0.85, bodyW: 0.22, bodyGap: 0.08, bodyExtra: 0.12,
+              rodFraction: 0.3, pitchX: 0.15, pitchY: 0.12, wheelR: 0.035, wheelT: 0.022, inset: 0.9 };
+const ALU = 0xc3cad2, RUBBER = 0x1d2025;
+
+function statusLamp() {
+  const lamp = cylZ(0.022, 0.03, new THREE.MeshStandardMaterial({ color: 0x3a2a12, emissive: 0xffa31a,
+                                                                emissiveIntensity: 0 }), 16);
+  return lamp;
+}
+
+function buildPusher(d, g, unit, color) {
+  const side = Math.sin(deg(d.angle)) < 0 ? 1 : -1;      // stands on the left when it pushes right
+  const edge = side * d.h / 2, travel = d.h * DIV.reach, plateLen = d.w * DIV.plateFraction;
+  const bodyLen = travel + DIV.bodyExtra, bodyY = edge + side * (DIV.bodyGap + bodyLen / 2);
+  const bodyZ = 0.1, bodyH = 0.12;
+  const alu = mat(ALU, { metalness: 0.7, roughness: 0.35 }), dark = mat(DARK, { roughness: 0.5 });
+  // The actuator body: an aluminium profile with its slot, end caps and a valve.
+  g.add(cuboid(DIV.bodyW, bodyLen, bodyH, alu, 0, bodyY, bodyZ));
+  g.add(cuboid(DIV.bodyW * 0.18, bodyLen * 0.96, 0.004, dark, 0, bodyY, bodyZ + bodyH / 2 + 0.001));
+  for (const k of [-1, 1]) {
+    g.add(cuboid(DIV.bodyW + 0.02, 0.035, bodyH + 0.02, mat(color, { roughness: 0.45 }), 0,
+                 bodyY + k * (bodyLen / 2 + 0.0175), bodyZ));
+  }
+  // The front flange with the guide rods' linear bearings.
+  const front = edge + side * DIV.bodyGap;
+  g.add(cuboid(plateLen * 2 * DIV.rodFraction + 0.08, 0.03, 0.1, dark, 0, front + side * 0.015, bodyZ));
+  for (const k of [-DIV.rodFraction, DIV.rodFraction]) {
+    const bearing = cylY(0.026, 0.07, alu, 16);
+    bearing.position.set(k * plateLen, front + side * 0.035, bodyZ);
+    g.add(bearing);
+  }
+  const back = bodyY + side * (bodyLen / 2 + 0.035);
+  g.add(cuboid(0.09, 0.07, 0.06, dark, 0, back - side * 0.05, bodyZ + bodyH / 2 + 0.03));
+  const lamp = statusLamp();
+  lamp.position.set(0.025, back - side * 0.05, bodyZ + bodyH / 2 + 0.075);
+  g.add(lamp);
+  // Its stand: two legs to the floor on a foot.
+  const floor = -d.z, legTop = bodyZ - bodyH / 2;
+  for (const k of [-0.35, 0.35]) {
+    const y = bodyY + k * bodyLen;
+    g.add(cuboid(0.05, 0.05, legTop - floor, dark, 0, y, (legTop + floor) / 2));
+    g.add(cuboid(0.24, 0.12, 0.012, dark, 0, y, floor + 0.006));
+  }
+  // The moving part: push plate (rubber face towards the parcel) and guide rods.
+  const paddle = new THREE.Group();
+  const plateY = edge + side * DIV.plateT / 2;
+  paddle.add(cuboid(plateLen, DIV.plateT * 0.7, 0.16, mat(color, { roughness: 0.4 }), 0,
+                    plateY + side * DIV.plateT * 0.15, 0.095));
+  paddle.add(cuboid(plateLen * 0.98, DIV.plateT * 0.3, 0.15, mat(RUBBER, { roughness: 0.9 }), 0,
+                    plateY - side * DIV.plateT * 0.35, 0.095));
+  const rodLen = travel + DIV.bodyGap + 0.04;
+  for (const k of [-DIV.rodFraction, DIV.rodFraction]) {
+    const rod = cylY(0.012, rodLen, mat(0xdfe4ea, { metalness: 0.9, roughness: 0.2 }), 12);
+    rod.position.set(k * plateLen, plateY + side * (DIV.plateT / 2 + rodLen / 2), bodyZ);
+    paddle.add(rod);
+  }
+  g.add(paddle);
+  Object.assign(unit, { paddle, lamp, side, travel });
+}
+
+function buildWheelModule(d, g, unit, color) {
+  const deck = mat(0x8a939d, { metalness: 0.65, roughness: 0.4 });
+  g.add(cuboid(d.w * 0.98, d.h * 0.98, 0.006, deck, 0, 0, 0.004));
+  const frame = mat(color, { roughness: 0.45 });
+  for (const k of [-1, 1]) {
+    g.add(cuboid(d.w, 0.03, 0.012, frame, 0, k * (d.h / 2 - 0.015), 0.006));
+    g.add(cuboid(0.03, d.h, 0.012, frame, k * (d.w / 2 - 0.015), 0, 0.006));
+  }
+  // The divert direction, painted on the deck.
+  const arrow = new THREE.Shape();
+  const L = Math.min(d.w, d.h) * 0.36, W = L * 0.16;
+  arrow.moveTo(-L, -W); arrow.lineTo(L * 0.35, -W); arrow.lineTo(L * 0.35, -W * 2.4); arrow.lineTo(L, 0);
+  arrow.lineTo(L * 0.35, W * 2.4); arrow.lineTo(L * 0.35, W); arrow.lineTo(-L, W); arrow.closePath();
+  const paint = new THREE.Mesh(new THREE.ShapeGeometry(arrow),
+                               new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.55 }));
+  paint.position.z = 0.0075;
+  paint.rotation.z = deg(d.angle);
+  g.add(paint);
+  // Rows of rubber wheels (axles along local y: they roll along x until steered).
+  const nx = Math.max(2, Math.round(d.w * DIV.inset / DIV.pitchX)), ny = Math.max(2, Math.round(d.h * DIV.inset / DIV.pitchY));
+  const w = d.w * DIV.inset, h = d.h * DIV.inset, centres = [];
+  for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) centres.push([(i + 0.5) / nx * w - w / 2, (j + 0.5) / ny * h - h / 2]);
+  const wheels = new THREE.InstancedMesh(new THREE.CylinderGeometry(DIV.wheelR, DIV.wheelR, DIV.wheelT, 16),
+                                         mat(RUBBER, { roughness: 0.85 }), centres.length);
+  wheels.castShadow = wheels.receiveShadow = true;
+  g.add(wheels);
+  // Drive box and gear motor under the belt, a status lamp at the side.
+  g.add(cuboid(d.w * 0.8, d.h * 0.8, 0.1, mat(DARK), 0, 0, -0.24));
+  const motor = cylX(0.055, 0.22, mat(color, { metalness: 0.3, roughness: 0.45 }), 20);
+  motor.position.set(0, -(d.h / 2 + 0.12), -0.2);
+  g.add(motor);
+  g.add(cuboid(0.12, 0.12, 0.12, mat(DARK), 0.17, -(d.h / 2 + 0.12), -0.2));
+  const lamp = statusLamp();
+  lamp.position.set(d.w / 2 - 0.05, -(d.h / 2 + 0.04), 0.02);
+  g.add(lamp);
+  Object.assign(unit, { wheels, centres, lamp, steer: deg(Math.max(-60, Math.min(60, d.angle))) });
+}
+
 export function buildDiverter(d) {
   const g = new THREE.Group();
   g.position.set(d.x, d.y, d.z);
   g.rotation.z = deg(d.rot);
   const color = new THREE.Color(d.color).getHex();
-  const unit = { group: g, type: d.type, stroke: 0, target: 0, wheels: [] };
-  if (d.type === "pusher") {
-    const side = d.angle < 0 ? 1 : -1;            // the pusher stands on the side it pushes away from
-    const y0 = side * (d.h / 2 + 0.12);
-    g.add(cuboid(d.w * 0.9, 0.18, 0.22, mat(DARK), 0, y0 + side * 0.06, 0.11));
-    const paddle = new THREE.Group();
-    paddle.add(cuboid(d.w * 0.7, 0.03, 0.16, mat(color, { roughness: 0.4 }), 0, 0, 0.1));
-    paddle.add(cuboid(0.04, Math.abs(y0) + 0.05, 0.04, mat(STEEL, { metalness: 0.7 }), 0, side * (Math.abs(y0) / 2), 0.1));
-    paddle.position.y = y0 - side * 0.02;
-    g.add(paddle);
-    Object.assign(unit, { paddle, y0, travel: -side * (d.h * 0.85) });
-  } else {
-    const a = deg(d.angle) / 2;
-    for (let i = -2; i <= 2; i++) {
-      for (let j = -2; j <= 2; j++) {
-        const wheel = cylY(0.035, 0.025, mat(color, { roughness: 0.5 }), 16);
-        wheel.position.set(i * d.w / 5.5, j * d.h / 5.5, -0.02);
-        wheel.rotation.z = 0;
-        wheel.userData.turn = a;
-        g.add(wheel);
-        unit.wheels.push(wheel);
-      }
-    }
-  }
-  g.traverse((o) => { o.userData.label = `${d.label || d.id} (to ${d.destination})`; });
+  const unit = { group: g, type: d.type, stroke: 0, target: 0 };
+  if (d.type === "pusher") buildPusher(d, g, unit, color);
+  else buildWheelModule(d, g, unit, color);
+  g.traverse((o) => { o.userData.label = `${d.label || d.id} (${d.type === "pusher" ? "pusher" : "wheel diverter"}, to ${d.destination})`; });
+  stepDiverter(unit, 0);
   return unit;
 }
 
+const _wq = new THREE.Quaternion();
 export function stepDiverter(unit, dt) {
   unit.stroke += (unit.target - unit.stroke) * Math.min(1, dt * 10);
-  if (unit.paddle) unit.paddle.position.y = unit.y0 + unit.travel * unit.stroke;
-  for (const w of unit.wheels) {
-    w.position.z = -0.02 + 0.03 * unit.stroke;          // pop up through the belt
-    w.rotation.z = w.userData.turn * unit.stroke;
+  if (unit.lamp) unit.lamp.material.emissiveIntensity = unit.target ? 2.2 : 0;
+  if (unit.paddle) {
+    unit.paddle.position.y = -unit.side * unit.travel * unit.stroke;
+    return;
   }
+  // Wheels: tops just showing through the deck, lifted 12 mm and steered when active.
+  const z = 0.009 - DIV.wheelR + 0.012 * unit.stroke;
+  _wq.setFromAxisAngle(_zAxis, unit.steer * unit.stroke);
+  unit.centres.forEach(([x, y], i) => {
+    _p.set(x, y, z);
+    unit.wheels.setMatrixAt(i, _m.compose(_p, _wq, _s));
+  });
+  unit.wheels.instanceMatrix.needsUpdate = true;
 }
 
 export function buildTurntableRing(t) {

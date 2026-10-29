@@ -22,7 +22,7 @@ travelling they are on a level of their own (SHAFT_LEVEL - i), so nothing
 else touches them.
 
 Each machine runs itself (control "auto") or follows the PLC's command
-fields (control "plc"); the decisions are the small functions below
+fields (control "plc", or set by hand: "manual"); the decisions are the small functions below
 (stopper_wants_up, robot_should_start, elevator_auto), which plc_logic.py
 uses too, so auto mode and the PLC program behave alike.
 """
@@ -89,7 +89,7 @@ def stopper_wants_up(stopper: Stopper, state: dict, h: float) -> bool:
 def robot_should_start(robot: RobotArm, state: dict) -> bool:
     """Auto: a part waits at the pick point and the place point is ready.
     PLC: `start` turned on."""
-    if robot.control == "plc":
+    if robot.control != "auto":                       # "plc" or "manual": the command fields
         edge = robot.start and not state.get("last_start", False)
         state["last_start"] = robot.start
         return edge
@@ -310,7 +310,7 @@ class MachineRuntime:
     def _step_stopper(self, stopper: Stopper, h: float) -> None:
         state = self._stopper_state(stopper)
         stopper.occupied = self._touching(state["zone"], stopper.level)
-        if stopper.control == "plc":
+        if stopper.control != "auto":
             want_up = not stopper.release
         else:
             want_up = stopper_wants_up(stopper, state["auto"], h)
@@ -501,7 +501,7 @@ class MachineRuntime:
         if state is None:
             self._reset_robot(robot)
             state = self._robots[robot.id]
-        plc = robot.control == "plc"
+        plc = robot.control != "auto"                   # follows its command fields (PLC or manual)
         # Fault reset and the gripper bit act on their edges.
         if plc and robot.faultReset and not state.get("last_reset", False) and robot.fault:
             robot.fault, robot.faultCode = False, 0

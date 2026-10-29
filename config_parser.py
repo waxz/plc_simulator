@@ -34,6 +34,17 @@ class PathNode(BaseModel):
     bulge: float = 0.0
 
 
+# Where a component's command fields come from (its `control`):
+#   "plc"    - the PLC data exchange writes them (the default)
+#   "manual" - the operator sets them by hand (the designer's Data Exchange
+#              section, live in the running simulator); frames from the PLC
+#              leave them alone, so a component can be tested on its own
+# Machines also have "auto" (ControlMode below); a sensor's "command" is
+# its own output, forced by hand in "manual" (SensorControl).
+CommandSource = Literal["plc", "manual"]
+SensorControl = Literal["sim", "manual"]
+
+
 class Belt(BaseModel):
     id: str
     # "path": a drawn belt - centerline through `path` anchors (lines and
@@ -70,6 +81,7 @@ class Belt(BaseModel):
     #             bits plus `speed` as the magnitude; on the wire: run BOOL,
     #             reverse BOOL (with the other bits), speed REAL
     commandFormat: Literal["speed", "vfd"] = "speed"
+    control: CommandSource = "plc"
     run: bool = False
     reverse: bool = False
     # `speed` is the commanded setpoint (written by the PLC). The drive model
@@ -136,6 +148,9 @@ class Sensor(BaseModel):
     detectedWord: Optional[int] = 0
     sensor_states: Optional[Union[bool, int, str]] = None
     packFormat: PackFormat = "bit"
+    # "sim": the simulation decides the output; "manual": it stays as forced
+    # by hand (the designer's Data Exchange section), parcels or not.
+    control: SensorControl = "sim"
     # Signal conditioning, like a real sensor's timer/output settings:
     #   onDelay  - the output switches on only after the beam has been
     #              blocked this long (s): ignores flicker, gaps in a parcel
@@ -195,6 +210,7 @@ class Sink(BaseModel):
     label: str
     capacity: int = 0
     emptyTime: float = 0.0
+    control: CommandSource = "plc"
     empty: bool = False                                  # command
     count: int = Field(default=0, exclude=True)          # feedback: parcels in it now
     full: bool = Field(default=False, exclude=True)
@@ -234,16 +250,18 @@ class LedIndicator(BaseModel):
     # (`mode`): 0 off, 1 on, 2 blink slow (1 Hz), 3 blink fast (4 Hz); the lamp
     # (isOn) follows it in the simulator (devices.update_led).
     packFormat: PackFormat = "bit"
+    control: CommandSource = "plc"
     mode: int = Field(default=0, exclude=True)
 
 # ---------------------------------------------------------------------------
 # Machines (machines.py runs them in the simulation). Each one either runs
 # itself (control "auto": a small built-in controller, so a layout works
-# without a PLC) or follows the PLC's command fields (control "plc") - its
-# feedback fields go to the PLC either way.
+# without a PLC), follows the PLC's command fields (control "plc") or the
+# ones set by hand (control "manual", see CommandSource) - its feedback
+# fields go to the PLC either way.
 # ---------------------------------------------------------------------------
 
-ControlMode = Literal["auto", "plc"]
+ControlMode = Literal["auto", "plc", "manual"]
 
 
 class Pallet(BaseModel):
@@ -600,6 +618,7 @@ class GuardDoor(BaseModel):
     width: float = 1.0
     label: str = ""
     color: str = "#facc15"
+    control: CommandSource = "plc"
     lock: bool = False                                       # command
     closed: bool = Field(default=True, exclude=True)         # feedback
     locked: bool = Field(default=False, exclude=True)
@@ -624,6 +643,7 @@ class SafetyCircuit(BaseModel):
     resetButtonId: Optional[str] = None
     label: str = ""
     color: str = "#eab308"
+    control: CommandSource = "plc"
     reset: bool = False                                      # command
     ok: bool = Field(default=True, exclude=True)             # feedback
     tripped: bool = Field(default=False, exclude=True)

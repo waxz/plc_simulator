@@ -37,6 +37,8 @@ def run_pygame(config, physics_engine, mqtt, headless: bool, runner=None, config
     # --headless, where there's no on-screen overlay to look at.
     last_timing_report = time.perf_counter()
     reload_path = None
+    if link is not None:
+        link.config = config      # the designer's Data Exchange section reads it (sim_link.py)
 
     try:
         while running:
@@ -45,6 +47,8 @@ def run_pygame(config, physics_engine, mqtt, headless: bool, runner=None, config
                 reload_path = link.take_reload()
                 if reload_path:
                     break
+                for component_id, name, value in link.take_commands():
+                    renderer.set_io(component_id, name, value)
             # Event processing
             # TODO:   dt pass to process_events
             cmd = renderer.process_events()
@@ -96,6 +100,8 @@ def run_pygame(config, physics_engine, mqtt, headless: bool, runner=None, config
     except KeyboardInterrupt:
         print("Simulation stopped by user.")
     finally:
+        if link is not None:
+            link.config = None
         renderer.quit()
     return reload_path
 
@@ -227,7 +233,7 @@ def main():
     link = None
     if not args.headless:
         from sim_link import SimulatorLink
-        link = SimulatorLink(args.config)
+        link = SimulatorLink(args.config, args.source)
     try:
         while True:
             reload_path = run_layout(args, speed, link)
@@ -236,7 +242,7 @@ def main():
             print(f"[main] Reloading {reload_path} (Run in Simulator from the designer)...")
             args.config = reload_path
             args.source = link.pending_source
-            link.set_config(reload_path)
+            link.set_config(reload_path, args.source)
     finally:
         if link is not None:
             link.close()

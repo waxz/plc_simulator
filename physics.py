@@ -1122,17 +1122,21 @@ class PhysicsEngine:
         (an IR sensor's footprint, or each laser banner beam as a segment
         across the sensor), then the sensor's output stage
         (devices.condition: on/off delay, invert, detection counter)."""
+        # Sensors forced by hand (control "manual") keep their output.
+        forced = [(s, s.sensor_states) for s in self.config.sensors if s.control == "manual"]
         # Every parcel's position once, as arrays: each sensor then finds the
         # parcels near it with one numpy operation instead of a Python loop.
         self._parcel_arrays = self._positions_arrays()
         if kernels.AVAILABLE and self.config.sensors and self._compiled_sensors(h):
             self._parcel_arrays = None
-            return
-        self._vertex_cache = {}
-        for sensor in self.config.sensors:
-            raw = self._raw_beams(sensor)
-            sensor.sensor_states = devices.condition(sensor, raw, h)
-        self._parcel_arrays = self._vertex_cache = None
+        else:
+            self._vertex_cache = {}
+            for sensor in self.config.sensors:
+                raw = self._raw_beams(sensor)
+                sensor.sensor_states = devices.condition(sensor, raw, h)
+            self._parcel_arrays = self._vertex_cache = None
+        for sensor, state in forced:
+            sensor.sensor_states = state
 
     def _parcel_corner_array(self, xy):
         """Every parcel's world corners (n x 4 x 2), the arithmetic of

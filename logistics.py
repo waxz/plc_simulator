@@ -17,7 +17,7 @@ destination from its mix and, at its no-read rate, an unreadable label
 (identify). Scanners report them; auto diverters sort by them.
 
 Each device runs itself (control "auto") or follows the PLC's command fields
-(control "plc"); the decisions are the functions below (accumulator_runs,
+(control "plc", or set by hand: "manual"); the decisions are the functions below (accumulator_runs,
 turntable_auto), which plc_logic.py uses too.
 """
 import math
@@ -276,7 +276,7 @@ class LogisticsRuntime:
         d.present = bool(inside)
         first = inside[0] if inside else None
         d.presentCode = getattr(first, "barcode", 0) if first is not None and getattr(first, "readable", True) else 0
-        if d.control == "plc":
+        if d.control != "auto":
             d.active = bool(d.divert)
         else:
             d.active = any(getattr(p, "readable", True) and getattr(p, "destination", 0) == d.destination
@@ -304,7 +304,7 @@ class LogisticsRuntime:
         if phase == "down":
             state["settle"] = state["settle"] + h if ahead else 0.0
             want = state["settle"] >= 0.15 if t.control == "auto" else bool(t.transfer)
-            if want and (t.control == "plc" or ahead):
+            if want and (t.control != "auto" or ahead):
                 state["phase"], state["t"] = "lifting", 0.0
                 if inside:
                     t.transferred = (t.transferred + 1) & 0xFFFF

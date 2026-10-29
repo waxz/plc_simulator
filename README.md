@@ -213,6 +213,27 @@ The Qt layout editor is where belt shapes and positions are designed:
   Motion, Signal, Operation, Display) with units on every number. Sensors
   expose on/off delay, light-on (NC) and bit/byte packing; buttons their type,
   NC contact and key; belts the speed or VFD command format.
+- **PLC I/O** sections at the end of the property grid show the selected
+  component's PLC signals as they are on the wire (`io_signals.py`, from
+  the same mapping as the frames): **Commands (PLC -> simulator)**, such as a
+  belt's `speed`, a stopper's `release` or a diverter's `divert`, and
+  **Feedback (simulator -> PLC)**, such as a sensor's output, a belt's
+  `actualSpeed` or a stopper's `isUp`. Each signal shows its PLC type. When the
+  simulator runs this layout (after **Run in Simulator**), the values are
+  live, read a few times a second over the designer-simulator link
+  (`sim_link.request_io`). It is a quick way to check the API before writing
+  the PLC side.
+  - **Command source** (the component's `control`) says where the commands
+    come from: `auto` (the machine's built-in controller), `plc` (the PLC
+    data exchange) or `manual`. In `manual` the commands become editors (a
+    checkbox, a number, a beam string) that set the values in the running
+    simulator, and PLC frames leave that component alone. You can test a
+    belt, a pusher or a lamp by hand while the PLC runs the rest. A sensor's
+    source is `sim` or `manual`: in `manual` its output is forced to the
+    value you set, parcels or not.
+  - The source is a layout setting (saved, undoable); a change is also sent
+    to the running simulator at once. The values you type are live only and
+    are not saved.
 - **Run in Simulator** (toolbar, `F5`) shows the layout as it is on the
   canvas in the simulator **without saving it**: it writes a run copy to
   `<temp>/conveyor_sim_runs/` and runs that (`main.py <copy> --source
@@ -624,12 +645,14 @@ until it has reset and Start is pressed.
 ### Machines: pallets, stoppers, robot arms, elevators
 
 `machines.py` runs them in the simulation; in the designer they are in the
-library's **Machines** folder. Each stopper, robot arm and elevator has a
-`control` setting:
+library's **Pallet Handling**, **Robots** and **Conveyors > Transfers**
+folders. Each stopper, robot arm and elevator has a `control` setting:
 
 - `"auto"` (the default): a small built-in controller runs it, so a layout
   works without a PLC.
 - `"plc"`: it follows its command fields from the PLC.
+- `"manual"`: it follows command fields you set by hand in the designer's
+  PLC I/O section; PLC frames leave them alone.
 
 Its feedback fields go to the PLC either way.
 
@@ -751,9 +774,11 @@ python main.py test_config.json --channel-registry channels.json --web-ui
 
 ### Logistics equipment: identification, sorting, accumulation, safety
 
-`logistics.py` runs these. They are in the designer's **Logistics** and
-**Safety** library folders. Each device works by itself (`control: "auto"`)
-or follows the PLC (`"plc"`), and its feedback goes to the PLC either way.
+`logistics.py` runs these. They are in the designer's **Identification**,
+**Sorting** and **Safety** library folders. Each device works by itself
+(`control: "auto"`), follows the PLC (`"plc"`) or follows commands set by
+hand (`"manual"`); its feedback goes to the PLC either way. Guard doors,
+safety relays and chutes have no auto mode: `"plc"` or `"manual"`.
 Like the machines, each one joins the generated I/O frames when a layout has
 it (`MACHINE_FIELDS`).
 
@@ -765,6 +790,16 @@ that turn at the conveyor's actual speed (on a curve: tapered rollers on the
 radii, between curved side frames). In the designer it is **Roller
 Conveyor** / **Curved Roller Conveyor** in Conveyors > Rollers, or a belt's
 **Surface** property.
+
+**Diverters as machines.** A pusher is drawn and modelled as the real thing:
+an actuator body on a stand beside the belt, on the side it pushes away
+from, with two guide rods and a push plate. The plate sits at the belt edge
+and sweeps across while the pusher is active, and a valve lamp lights. A
+wheel diverter is a pop-up wheel module in the belt: a steel deck with rows
+of rubber wheels that rise and steer to the divert angle while active (60
+degrees at most), with its drive box and gear motor under the belt. The
+designer, the simulator window and the 3D view all draw them from the same
+dimensions (`equipment_geometry.py`).
 
 **Parcel identity.** A source numbers its parcels (`barcodeStart`), gives
 each a destination from `destinations` / `destinationWeights`, and a share

@@ -537,7 +537,7 @@ class MQTTSyncEngine:
 
             try:
                 with self._lock:
-                    channel.message.deserialize(payload, self.config)
+                    channel.message.deserialize(payload, self.config, skip_manual=True)
             except Exception as exc:
                 # e.g. a mapped component deleted in the editor at runtime.
                 # Drop this one frame; letting it propagate would kill the

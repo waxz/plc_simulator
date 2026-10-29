@@ -96,7 +96,8 @@ class EditorClicksTest(unittest.TestCase):
         self.assertTrue(panel.tree.isVisible())
         self.assertIn("button_1_1_2", panel.header.text())
         groups = [panel.tree.topLevelItem(i).text(0) for i in range(panel.tree.topLevelItemCount())]
-        self.assertEqual(groups, ["Identity", "Position", "Geometry", "Operation", "Display"])
+        self.assertEqual(groups, ["Identity", "Position", "Geometry", "Operation", "Display", "PLC I/O",
+                                  "Feedback (simulator -> PLC)"])        # a button: its contact, to the PLC
 
         # Click the NC contact box: the model changes, undo puts it back.
         nc = panel.checkboxes["normallyClosed"]

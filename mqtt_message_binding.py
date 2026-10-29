@@ -689,8 +689,10 @@ class ComponentMessage:
 
         return struct.pack(self.format_string, *pack_values)
 
-    def deserialize(self, data: bytes, config: SimulatorConfig) -> None:
-        """Unpack a raw payload and write values back into mapped config attributes."""
+    def deserialize(self, data: bytes, config: SimulatorConfig, skip_manual: bool = False) -> None:
+        """Unpack a raw payload and write values back into mapped config attributes.
+        `skip_manual` (the simulator's inbound PLC frames): components whose
+        commands are set by hand (control "manual") keep theirs."""
         if len(data) != self.payload_size:
             print(
                 "Error unpacking data: expected {} bytes, got {}".format(
@@ -730,6 +732,8 @@ class ComponentMessage:
 
                 if not component_name.startswith("padding"):
                     component = find_component_by_id(component_name, config)
+                    if skip_manual and getattr(component, "control", None) == "manual":
+                        continue
                     current = getattr(component, variable)
                     setattr(component, variable, _write_bit(current, index, bit_value))
                 continue
@@ -743,6 +747,8 @@ class ComponentMessage:
             if component_name == "clock":
                 continue
             component = find_component_by_id(component_name, config)
+            if skip_manual and getattr(component, "control", None) == "manual":
+                continue
             current = getattr(component, variable)
             if isinstance(current, (str, bool)):
                 setattr(component, variable, _int_to_matching_shape(int(value), current))

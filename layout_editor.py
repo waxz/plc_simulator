@@ -69,8 +69,10 @@ rotation is applied.
 import argparse
 import math
 import os
+import queue
 import subprocess
 import sys
+import threading
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Callable, List, Optional
@@ -94,7 +96,10 @@ from config_parser import (
     load_config,
 )
 from config_parser import Accumulator, Diverter, GuardDoor, SafetyCircuit, Scanner, Transfer, Turntable
+import equipment_geometry as geo
 import hmi_style as hmi
+import io_signals
+import sim_link
 from cad.path import (
     belt_local_path, flatten as path_flatten, footprint as path_footprint, path_flow_sign, path_length,
     segments as path_segments,
@@ -1922,8 +1927,20 @@ class ScannerItem(_MachineItem):
         painter.drawText(rect, Qt.AlignCenter, {"barcode": "SCAN", "rfid": "RFID", "dws": "DWS"}[self.model.scannerType])
 
 
+def _local_rect(rect) -> QRectF:
+    """An equipment_geometry rectangle (metres, y up) in item coordinates."""
+    cx, cy, sx, sy = rect
+    return QRectF((cx - sx / 2.0) * SCALE, -(cy + sy / 2.0) * SCALE, sx * SCALE, sy * SCALE)
+
+
 class DiverterItem(_MachineItem):
-    """A diverter's zone (dashed) and an arrow in its divert direction."""
+    """A diverter (equipment_geometry.py), the zone it acts on as its
+    outline:
+      pusher  the actuator body beside the belt, on the side it pushes away
+              from, its guide rods and the push plate at the belt edge
+      wheels  the pop-up wheel module in the belt, its wheels turned to
+              the divert angle
+    and an arrow in the divert direction."""
 
     kind = "diverter"
 
@@ -1934,22 +1951,100 @@ class DiverterItem(_MachineItem):
     def _outline(self):
         return _rect_points(self.model.width, self.model.height)
 
+    def _pusher(self):
+        m = self.model
+        return geo.pusher_parts(m.width, m.height, m.divertAngle) if m.diverterType == "pusher" else None
+
+    def _extent(self) -> QRectF:
+        """What it draws beyond its outline: the pusher's body."""
+        parts = self._pusher()
+        return _local_rect(parts.body) if parts is not None else QRectF()
+
+    def refresh_shape(self):
+        self.prepareGeometryChange()            # still with the old extent
+        self._drawn = self._extent()
+        super().refresh_shape()
+
+    def boundingRect(self) -> QRectF:
+        drawn = self.__dict__.get("_drawn")
+        if drawn is None:
+            drawn = self._drawn = self._extent()
+        rect = super().boundingRect()
+        return (rect.united(drawn) if not drawn.isNull() else rect).adjusted(-2, -2, 2, 2)
+
     def paint(self, painter: QPainter, option, widget=None):
-        color = QColor(self.model.color)
-        self.setBrush(Qt.NoBrush)
-        self.setPen(QPen(color, 0, Qt.DashLine))
+        m = self.model
+        color = QColor(m.color)
+        parts = self._pusher()
+        if parts is not None:
+            self.setBrush(Qt.NoBrush)
+            self.setPen(QPen(color, 0, Qt.DashLine))
+        else:
+            fill = QColor(color)
+            fill.setAlpha(35)
+            self.setBrush(QBrush(fill))
+            self.setPen(QPen(color, 0))
         super().paint(painter, option, widget)
-        a = math.radians(self.model.divertAngle)
-        reach = max(self.model.width, self.model.height) * SCALE * 0.45
+        if parts is not None:
+            self._paint_pusher(painter, parts, color)
+        else:
+            self._paint_wheels(painter, color)
+        # The divert direction.
+        a = math.radians(m.divertAngle)
+        reach = min(m.width, m.height) * SCALE * 0.42
         tip = QPointF(reach * math.cos(a), -reach * math.sin(a))            # local, y down
-        painter.setPen(QPen(color, max(1.0, reach * 0.08)))
-        painter.drawLine(QPointF(0, 0), tip)
+        start = QPointF(0, 0)
+        if parts is not None:                                               # from the push plate
+            start = QPointF(0, _local_rect(parts.plate).center().y())
+            tip = start + QPointF(reach * 1.6 * math.cos(a), -reach * 1.6 * math.sin(a))
+        arrow = QColor(color)
+        arrow.setAlpha(200)
+        painter.setPen(QPen(arrow, max(1.0, reach * 0.07)))
+        painter.drawLine(start, tip)
+        head = math.atan2(-(tip.y() - start.y()), tip.x() - start.x())
         for side in (-0.45, 0.45):
-            back = math.atan2(-tip.y(), tip.x()) + math.pi + side
-            painter.drawLine(tip, tip + QPointF(reach * 0.3 * math.cos(back), -reach * 0.3 * math.sin(back)))
+            back = head + math.pi + side
+            painter.drawLine(tip, tip + QPointF(reach * 0.28 * math.cos(back), -reach * 0.28 * math.sin(back)))
+        # The destination, small in a corner of the zone.
+        font = QFont(painter.font())
+        font.setPixelSize(max(1, int(min(m.width, m.height) * SCALE * 0.16)))
+        painter.setFont(font)
         painter.setPen(QPen(hmi.qcolor(hmi.TEXT), 0))
-        painter.drawText(self.polygon().boundingRect(), Qt.AlignBottom | Qt.AlignHCenter,
-                         f"-> {self.model.destination}")
+        zone = self.polygon().boundingRect().adjusted(3, 3, -3, -3)
+        painter.drawText(zone, Qt.AlignBottom | Qt.AlignRight, f"-> {m.destination}")
+
+    def _paint_pusher(self, painter: QPainter, parts, color: QColor):
+        body = _local_rect(parts.body)
+        painter.setPen(QPen(hmi.qcolor(hmi.TEXT_DIM), 0))
+        painter.setBrush(QBrush(QColor("#3a4049")))
+        painter.drawRect(body)
+        # The cylinder's slot along the body, its end cap and valve.
+        painter.setPen(QPen(QColor("#5b6470"), 0))
+        painter.drawLine(QPointF(body.center().x(), body.top() + 3), QPointF(body.center().x(), body.bottom() - 3))
+        cap = geo.BODY_EXTRA * SCALE * 0.6
+        far = body.bottom() - cap if parts.side < 0 else body.top()
+        painter.setBrush(QBrush(color.darker(150)))
+        painter.drawRect(QRectF(body.left(), far, body.width(), cap))
+        steel = QPen(QColor("#9aa3ad"), max(1.0, 0.022 * SCALE))
+        painter.setPen(steel)
+        for a, b in parts.rods:
+            painter.drawLine(QPointF(a[0] * SCALE, -a[1] * SCALE), QPointF(b[0] * SCALE, -b[1] * SCALE))
+        painter.setPen(QPen(color.darker(200), 0))
+        painter.setBrush(QBrush(color))
+        painter.drawRect(_local_rect(parts.plate))
+
+    def _paint_wheels(self, painter: QPainter, color: QColor):
+        m = self.model
+        steer = geo.wheel_steer(m.divertAngle)
+        length, thick = 2 * geo.WHEEL_R * SCALE, geo.WHEEL_T * SCALE
+        painter.setPen(QPen(QColor("#111418"), 0))
+        painter.setBrush(QBrush(QColor("#2b3038")))
+        for x, y in geo.wheel_centres(m.width, m.height):
+            painter.save()
+            painter.translate(x * SCALE, -y * SCALE)
+            painter.rotate(-steer)
+            painter.drawRoundedRect(QRectF(-length / 2, -thick / 2, length, thick), thick / 3, thick / 3)
+            painter.restore()
 
 
 class TransferItem(_MachineItem):
@@ -3973,7 +4068,7 @@ def _field_specs_for(item: PlacedItem):
                   ("int", "level", "Level", 0, 20), ("text", "label", "Label")]
     elif isinstance(item, StopperItem):
         specs += [("float", "width", "Width", 0.05, 10.0, 0.05), ("float", "depth", "Depth", 0.01, 1.0, 0.01),
-                  ("int", "level", "Level", 0, 20), ("combo", "control", "Control", ["auto", "plc"]),
+                  ("int", "level", "Level", 0, 20),
                   ("float", "actuationTime", "Actuation", 0.0, 10.0, 0.05),
                   ("float", "holdTime", "Hold time", 0.0, 3600.0, 0.5),
                   ("float", "releaseTime", "Release time", 0.0, 3600.0, 0.5), ("text", "label", "Label")]
@@ -3990,13 +4085,13 @@ def _field_specs_for(item: PlacedItem):
                   ("float", "toolLength", "Tool length", 0.0, 1.0, 0.01),
                   ("int", "pickLevel", "Pick level", 0, 20), ("int", "placeLevel", "Place level", 0, 20),
                   ("combo", "placeTarget", "Place on", ["any", "pallet"]),
-                  ("combo", "control", "Control", ["auto", "plc"]), ("text", "label", "Label")]
+                  ("text", "label", "Label")]
     elif isinstance(item, ElevatorItem):
         specs += [("float", "width", "Length", 0.2, 20.0, 0.05), ("float", "height", "Width", 0.2, 20.0, 0.05),
                   ("text", "beltId", "Platform belt"), ("int", "levels", "Levels", 2, 20),
                   ("float", "levelHeight", "Level height", 0.1, 50.0, 0.1),
                   ("float", "liftSpeed", "Lift speed", 0.01, 10.0, 0.05),
-                  ("combo", "control", "Control", ["auto", "plc"]), ("int", "autoFrom", "Auto from", 0, 20),
+                  ("int", "autoFrom", "Auto from", 0, 20),
                   ("int", "autoTo", "Auto to", 0, 20), ("text", "label", "Label")]
     elif isinstance(item, ScannerItem):
         specs += [("combo", "scannerType", "Type", ["barcode", "rfid", "dws"]),
@@ -4007,23 +4102,23 @@ def _field_specs_for(item: PlacedItem):
                   ("float", "width", "Zone length", 0.05, 10.0, 0.05), ("float", "height", "Zone width", 0.05, 10.0, 0.05),
                   ("float", "divertAngle", "Divert angle", -180.0, 180.0, 5.0),
                   ("float", "speed", "Divert speed", 0.05, 10.0, 0.05),
-                  ("int", "destination", "Destination", 0, 255), ("combo", "control", "Control", ["auto", "plc"]),
+                  ("int", "destination", "Destination", 0, 255),
                   ("int", "level", "Level", 0, 20), ("text", "label", "Label")]
     elif isinstance(item, TurntableItem):
         specs += [("float", "radius", "Radius", 0.1, 10.0, 0.05), ("text", "beltId", "Platform belt"),
                   ("text", "angles", "Positions"), ("float", "turnSpeed", "Turn speed", 1.0, 720.0, 5.0),
-                  ("combo", "control", "Control", ["auto", "plc"]), ("int", "autoFrom", "Auto from", 0, 20),
+                  ("int", "autoFrom", "Auto from", 0, 20),
                   ("int", "autoTo", "Auto to", 0, 20), ("text", "label", "Label")]
     elif isinstance(item, TransferItem):
         specs += [("float", "width", "Zone length", 0.2, 10.0, 0.05), ("float", "height", "Zone width", 0.2, 10.0, 0.05),
                   ("float", "crossAngle", "Transfer angle", -180.0, 180.0, 90.0),
                   ("float", "speed", "Transfer speed", 0.05, 5.0, 0.05),
                   ("float", "liftTime", "Lift time", 0.0, 5.0, 0.05), ("bool", "stop", "Stops pallets"),
-                  ("combo", "control", "Control", ["auto", "plc"]), ("int", "level", "Level", 0, 20),
+                  ("int", "level", "Level", 0, 20),
                   ("text", "label", "Label")]
     elif isinstance(item, AccumulatorItem):
         specs += [("text", "beltIds", "Zone belts"), ("combo", "mode", "Mode", ["singulation", "train"]),
-                  ("combo", "control", "Control", ["auto", "plc"]), ("text", "label", "Label")]
+                  ("text", "label", "Label")]
     elif isinstance(item, GuardDoorItem):
         specs += [("float", "width", "Width", 0.2, 10.0, 0.05), ("text", "label", "Label")]
     elif isinstance(item, SafetyItem):
@@ -4056,6 +4151,36 @@ def _parse_list(attr: str, text: str):
 # Units shown in the property grid's number boxes.
 _FIELD_UNITS = hmi.PROPERTY_UNITS
 
+# The property grid's PLC I/O sections (PropertiesPanel._build_io).
+IO_GROUP = "PLC I/O"
+IO_COMMANDS = "Commands (PLC -> simulator)"
+IO_FEEDBACK = "Feedback (simulator -> PLC)"
+IO_POLL_MS = 300
+# Command source -> (status line, its tooltip).
+_CONTROL_HINTS = {
+    "auto": ("auto", "Its own controller sets the commands."),
+    "plc": ("from the PLC", "The PLC data exchange sets the commands."),
+    "manual": ("set by hand", "Set the commands below - PLC frames leave them alone."),
+    "sim": ("simulated", "The simulation sets the output."),
+}
+_IO_NOT_RUNNING = ("not running", "Run in Simulator (F5) to see the live values here.")
+_CONTROL_TIP = ("Where the commands come from:\n"
+                "  auto - the component's built-in controller (runs without a PLC)\n"
+                "  plc - the PLC data exchange\n"
+                "  manual - by hand, below (live in the running simulator); PLC frames are ignored\n"
+                "A sensor: sim - the simulation decides its output; manual - forced by hand.")
+
+
+def _io_text(value) -> str:
+    """A live signal value as the PLC would show it."""
+    if value is None:
+        return "-"
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, float):
+        return f"{value:.3f}"
+    return str(value)
+
 
 class PropertiesPanel(QWidget):
     """Property grid of the selected component - like an engineering tool's:
@@ -4083,6 +4208,21 @@ class PropertiesPanel(QWidget):
         self.id_edit: Optional[QLineEdit] = None
         self.color_btn: Optional[QPushButton] = None
         self._collapsed_groups = set()
+        # PLC I/O (_build_io): the selected component's PLC signals, live from
+        # the simulator running this layout (sim_link.request_io, polled on
+        # a worker thread so a slow or vanished simulator never stalls the UI).
+        self.layout_paths: Optional[Callable[[], tuple]] = None   # MainWindow: (layout file, run copy)
+        self.io_rows = {}                   # signal name -> (Signal, value label, editor or None)
+        self.io_status: Optional[QLabel] = None
+        self.io_live: Optional[dict] = None    # {"control", "values"} while the simulator runs this layout
+        self._io_jobs: "queue.Queue" = queue.Queue()
+        self._io_reply = None               # (ids, reply) from the worker, for the UI thread
+        self._io_busy = False
+        self._io_worker: Optional[threading.Thread] = None
+        self.io_timer = QTimer(self)
+        self.io_timer.setInterval(IO_POLL_MS)
+        self.io_timer.timeout.connect(self._poll_io)
+        self.io_timer.start()
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(4, 4, 4, 4)
@@ -4152,6 +4292,10 @@ class PropertiesPanel(QWidget):
         self.checkboxes.clear()
         self.id_edit = None
         self.color_btn = None
+        self.io_rows = {}
+        self.io_status = None
+        self.io_live = None
+        self._io_offline = None
 
     def _update_header(self):
         item = self.current
@@ -4231,6 +4375,7 @@ class PropertiesPanel(QWidget):
             self.color_btn = QPushButton("-")
             self.color_btn.clicked.connect(self._pick_color)
             self._add_row("Display", "Color", self.color_btn)
+        self._build_io()
         for group, tree_item in self._group_items.items():
             tree_item.setExpanded(group not in self._collapsed_groups)
         self.tree.resizeColumnToContents(0)
@@ -4405,11 +4550,18 @@ class PropertiesPanel(QWidget):
 
     def _do_apply_combo_field(self, item, attr: str, value):
         setattr(item.model, attr, value)
+        if attr == "control" and item is self.current and self.io_live is not None:
+            # The simulator runs this layout: switch it there too, now.
+            self._io_send(item.model.id, "control", value)
+            self.io_live["control"] = value
+            self._show_io()
         if attr == "sensorType" and value == "laser_banner":
             item.model.laserCount = item.model.laserCount or 16
             item.model.beamDistance = item.model.beamDistance or 0.05
         if hasattr(item, "_sync_brush"):
             item._sync_brush()
+        if isinstance(item, _MachineItem):
+            item.refresh_shape()                # e.g. a diverter's type changes what it draws
         item.update()
         if item is self.current:
             if attr in ("sensorType", "surface"):
@@ -4426,6 +4578,184 @@ class PropertiesPanel(QWidget):
             return
         self._rebuild_fields()
         self._load()
+
+    # -- PLC I/O --------------------------------------------------------------------
+
+    def _build_io(self):
+        """The PLC I/O sections: where the commands come from (`control`),
+        whether the simulator runs this layout, and every PLC signal - its
+        commands and its feedback, named and typed as on the wire
+        (io_signals.py), with the live values. In "manual" the commands
+        (a sensor: its output) become editors that set them in the running
+        simulator."""
+        model = self.current.model
+        signals = io_signals.signals(model)
+        if not signals:
+            return
+        options = io_signals.control_options(model)
+        if options:
+            combo = QComboBox()
+            combo.addItems(options)
+            combo.setToolTip(_CONTROL_TIP)
+            combo.currentTextChanged.connect(lambda text: self._apply_combo_field("control", text))
+            self.combos["control"] = combo
+            self._add_row(IO_GROUP, "Command source", combo)
+        self.io_status = QLabel()
+        self.io_status.setObjectName("ioStatus")
+        self.io_status.setWordWrap(True)
+        self._add_row(IO_GROUP, "Simulator", self.io_status)
+        dim = hmi.hex_(hmi.TEXT_DIM)
+        for signal in signals:
+            cell = QWidget()
+            row_layout = QHBoxLayout(cell)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            row_layout.setSpacing(6)
+            value = QLabel("-")
+            row_layout.addWidget(value, 1)
+            editor = self._io_editor(signal) if signal.settable else None
+            if editor is not None:
+                editor.hide()
+                row_layout.addWidget(editor, 1)
+            plc_type = QLabel(signal.plc_type)
+            plc_type.setStyleSheet(f"color: {dim}")
+            row_layout.addWidget(plc_type)
+            command = signal.direction == "command"
+            row = self._add_row(IO_COMMANDS if command else IO_FEEDBACK, signal.name, cell)
+            row.setToolTip(0, f"{model.id}/{signal.name}: {signal.plc_type}, "
+                              f"{'PLC -> simulator' if command else 'simulator -> PLC'}")
+            self.io_rows[signal.name] = (signal, value, editor)
+        self._show_io()
+
+    def _io_editor(self, signal) -> QWidget:
+        """The editor a settable signal gets in "manual"."""
+        name = signal.name
+        if signal.count > 1:
+            editor = QLineEdit()
+            editor.setPlaceholderText("0" * signal.count)
+            editor.setToolTip("Beam 0 first, one 0 / 1 per beam")
+            editor.editingFinished.connect(lambda e=editor: self._set_io(name, e.text().strip()))
+        elif signal.byte_type == io_signals.ByteType.BIT:
+            editor = QCheckBox()
+            editor.toggled.connect(lambda on: self._set_io(name, on))
+        elif signal.byte_type == io_signals.ByteType.FLOAT:
+            editor = QDoubleSpinBox()
+            editor.setRange(-1e6, 1e6)
+            editor.setDecimals(3)
+            editor.setSingleStep(0.1)
+            editor.setKeyboardTracking(False)          # set on Enter / arrows, not per keystroke
+            editor.valueChanged.connect(lambda v: self._set_io(name, v))
+        else:
+            editor = QSpinBox()
+            editor.setRange(0, min((1 << io_signals._WIDTH.get(signal.byte_type, 32)) - 1, 2 ** 31 - 1))
+            editor.setKeyboardTracking(False)
+            editor.valueChanged.connect(lambda v: self._set_io(name, v))
+        editor.setObjectName(f"io_{name}")
+        return editor
+
+    def _show_io(self):
+        """Live values (or "-"), the status line, and editors where the
+        commands are set by hand in the running simulator."""
+        if self.io_status is None:
+            return
+        live = self.io_live
+        control = (live or {}).get("control") or getattr(self.current.model, "control", None)
+        editable = live is not None and control == "manual"
+        # Short (it shares a row with its label); the explanation in the tooltip.
+        if live is not None:
+            short, tip = _CONTROL_HINTS.get(control, ("", ""))
+            color = hmi.hex_(hmi.RUNNING)
+            self.io_status.setText(f"<span style='color:{color}'>&#9679; live</span> &middot; {short}")
+        else:
+            short, tip = self._io_offline or _IO_NOT_RUNNING
+            self.io_status.setText(f"&#9675; {short}")
+        self.io_status.setToolTip(tip)
+        on = hmi.hex_(hmi.RUNNING)
+        for name, (signal, label, editor) in self.io_rows.items():
+            value = live["values"].get(name) if live is not None else None
+            label.setText(_io_text(value))
+            label.setStyleSheet(f"color: {on}; font-weight: bold" if value is True else "")
+            if editor is None:
+                continue
+            editor.setVisible(editable)
+            label.setVisible(not editable)
+            if editable and not editor.hasFocus() and value is not None:
+                editor.blockSignals(True)
+                if isinstance(editor, QCheckBox):
+                    editor.setChecked(bool(value))
+                elif isinstance(editor, QLineEdit):
+                    editor.setText(str(value))
+                else:
+                    editor.setValue(value)
+                editor.blockSignals(False)
+
+    _io_offline = None              # (status, tooltip) while not live
+
+    def _set_io(self, name: str, value):
+        """An editor's value, to the running simulator (manual only)."""
+        if self.current is None or self.io_live is None:
+            return
+        self._io_send(self.current.model.id, name, value)
+        self.io_live["values"][name] = value
+
+    def _io_send(self, component_id: str, name: str, value):
+        self._io_job(("set", (component_id, name, value)))
+
+    def _io_job(self, job):
+        if self._io_worker is None:
+            self._io_worker = threading.Thread(target=self._io_work, name="designer-io", daemon=True)
+            self._io_worker.start()
+        self._io_jobs.put(job)
+
+    def _io_work(self):
+        """The worker thread: talks to the simulator, in order."""
+        while True:
+            kind, args = self._io_jobs.get()
+            if kind == "io":
+                self._io_reply = (args, sim_link.request_io(args))
+                self._io_busy = False
+            else:
+                sim_link.request_set(*args)
+
+    def _poll_io(self):
+        reply, self._io_reply = self._io_reply, None
+        if reply is not None:
+            self._apply_io_reply(*reply)
+        if not self.io_rows or self.current is None or self._io_busy or not self.isVisible():
+            return
+        self._io_busy = True
+        self._io_job(("io", [self.current.model.id]))
+
+    def refresh_io(self):
+        """Read the live values now, on this thread (tests, scripts)."""
+        if self.current is not None and self.io_rows:
+            ids = [self.current.model.id]
+            self._apply_io_reply(ids, sim_link.request_io(ids, timeout=sim_link.TIMEOUT_S))
+
+    def _apply_io_reply(self, ids, reply):
+        item = self.current
+        if item is None or not self.io_rows or ids != [item.model.id]:
+            return                                  # an answer for an earlier selection
+        paths = self.layout_paths() if self.layout_paths is not None else ()
+        live = None
+        if reply is None:
+            self._io_offline = None
+        elif not sim_link.runs_layout(reply, *paths):
+            name = os.path.basename(reply.get("source") or reply.get("config") or "")
+            self._io_offline = ("another layout", f"The simulator runs another layout ({name}). "
+                                                  f"Run in Simulator (F5) to test this one.")
+        elif item.model.id not in reply.get("values", {}):
+            self._io_offline = ("not in the run", "This component is not in the layout the simulator runs. "
+                                                  "Run in Simulator (F5) again.")
+        else:
+            live = reply["values"][item.model.id]
+            ours = getattr(item.model, "control", None)
+            if ours is not None and live.get("control") != ours:
+                # Changed here before the simulator was seen running: this layout's
+                # setting wins (the simulator runs this layout).
+                self._io_send(item.model.id, "control", ours)
+                live["control"] = ours
+        self.io_live = live
+        self._show_io()
 
     def _apply_id(self):
         item = self.current
@@ -4881,6 +5211,7 @@ class MainWindow(QMainWindow):
         properties_panel = PropertiesPanel(self.scene, self.items_list, on_model_changed=manager_panel.refresh)
         self.properties_panel = properties_panel
         properties_panel.undo_stack = self.undo_stack
+        properties_panel.layout_paths = lambda: (self.config_path, getattr(self, "_run_file", None))
         props_dock = QDockWidget("Properties", self)
         props_dock.setWidget(properties_panel)
         self.addDockWidget(Qt.RightDockWidgetArea, props_dock)

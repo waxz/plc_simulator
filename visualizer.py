@@ -382,6 +382,21 @@ class Renderer:
         print(f"[Sim] 3D view: {url}")
         return url
 
+    def set_io(self, component_id: str, name: str, value) -> bool:
+        """A component's `control` or one of its PLC signals set by hand
+        (the designer's Data Exchange section, io_signals.apply): here and,
+        with the simulation in its own process, there too."""
+        import io_signals
+        with self.sim_lock:
+            error = io_signals.apply(self.config, component_id, name, value)
+        if error:
+            print(f"[Sim] Not set: {error}")
+            return False
+        remote = getattr(self.physics, "set_io", None)
+        if remote is not None:
+            remote(component_id, name, value)
+        return True
+
     def _set_button(self, button, pressed: bool):
         """Press / release an operator button: here (the lamp-and-contact
         state shown at once) and, when the simulation runs in its own

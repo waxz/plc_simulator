@@ -14,8 +14,18 @@ running one:
 Only if none answers is a new process started. Two simulators would also
 fight over the PLC exchange port.
 
+The designer's Data Exchange section also reads a component's PLC signals
+live from the simulator and sets them by hand (io_signals.py):
+
+  request_io(ids)                 -> the values, or None (no simulator)
+  request_set(id, name, value)    -> queued for the simulator's next frame
+
 Protocol: one JSON line each way.
-  -> {"cmd": "reload" | "open", "config": "<layout.json>"}
+  -> {"cmd": "reload" | "open", "config": "<layout.json>", "source": ...}
+  <- {"ok": true, "pid": 1234}
+  -> {"cmd": "io", "ids": ["belt_1", ...]}
+  <- {"ok": true, "pid": 1234, "config": ..., "source": ..., "values": {...}}
+  -> {"cmd": "set", "id": "div_1", "name": "divert", "value": true}
   <- {"ok": true, "pid": 1234}
 """
 import json
@@ -28,6 +38,7 @@ from typing import Optional
 import hmi_style as hmi
 
 TIMEOUT_S = 2.0
+IO_TIMEOUT_S = 0.3          # the designer polls io several times a second: never hang it
 COMMANDS = {"sim": "reload", "designer": "open"}
 
 
@@ -52,9 +63,10 @@ class InstanceLink:
     """An app's listener: a thread that queues requested layouts;
     `take()` hands the app's own loop the latest one (once), or None."""
 
-    def __init__(self, role: str, config_path: Optional[str] = None):
+    def __init__(self, role: str, config_path: Optional[str] = None, source: Optional[str] = None):
         self.role = role
         self.config_path = os.path.abspath(config_path) if config_path else None
+        self.source = os.path.abspath(source) if source else None
         self._pending: Optional[str] = None
         self.pending_source: Optional[str] = None       # the layout file a run copy was made from
         self._lock = threading.Lock()
@@ -71,13 +83,25 @@ class InstanceLink:
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:
-                json.dump({"pid": os.getpid(), "port": self.port, "config": self.config_path}, f)
+                json.dump({"pid": os.getpid(), "port": self.port, "config": self.config_path,
+                           "source": self.source}, f)
         except OSError as exc:
             print(f"[{self.role}-link] Could not write {path}: {exc}")
 
-    def set_config(self, config_path: Optional[str]):
+    def set_config(self, config_path: Optional[str], source: Optional[str] = None):
         self.config_path = os.path.abspath(config_path) if config_path else None
+        self.source = os.path.abspath(source) if source else None
         self._write_registry()
+
+    def _handle(self, request: dict) -> dict:
+        """The reply to one request (on the listener thread)."""
+        if request.get("cmd") == COMMANDS[self.role] and request.get("config"):
+            with self._lock:
+                self._pending = os.path.abspath(request["config"])
+                source = request.get("source")
+                self.pending_source = os.path.abspath(source) if source else None
+            return {"ok": True}
+        return {"ok": False}
 
     def _serve(self):
         while not self._closed:
@@ -89,13 +113,9 @@ class InstanceLink:
                 try:
                     conn.settimeout(TIMEOUT_S)
                     request = json.loads(conn.makefile("r", encoding="utf-8").readline() or "{}")
-                    ok = request.get("cmd") == COMMANDS[self.role] and bool(request.get("config"))
-                    if ok:
-                        with self._lock:
-                            self._pending = os.path.abspath(request["config"])
-                            source = request.get("source")
-                            self.pending_source = os.path.abspath(source) if source else None
-                    conn.sendall((json.dumps({"ok": ok, "pid": os.getpid()}) + "\n").encode("utf-8"))
+                    reply = self._handle(request if isinstance(request, dict) else {})
+                    reply["pid"] = os.getpid()
+                    conn.sendall((json.dumps(reply) + "\n").encode("utf-8"))
                 except (OSError, ValueError):
                     pass
 
@@ -119,11 +139,51 @@ class InstanceLink:
 
 
 class SimulatorLink(InstanceLink):
-    def __init__(self, config_path: Optional[str]):
-        super().__init__("sim", config_path)
+    """The simulator's listener: reload requests, plus the Data Exchange
+    section's reads (answered here, from `config` - the layout the window
+    shows) and hand-set values (queued: take_commands() hands them to the
+    window loop, which applies them to the simulation)."""
+
+    def __init__(self, config_path: Optional[str], source: Optional[str] = None):
+        self.config = None          # set by the window loop (main.run_pygame)
+        self._commands: list = []
+        super().__init__("sim", config_path, source)
 
     def take_reload(self) -> Optional[str]:
         return self.take()
+
+    def take_commands(self) -> list:
+        """[(component id, signal name, value), ...] set since the last call."""
+        with self._lock:
+            commands, self._commands = self._commands, []
+        return commands
+
+    def _handle(self, request: dict) -> dict:
+        cmd = request.get("cmd")
+        if cmd == "io":
+            import io_signals
+            config = self.config
+            ids = [str(i) for i in request.get("ids") or []]
+            values = io_signals.read(config, ids) if config is not None else {}
+            return {"ok": config is not None, "config": self.config_path, "source": self.source,
+                    "values": values}
+        if cmd == "set" and request.get("id") and request.get("name"):
+            with self._lock:
+                self._commands.append((str(request["id"]), str(request["name"]), request.get("value")))
+            return {"ok": True}
+        return super()._handle(request)
+
+
+def _exchange(entry: dict, request: dict, timeout: float) -> Optional[dict]:
+    """Send one request to the app noted in `entry`; its reply, or None."""
+    try:
+        with socket.create_connection(("127.0.0.1", int(entry["port"])), timeout=timeout) as conn:
+            conn.settimeout(timeout)
+            conn.sendall((json.dumps(request) + "\n").encode("utf-8"))
+            reply = json.loads(conn.makefile("r", encoding="utf-8").readline() or "{}")
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return reply if isinstance(reply, dict) else None
 
 
 def _request(role: str, config_path: str, source: Optional[str] = None) -> Optional[int]:
@@ -138,17 +198,11 @@ def _request(role: str, config_path: str, source: Optional[str] = None) -> Optio
             ctypes.windll.user32.AllowSetForegroundWindow(int(entry["pid"]))
         except (OSError, AttributeError, ValueError):
             pass
-    try:
-        with socket.create_connection(("127.0.0.1", int(entry["port"])), timeout=TIMEOUT_S) as conn:
-            conn.settimeout(TIMEOUT_S)
-            request = {"cmd": COMMANDS[role], "config": os.path.abspath(config_path)}
-            if source:
-                request["source"] = os.path.abspath(source)
-            conn.sendall((json.dumps(request) + "\n").encode("utf-8"))
-            reply = json.loads(conn.makefile("r", encoding="utf-8").readline() or "{}")
-    except (OSError, ValueError):
-        return None
-    return reply.get("pid") if reply.get("ok") else None
+    request = {"cmd": COMMANDS[role], "config": os.path.abspath(config_path)}
+    if source:
+        request["source"] = os.path.abspath(source)
+    reply = _exchange(entry, request, TIMEOUT_S)
+    return reply.get("pid") if reply and reply.get("ok") else None
 
 
 def request_reload(config_path: str, source: Optional[str] = None) -> Optional[int]:
@@ -163,3 +217,32 @@ def request_open_designer(config_path: str) -> Optional[int]:
     """Ask the running designer to show `config_path` (front window, opening
     it if another layout is open). Its pid, or None if none is running."""
     return _request("designer", config_path)
+
+
+def request_io(ids, timeout: float = IO_TIMEOUT_S) -> Optional[dict]:
+    """The running simulator's live PLC signals of the components `ids`
+    (io_signals.read), with the layout it runs ("config", and "source" when
+    that is a run copy); None if no simulator answers."""
+    entry = _read_registry("sim")
+    if entry is None:
+        return None
+    reply = _exchange(entry, {"cmd": "io", "ids": list(ids)}, timeout)
+    return reply if reply and reply.get("ok") else None
+
+
+def request_set(component_id: str, name: str, value, timeout: float = IO_TIMEOUT_S) -> bool:
+    """Ask the running simulator to set a component's `control` or one of
+    its signals by hand (io_signals.apply, on its next frame)."""
+    entry = _read_registry("sim")
+    if entry is None:
+        return False
+    reply = _exchange(entry, {"cmd": "set", "id": component_id, "name": name, "value": value}, timeout)
+    return bool(reply and reply.get("ok"))
+
+
+def runs_layout(reply: Optional[dict], *paths: Optional[str]) -> bool:
+    """Whether a request_io reply comes from a simulator running one of
+    these layout files (as itself or as its run copy)."""
+    if not reply:
+        return False
+    return any(same_layout(reply.get(key), path) for key in ("config", "source") for path in paths)

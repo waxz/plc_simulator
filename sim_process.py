@@ -24,13 +24,15 @@ import time
 from typing import Dict, List, Optional
 
 import devices
+import io_signals
 from config_parser import SimulatorConfig, load_config
 from mqtt_data_exchange import apply_exchange_config
+from mqtt_message_binding import MACHINE_FIELDS as _IO_FIELDS
 from physics import ParcelView
 
 # Runtime fields copied from the simulation to the window's mirror.
 BELT_FIELDS = ("speed", "run", "reverse", "actualSpeed", "running", "fault", "atSpeed", "encoderCount", "load",
-               "level")
+               "level", "directionAngle", "reversing")
 # Machines' runtime fields (machines.py), per config list.
 MACHINE_FIELDS = {
     "pallets": ("loadCount",),
@@ -49,6 +51,11 @@ MACHINE_FIELDS = {
     "safety": ("ok", "tripped"),
     "sinks": ("count", "full"),
 }
+# ... and every PLC signal too (mqtt_message_binding.MACHINE_FIELDS), so the
+# designer's Data Exchange section reads them all from the window's mirror.
+for _kind, _fields in MACHINE_FIELDS.items():
+    _signals = [name for side in _IO_FIELDS.get(_kind, {}).values() for group in side for _bt, name in group]
+    MACHINE_FIELDS[_kind] = _fields + tuple(n for n in dict.fromkeys(_signals) if n not in _fields)
 SNAPSHOT_TIMEOUT_S = 5.0
 
 
@@ -58,6 +65,7 @@ def _component_state(config: SimulatorConfig) -> dict:
         "sensors": {s.id: s.sensor_states for s in config.sensors},
         "buttons": {b.id: b.sensor_states for b in config.buttons},
         "leds": {l.id: l.isOn for l in config.leds},
+        "led_modes": {l.id: l.mode for l in config.leds},
         "machines": {kind: {c.id: tuple(getattr(c, f) for f in fields) for c in getattr(config, kind)}
                      for kind, fields in MACHINE_FIELDS.items()},
     }
@@ -71,8 +79,9 @@ def _apply_component_state(config: SimulatorConfig, state: dict) -> None:
             for field, value in zip(BELT_FIELDS, values):
                 if value is not None:
                     setattr(belt, field, value)
-    for kind, attr in (("sensors", "sensor_states"), ("buttons", "sensor_states"), ("leds", "isOn")):
-        values = state[kind]
+    for key, kind, attr in (("sensors", "sensors", "sensor_states"), ("buttons", "buttons", "sensor_states"),
+                            ("leds", "leds", "isOn"), ("led_modes", "leds", "mode")):
+        values = state.get(key, {})
         for component in getattr(config, kind):
             if component.id in values:
                 setattr(component, attr, values[component.id])
@@ -173,6 +182,9 @@ def simulation_main(conn, settings: dict) -> None:
             elif cmd == "door":
                 with lock:
                     physics.logistics.toggle_door(arg)
+            elif cmd == "io":
+                with lock:
+                    io_signals.apply(config, *arg)
             elif cmd == "clear":
                 physics.clear_parcels()
             elif cmd == "reset":
@@ -328,6 +340,10 @@ class PhysicsProxy:
 
     def set_button(self, button_id: str, pressed: bool) -> None:
         self._send("button", (button_id, pressed))
+
+    def set_io(self, component_id: str, name: str, value) -> None:
+        """A component's `control` or PLC signal set by hand (io_signals.apply)."""
+        self._send("io", (component_id, name, value))
 
     def toggle_door(self, door_id: str) -> None:
         """The operator opens / closes a guard door (logistics.py)."""

@@ -9,6 +9,7 @@ from typing import Optional
 
 import pygame
 
+import equipment_geometry as geo
 import hmi_style as hmi
 from math_utils import get_rect_vertices, point_in_polygon
 
@@ -156,6 +157,36 @@ def _draw_diverter(r, d) -> None:
         pygame.draw.polygon(r.screen, color, pts, 2)
     else:
         _polygon_dashed(r.screen, color, pts)
+    # The machine itself (equipment_geometry.py): the pusher beside the belt,
+    # its plate across while active; or the wheel module's wheels, turned
+    # to the divert angle while active.
+    rot = math.radians(d.rotation)
+    ca, sa = math.cos(rot), math.sin(rot)
+
+    def screen(lx, ly):
+        return r._world_to_screen(d.x + lx * ca - ly * sa, d.y + lx * sa + ly * ca)
+
+    def rect(cx, cy, sx, sy):
+        return [screen(cx + u * sx / 2, cy + v * sy / 2) for u, v in ((-1, -1), (1, -1), (1, 1), (-1, 1))]
+
+    px_per_m = math.dist(screen(0, 0), screen(1, 0))
+    if d.diverterType == "pusher":
+        parts = geo.pusher_parts(d.width, d.height, d.divertAngle, 1.0 if d.active else 0.0)
+        body = rect(*parts.body)
+        pygame.draw.polygon(r.screen, (58, 64, 73), body)
+        pygame.draw.polygon(r.screen, hmi.TEXT_DIM, body, 1)
+        for a, b in parts.rods:
+            pygame.draw.line(r.screen, (154, 163, 173), screen(*a), screen(*b), max(1, int(0.022 * px_per_m)))
+        plate = rect(*parts.plate)
+        pygame.draw.polygon(r.screen, color, plate)
+        pygame.draw.polygon(r.screen, hmi.shade(color, 0.5), plate, 1)
+    elif px_per_m >= 25:                                   # wheels too small to see further out
+        steer = math.radians(geo.wheel_steer(d.divertAngle) if d.active else 0.0)
+        dx, dy = geo.WHEEL_R * math.cos(steer), geo.WHEEL_R * math.sin(steer)
+        wheel = color if d.active else (43, 48, 56)
+        width = max(1, int(geo.WHEEL_T * px_per_m))
+        for x, y in geo.wheel_centres(d.width, d.height):
+            pygame.draw.line(r.screen, wheel, screen(x - dx, y - dy), screen(x + dx, y + dy), width)
     # The divert direction.
     a = math.radians(d.rotation + d.divertAngle)
     reach = max(d.width, d.height) * 0.45
