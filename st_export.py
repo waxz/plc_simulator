@@ -8,10 +8,21 @@ layout (io_topics / MACHINE_FIELDS / metric layouts / FrameType).
 
 Writes, in the namespace `--namespace` (default Simulator.Io):
 
-  SimIoTypes.st      one STRUCT per frame: Sim_Input (simulator -> PLC),
+  SimIoTypes.st      a STRUCT per kind of device and direction - its PLC
+                     interface, e.g. Diverter_Command (divert,
+                     commandSpeed, commandAngle) and Diverter_Feedback, one
+                     per device_kinds.DEVICE_KINDS entry (plus BeltDrive_
+                     Command / BeltVfd_Command / BeltDrive_Feedback) - and
+                     one STRUCT per frame: Sim_Input (simulator -> PLC),
                      Sim_Output (PLC -> simulator), Belt_Feedback (when the
-                     layout sends it) and the metric layouts - a member per
-                     signal, named after the component (and field)
+                     layout sends it) and the metric layouts. A frame has a
+                     member per component, named after it: a device or belt
+                     of its kind's STRUCT (div_1 : Diverter_Command), a
+                     sensor / button / lamp a BOOL (an ARRAY for a laser
+                     banner, a register when packed). So a PLC function
+                     block per kind of device takes that kind's STRUCTs, and
+                     a new kind of device (device_kinds.py) gets its own
+                     STRUCTs here without touching this file.
   SimIoSerde.st      DeserializeFromBytes / SerializeToBytes overloads per
                      STRUCT, written from the byte / bit offsets of the
                      Python packer (io_layout.layout_fields) - not re-derived
@@ -39,7 +50,10 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import io_layout
 from config_parser import SimulatorConfig, load_config
-from mqtt_message_binding import ByteType, belt_feedback_mapping, custom_component_mapping, parse_path
+from config_parser import Belt
+from device_kinds import kind_of
+from mqtt_message_binding import (ByteType, belt_feedback_mapping, custom_component_mapping, find_component_by_id,
+                                  parse_path)
 from tcp_framed_transport import FrameType, TcpFrameCodec
 
 ST_TYPES = {ByteType.BIT: "BOOL", ByteType.BYTE: "BYTE", ByteType.UINT16: "UINT", ByteType.UINT32: "UDINT",
@@ -68,6 +82,36 @@ def frames(config: SimulatorConfig) -> List[Tuple[str, int, list]]:
     return out
 
 
+# Which side of the exchange each frame carries: "out" = simulator -> PLC
+# (feedback), "in" = PLC -> simulator (commands). Metric frames: neither.
+FRAME_DIRECTIONS = {"Sim_Input": "out", "Sim_Output": "in", "Belt_Feedback": "out"}
+
+
+def device_type(component, direction: Optional[str]) -> Optional[str]:
+    """The STRUCT a component is in a frame of this direction, or None (a
+    plain value: a sensor, a button, a lamp, the clock)."""
+    if direction is None:
+        return None
+    side = "Feedback" if direction == "out" else "Command"
+    kind = kind_of(component)
+    if kind is not None:
+        return f"{kind.st_name}_{side}"
+    if isinstance(component, Belt):
+        if side == "Command" and component.commandFormat == "vfd":
+            return "BeltVfd_Command"
+        return f"BeltDrive_{side}"
+    return None
+
+
+def _component(config: Optional[SimulatorConfig], component_id: str):
+    if config is None or component_id == "clock" or component_id.startswith("padding"):
+        return None
+    try:
+        return find_component_by_id(component_id, config)
+    except ValueError:
+        return None
+
+
 def _metric_name(enum_name: str) -> str:
     return "_".join(part.capitalize() for part in enum_name.lower().split("_"))
 
@@ -90,10 +134,18 @@ class Member:
         return f"{self.name} : ARRAY[0..{self.length - 1}] OF {self.st_type};"
 
 
-def members(mapping) -> Tuple[List[Member], List[Tuple[io_layout.LayoutField, str]]]:
+def members(mapping, config: Optional[SimulatorConfig] = None, direction: Optional[str] = None
+            ) -> Tuple[List[Member], List[Tuple[io_layout.LayoutField, str]]]:
     """The STRUCT members of a frame and, per non-padding field, the ST
-    expression (relative to `value.`) that holds it."""
+    expression (relative to `value.`) that holds it. With the layout and
+    the frame's direction, a device or belt is one member of its kind's
+    STRUCT (device_type) and its fields are reached through it."""
     fields = [f for f in io_layout.layout_fields(mapping) if not f.is_padding]
+    grouped: Dict[str, str] = {}
+    for f in fields:
+        component = parse_path(f.path)[0]
+        if component not in grouped:
+            grouped[component] = device_type(_component(config, component), direction)
     per_component: Dict[str, set] = {}
     indexed: Dict[Tuple[str, str], int] = {}
     for f in fields:
@@ -106,6 +158,13 @@ def members(mapping) -> Tuple[List[Member], List[Tuple[io_layout.LayoutField, st
     declared: Dict[str, Member] = {}
     for f in fields:
         component, field, index = parse_path(f.path)
+        if grouped.get(component):
+            name = _st_name(component)
+            if name not in declared:
+                declared[name] = Member(name, grouped[component])
+                out.append(declared[name])
+            access.append((f, f"{name}.{_st_name(field)}"))
+            continue
         if component == "clock":
             name, st_type = "clock", "LINT"
         else:
@@ -120,15 +179,40 @@ def members(mapping) -> Tuple[List[Member], List[Tuple[io_layout.LayoutField, st
     return out, access
 
 
+def device_structs(config: SimulatorConfig) -> Dict[str, List[Tuple[str, str]]]:
+    """The device STRUCTs the frames use: type name -> [(member, ST type)],
+    in wire order (bits first). Every component of a kind has the same
+    fields, so one STRUCT serves them all."""
+    structs: Dict[str, List[Tuple[str, str]]] = {}
+    for name, _frame_type, mapping in frames(config):
+        direction = FRAME_DIRECTIONS.get(name)
+        seen: Dict[str, List[Tuple[str, str]]] = {}
+        for f in io_layout.layout_fields(mapping):
+            if f.is_padding:
+                continue
+            component_id, field, _index = parse_path(f.path)
+            type_name = device_type(_component(config, component_id), direction)
+            if type_name:
+                seen.setdefault(component_id, []).append((_st_name(field), ST_TYPES[f.byte_type]))
+        for component_id, fields in seen.items():
+            type_name = device_type(_component(config, component_id), direction)
+            if structs.setdefault(type_name, fields) != fields:
+                raise ValueError(f"{component_id}: its fields differ from the other {type_name}s")
+    return dict(sorted(structs.items()))
+
+
 def contract(config: SimulatorConfig, source: str = "") -> dict:
     endian = config.mqttSettings.endianness
     out = {"source": source, "endianness": endian,
            "lengthEndianness": config.mqttSettings.tcpLengthEndianness or endian,
            "magic": TcpFrameCodec.MAGIC_MARKER_INT, "headerSize": TcpFrameCodec.HEADER_SIZE,
            "trailerSize": TcpFrameCodec.TRAILER_SIZE,
-           "frameTypes": {m.name: int(m) for m in FrameType}, "frames": []}
+           "frameTypes": {m.name: int(m) for m in FrameType},
+           "structs": {name: [{"name": n, "type": t} for n, t in fields]
+                       for name, fields in device_structs(config).items()},
+           "frames": []}
     for name, frame_type, mapping in frames(config):
-        _members, access = members(mapping)
+        _members, access = members(mapping, config, FRAME_DIRECTIONS.get(name))
         out["frames"].append({
             "name": name, "frameType": frame_type, "size": io_layout.layout_size(mapping),
             "fingerprint": io_layout.layout_fingerprint(mapping),
@@ -202,8 +286,13 @@ def _header(c: dict, what: str) -> List[str]:
 
 def emit_types(c: dict, config: SimulatorConfig, namespace: str) -> str:
     lines = _header(c, "The simulator <-> PLC frames as STRUCTs.") + [f"NAMESPACE {namespace}", "    TYPE"]
+    lines.append("        // The PLC interface of each kind of device (device_kinds.py), per direction.")
+    for type_name, fields in device_structs(config).items():
+        lines.append(f"        {type_name} : STRUCT")
+        lines += [f"            {n} : {t};" for n, t in fields]
+        lines.append("        END_STRUCT;")
     for name, frame_type, mapping in frames(config):
-        mem, _access = members(mapping)
+        mem, _access = members(mapping, config, FRAME_DIRECTIONS.get(name))
         lines.append(f"        // frame type {frame_type}, {io_layout.layout_size(mapping)} bytes, "
                      f"fingerprint {io_layout.layout_fingerprint(mapping):08X}")
         lines.append(f"        {name} : STRUCT")
@@ -223,7 +312,7 @@ def emit_serde(c: dict, config: SimulatorConfig, namespace: str) -> str:
     lines += ["USING System.Serialization;", "USING System.BitAccess;", "", f"NAMESPACE {namespace}"]
     for name, _frame_type, mapping in frames(config):
         size = io_layout.layout_size(mapping)
-        _mem, access = members(mapping)
+        _mem, access = members(mapping, config, FRAME_DIRECTIONS.get(name))
         bit_bytes = sorted({f.byte for f, _ in access if f.byte_type == ByteType.BIT})
         layout = [f"    //   {expr} -> byte {f.byte}" + (f", bit {f.bit}" if f.bit is not None else
                                                           f"..{f.byte + SIZES.get(f.byte_type, 8) - 1}")
@@ -303,8 +392,7 @@ def emit_vectors(c: dict, config: SimulatorConfig, namespace: str) -> str:
               "    {TestFixture}", "    CLASS SimIoVectorsTest"]
     for name, _frame_type, mapping in frames(config):
         size = io_layout.layout_size(mapping)
-        mem, access = members(mapping)
-        types = {m.name: m.st_type for m in mem}
+        _mem, access = members(mapping, config, FRAME_DIRECTIONS.get(name))
         values = sample_values(access)
         expected = pack(size, access, values, c["endianness"])
         byte_list = ", ".join(f"BYTE#16#{b:02X}" for b in expected)
@@ -319,8 +407,8 @@ def emit_vectors(c: dict, config: SimulatorConfig, namespace: str) -> str:
                   "                i : DINT;",
                   "            END_VAR"]
         for f, expr in access:
-            base = expr.split("[")[0]
-            lines.append(f"            value.{expr} := {_st_literal(values[expr], types[base])};")
+            st_type = "LINT" if expr == "clock" else ST_TYPES[f.byte_type]
+            lines.append(f"            value.{expr} := {_st_literal(values[expr], st_type)};")
         lines += [f"            size := SerializeToBytes(UDINT#0, value, bytes);",
                   f"            Equal(size, UDINT#{size});",
                   f"            FOR i := 0 TO {size - 1} DO",

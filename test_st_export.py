@@ -94,7 +94,16 @@ class EmitTest(unittest.TestCase):
             self.assertIn(f"startOffset + UDINT#{io_layout.layout_size(mapping)};", serde)
         self.assertEqual(serde.count("FUNCTION DeserializeFromBytes"), serde.count("FUNCTION SerializeToBytes"))
         self.assertEqual(serde.count("FUNCTION "), serde.count("END_FUNCTION"))
-        self.assertIn("dws_1_code : UDINT;", types)
+        # A device is one member of its kind's STRUCT (device_kinds.py), and
+        # the serializers reach its fields through it.
+        self.assertIn("dws_1 : Scanner_Feedback;", types)
+        self.assertIn("Scanner_Feedback : STRUCT", types)
+        self.assertIn("            code : UDINT;", types)
+        self.assertIn("div_1 : Diverter_Command;", types)
+        self.assertIn("infeed : BeltDrive_Command;", types)
+        self.assertIn("value.dws_1.code", serde)
+        structs = st_export.device_structs(self.config)
+        self.assertEqual([n for n, _t in structs["Diverter_Command"]], ["divert", "commandSpeed", "commandAngle"])
         for text in self.files.values():
             self.assertIn("Do not edit by hand", text)
             self.assertNotRegex(text, r"\bNone\b")
@@ -102,7 +111,7 @@ class EmitTest(unittest.TestCase):
     def test_golden_vectors_hold_the_python_bytes(self):
         vectors = self.files["SimIoVectorsTest.st"]
         frame, _t, mapping = st_export.frames(self.config)[0]
-        _m, access = st_export.members(mapping)
+        _m, access = st_export.members(mapping, self.config, st_export.FRAME_DIRECTIONS.get(frame))
         size = io_layout.layout_size(mapping)
         expected = st_export.pack(size, access, st_export.sample_values(access), "LE")
         literal = ", ".join(f"BYTE#16#{b:02X}" for b in expected)

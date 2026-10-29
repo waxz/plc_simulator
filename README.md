@@ -967,6 +967,61 @@ the outfeed and feeders L2 and L3 merging into it, each with its own panel.
 Both: `--autostart` runs without pressing Start; belts run at their design
 speed from the layout file (1 m/s where it is 0).
 
+### Complete logistics system (`logistics_full.json`)
+
+One layout with every kind of machine, sensor and device, run by the mock
+PLC. `tools/build_logistics_full.py` builds it from the two demos plus the
+parts they lack, so rerun it after changing either demo.
+
+- **Sorting line:** induct with a barcode scanner, three accumulation
+  zones, a DWS, a laser banner, two pushers and a wheel diverter into three
+  chutes, and a turntable sending no-reads to their bin. A guard door, a
+  light curtain and the e-stop are on the safety relay.
+- **Pallet loop (below):** a roller loop with four 90-degree transfers,
+  pallets, stoppers, a 6-axis robot loading parts from its pick sensor,
+  and an elevator to the upper level.
+- **Tote line (above):** a roller conveyor, a curved roller conveyor, an
+  RFID reader, a curved belt, and a sensor before the tote store.
+- **Operator panel:** START, STOP, RESET and E-STOP buttons, and RUN and
+  FAULT lamps.
+
+Its exchange is on in the file: TCP on 127.0.0.1:5001.
+
+```bash
+python main.py logistics_full.json
+```
+
+```bash
+python plc_mock.py logistics_full.json --autostart
+```
+
+**Checking the exchange.** `tools/verify_exchange.py` runs a layout end to
+end: the simulator (headless) and `plc_mock.py`, each in its own process
+on a free port. It then checks:
+
+- the I/O layout handshake (LAYOUT_CHECK: the same frames on both sides);
+- that frames flow both ways, with no size or decode errors on either
+  side;
+- that nothing moves before the PLC, and that afterwards belts run,
+  parcels reach the chutes, scanners read, doors lock and the safety relay
+  stays OK.
+
+```bash
+python tools/verify_exchange.py logistics_full.json --seconds 60
+```
+
+`test_device_kinds.py` also sends every field of both frames across and
+compares them value by value.
+
+**Adding a kind of device.** Every kind of machine and logistics device on
+the exchange is declared once in `device_kinds.py`: its config list, model,
+PLC commands and feedback, and the name of its PLC STRUCTs. The frames
+(`io_topics`, in registry order), the component lookup, the inspector's PLC
+I/O, the simulator window's mirror and `st_export.py`'s STRUCTs all derive
+from it. The mock PLC's logic for each kind is one function registered with
+`@device_program` in `plc_logic.py`. The steps are listed at the top of
+`device_kinds.py`.
+
 ### PLC data in Foxglove (middleware)
 
 `plc_foxglove_bridge.py` is a TCP server for the PLC: it receives the PLC's

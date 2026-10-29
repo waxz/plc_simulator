@@ -49,12 +49,13 @@ import math
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Set
 
 import devices
 import logistics
 import machines
 from config_parser import SimulatorConfig
+from device_kinds import DEVICE_KINDS
 
 DEFAULT_SPEED = 1.0  # m/s for belts whose layout speed is 0
 
@@ -118,131 +119,188 @@ CHUTE_SWAP_S = 5.0     # a full chute without an empty time: emptied this long a
 LOADED_AFTER_S = 0.5   # elevator: a part on the platform this long is on board (its belt stops)
 
 
+# ---------------------------------------------------------------------------
+# Device programs: what this PLC does with each kind of device
+# (device_kinds.DEVICE_KINDS), once per scan, from the device's feedback to
+# its commands. One function per kind, registered with @device_program:
+# adding a kind of device to the PLC is one more of these. They run in the
+# registry's order (scanners before diverters: the reads feed the tracking).
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Scan:
+    """What a device program gets each scan."""
+    running: bool                  # the line runs (started, no jam / fault)
+    dt: float                      # s since the last scan
+    speeds: Dict[str, float]       # belt id -> its running speed (platform belts)
+    events: List[str]              # log lines of this scan
+    reset: bool                    # Start / Reset pressed this scan
+
+
+DeviceProgram = Callable[["MachineControl", object, Scan], None]
+DEVICE_PROGRAMS: Dict[str, DeviceProgram] = {}
+
+
+def device_program(list_name: str):
+    """Register the PLC program for one kind of device (its SimulatorConfig
+    list name, as in device_kinds.DEVICE_KINDS)."""
+    def register(fn: DeviceProgram) -> DeviceProgram:
+        DEVICE_PROGRAMS[list_name] = fn
+        return fn
+    return register
+
+
+def _run_platform_belt(control: "MachineControl", belt_id: Optional[str], run: bool, scan: Scan) -> None:
+    belt = control.belts.get(belt_id) if belt_id else None
+    if belt is None:
+        return
+    nominal = scan.speeds.get(belt.id, DEFAULT_SPEED)
+    if belt.commandFormat == "vfd":
+        belt.run, belt.speed = run, abs(nominal)
+    else:
+        belt.speed = nominal if run else 0.0
+
+
+@device_program("stoppers")
+def _stopper(control, stopper, scan: Scan) -> None:
+    """Hold what arrives for holdTime, then let it pass; stopped: stay up."""
+    state = control.state(stopper)
+    release = scan.running and not machines.stopper_wants_up(stopper, state, scan.dt)
+    if release != stopper.release:
+        scan.events.append(f"stopper {stopper.id} {'released' if release else 'up'}")
+    stopper.release = release
+
+
+@device_program("robots")
+def _robot(control, robot, scan: Scan) -> None:
+    """Program 1 (pick and place) when its pick sensor sees a part and the
+    place point is ready; a fault (e.g. a point out of reach) is reset with
+    the line's reset."""
+    robot.enable, robot.program = True, 1
+    part = part_at_pick(control.config, robot)
+    robot.start = scan.running and robot.ready and part and robot.placeReady
+    robot.faultReset = robot.fault and scan.reset
+
+
+@device_program("elevators")
+def _elevator(control, elevator, scan: Scan) -> None:
+    """Load at autoFrom, lift to autoTo, unload, come back - running its
+    platform belt only for that."""
+    state = control.state(elevator)
+    on_board = elevator.occupied and elevator.atLevel
+    state["on_s"] = state.get("on_s", 0.0) + scan.dt if on_board else 0.0
+    state["loaded"] = state["on_s"] >= LOADED_AFTER_S
+    target, run = machines.elevator_auto(elevator, state, scan.dt)
+    if not scan.running:
+        run = False
+    elif target != elevator.targetLevel:
+        scan.events.append(f"elevator {elevator.id} to level {target}")
+        elevator.targetLevel = target
+    _run_platform_belt(control, elevator.beltId, run, scan)
+
+
+@device_program("scanners")
+def _scanner(control, scanner, scan: Scan) -> None:
+    """Tracking: each read gives code -> destination (what a warehouse
+    system answers)."""
+    if control.reads.get(scanner.id) != scanner.readCount:
+        control.reads[scanner.id] = scanner.readCount
+        if scanner.code and scanner.readCount:
+            control.track[scanner.code] = scanner.destination
+            if len(control.track) > 4096:                       # forget the oldest
+                control.track.pop(next(iter(control.track)))
+
+
+@device_program("diverters")
+def _diverter(control, d, scan: Scan) -> None:
+    """Fire when the code in its zone is tracked to its destination, at the
+    layout's speed and direction."""
+    d.commandSpeed, d.commandAngle = d.speed, d.divertAngle
+    fire = scan.running and d.presentCode != 0 and control.track.get(d.presentCode) == d.destination
+    if fire and not d.divert:
+        scan.events.append(f"diverter {d.id}: {d.presentCode} -> destination {d.destination}")
+    d.divert = fire
+
+
+@device_program("turntables")
+def _turntable(control, table, scan: Scan) -> None:
+    """Load at autoFrom, turn to autoTo, unload, turn back."""
+    target, run = logistics.turntable_auto(table, control.state(table), scan.dt)
+    if scan.running and target != table.targetIndex:
+        scan.events.append(f"turntable {table.id} to position {target}")
+        table.targetIndex = target
+    _run_platform_belt(control, table.beltId, run and scan.running, scan)
+
+
+@device_program("transfers")
+def _transfer(control, t, scan: Scan) -> None:
+    """Lift once a pallet stands centred; keep running until it has left."""
+    transfer = scan.running and (t.centered or (t.transfer and t.present))
+    if transfer and not t.transfer:
+        scan.events.append(f"transfer {t.id}")
+    t.transfer = transfer
+
+
+@device_program("accumulators")
+def _accumulator(control, acc, scan: Scan) -> None:
+    """Released while the line runs."""
+    acc.release = scan.running
+
+
+@device_program("doors")
+def _door(control, door, scan: Scan) -> None:
+    """Locked while the line runs."""
+    door.lock = scan.running
+
+
+@device_program("safety")
+def _safety(control, circuit, scan: Scan) -> None:
+    """Reset with the line's Start / Reset."""
+    circuit.reset = scan.reset
+
+
+@device_program("sinks")
+def _chute(control, sink, scan: Scan) -> None:
+    """A full chute without an empty time is emptied a while after it fills
+    (the operator swapping the bin)."""
+    if sink.emptyTime:
+        return
+    state = control.state(sink)
+    state["full_s"] = state.get("full_s", 0.0) + scan.dt if sink.full else 0.0
+    sink.empty = state["full_s"] >= CHUTE_SWAP_S
+
+
 class MachineControl:
-    """The PLC side of control "plc" machines: writes their commands
-    (stopper release, robot start, elevator targetLevel and platform belt)
-    from their feedback, once per scan, after the belts' own outputs."""
+    """The PLC side of the machines and logistics devices: once per scan,
+    after the belts' own outputs, the program of each kind of device
+    (DEVICE_PROGRAMS) writes the commands of its devices on control "plc"
+    from their feedback."""
 
     def __init__(self, config: SimulatorConfig):
         self.config = config
-        self._stoppers: Dict[str, dict] = {}
-        self._elevators: Dict[str, dict] = {}
+        self.belts = {b.id: b for b in config.belts}
+        self.track: Dict[int, int] = {}      # scanner tracking: code -> destination
+        self.reads: Dict[str, int] = {}      # scanner id -> the readCount seen last
+        self._states: Dict[str, dict] = {}
         self._last: Optional[float] = None
-        self.reset_requested = False    # Start / Reset pressed this scan: robot fault reset
+        self.reset_requested = False    # Start / Reset pressed this scan: robot fault reset, safety reset
+
+    def state(self, device) -> dict:
+        """A device program's own memory for one device."""
+        return self._states.setdefault(device.id, {})
 
     def step(self, now: float, running: bool, speeds: Dict[str, float], events: List[str]) -> None:
         dt = 0.0 if self._last is None else max(0.0, now - self._last)
         self._last = now
-        cfg = self.config
-        for stopper in cfg.stoppers:
-            if stopper.control != "plc":
+        scan = Scan(running, dt, speeds, events, self.reset_requested)
+        for name, kind in DEVICE_KINDS.items():
+            program = DEVICE_PROGRAMS.get(name)
+            if program is None:
                 continue
-            state = self._stoppers.setdefault(stopper.id, {})
-            release = running and not machines.stopper_wants_up(stopper, state, dt)
-            if release != stopper.release:
-                events.append(f"stopper {stopper.id} {'released' if release else 'up'}")
-            stopper.release = release
-        for robot in cfg.robots:
-            if robot.control == "plc":
-                # Program 1 (pick and place) whenever a part and a place are ready;
-                # a fault (e.g. a point out of reach) is reset with the line's reset.
-                robot.enable, robot.program = True, 1
-                part = part_at_pick(cfg, robot)
-                robot.start = running and robot.ready and part and robot.placeReady
-                robot.faultReset = robot.fault and self.reset_requested
-        self._logistics(running, dt, speeds, events)
+            for device in getattr(self.config, name, []):
+                if kind.exchanged(device) and getattr(device, "control", "plc") == "plc":
+                    program(self, device, scan)
         self.reset_requested = False
-        belts = {b.id: b for b in cfg.belts}
-        for elevator in cfg.elevators:
-            if elevator.control != "plc":
-                continue
-            state = self._elevators.setdefault(elevator.id, {})
-            on_board = elevator.occupied and elevator.atLevel
-            state["on_s"] = state.get("on_s", 0.0) + dt if on_board else 0.0
-            state["loaded"] = state["on_s"] >= LOADED_AFTER_S
-            target, run = machines.elevator_auto(elevator, state, dt)
-            if not running:
-                run = False
-            elif target != elevator.targetLevel:
-                events.append(f"elevator {elevator.id} to level {target}")
-                elevator.targetLevel = target
-            belt = belts.get(elevator.beltId) if elevator.beltId else None
-            if belt is not None:
-                nominal = speeds.get(belt.id, DEFAULT_SPEED)
-                if belt.commandFormat == "vfd":
-                    belt.run = run
-                    belt.speed = abs(nominal)
-                else:
-                    belt.speed = nominal if run else 0.0
-
-
-    def _logistics(self, running: bool, dt: float, speeds: Dict[str, float], events: List[str]) -> None:
-        """Logistics equipment (logistics.py), for the PLC:
-          - tracking: each scanner read gives code -> destination (what a
-            warehouse system answers); a "plc" diverter fires when the code
-            in its zone is for its destination
-          - "plc" turntables: load at autoFrom, turn to autoTo, unload, back
-          - "plc" accumulators: released while the line runs
-          - "plc" right-angle transfers: lift once a pallet stands centred,
-            run until it has left
-          - chutes without an empty time: emptied a while after they fill
-            (the operator swapping the bin)
-          - guard doors locked while the line runs
-          - safety circuits reset with the line's Start / Reset"""
-        cfg = self.config
-        track = self.__dict__.setdefault("_track", {})
-        counts = self.__dict__.setdefault("_reads", {})
-        for scanner in cfg.scanners:
-            if counts.get(scanner.id) != scanner.readCount:
-                counts[scanner.id] = scanner.readCount
-                if scanner.code and scanner.readCount:
-                    track[scanner.code] = scanner.destination
-                    if len(track) > 4096:                       # forget the oldest
-                        track.pop(next(iter(track)))
-        for d in cfg.diverters:
-            if d.control == "plc":
-                d.commandSpeed, d.commandAngle = d.speed, d.divertAngle     # the layout's
-                fire = running and d.presentCode != 0 and track.get(d.presentCode) == d.destination
-                if fire and not d.divert:
-                    events.append(f"diverter {d.id}: {d.presentCode} -> destination {d.destination}")
-                d.divert = fire
-        belts = {b.id: b for b in cfg.belts}
-        tables = self.__dict__.setdefault("_tables", {})
-        for table in cfg.turntables:
-            if table.control != "plc":
-                continue
-            target, run = logistics.turntable_auto(table, tables.setdefault(table.id, {}), dt)
-            if running and target != table.targetIndex:
-                events.append(f"turntable {table.id} to position {target}")
-                table.targetIndex = target
-            belt = belts.get(table.beltId) if table.beltId else None
-            if belt is not None:
-                nominal = speeds.get(belt.id, DEFAULT_SPEED)
-                run = run and running
-                if belt.commandFormat == "vfd":
-                    belt.run, belt.speed = run, abs(nominal)
-                else:
-                    belt.speed = nominal if run else 0.0
-        for acc in cfg.accumulators:
-            if acc.control == "plc":
-                acc.release = running
-        for t in cfg.transfers:
-            if t.control == "plc":
-                # Lift once the pallet stands centred; keep running until it has left.
-                transfer = running and (t.centered or (t.transfer and t.present))
-                if transfer and not t.transfer:
-                    events.append(f"transfer {t.id}")
-                t.transfer = transfer
-        chutes = self.__dict__.setdefault("_chutes", {})
-        for sink in cfg.sinks:
-            if sink.capacity and not sink.emptyTime:
-                full_s = chutes.get(sink.id, 0.0) + dt if sink.full else 0.0
-                chutes[sink.id] = full_s
-                sink.empty = full_s >= CHUTE_SWAP_S
-        for door in cfg.doors:
-            door.lock = running
-        for circuit in cfg.safety:
-            circuit.reset = self.reset_requested
 
 
 @dataclass

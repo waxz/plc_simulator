@@ -29,8 +29,9 @@ from typing import Any, Dict, List, Optional
 
 import config_parser as cp
 from io_layout import PLC_TYPES
-from mqtt_message_binding import (_MACHINE_KIND, ByteType, _compact_int, _int_to_matching_shape, _read_bit,
-                                  _write_bit, find_component_by_id, paddng_component, parse_path)
+from device_kinds import DEVICE_KINDS, ByteType, kind_of
+from mqtt_message_binding import (_compact_int, _int_to_matching_shape, _read_bit, _write_bit, find_component_by_id,
+                                  paddng_component, parse_path)
 
 _LIST_OF = {cp.Belt: "belts", cp.Sensor: "sensors", cp.ControlButton: "buttons", cp.LedIndicator: "leds"}
 _WIDTH = {ByteType.BYTE: 8, ByteType.UINT16: 16, ByteType.UINT32: 32, ByteType.UINT64: 64}
@@ -55,7 +56,8 @@ def _list_name(component) -> Optional[str]:
     for cls, name in _LIST_OF.items():
         if isinstance(component, cls):
             return name
-    return _MACHINE_KIND.get(type(component).__name__)
+    kind = kind_of(component)
+    return kind.list_name if kind is not None else None
 
 
 def _rows(component, direction: str) -> List[Signal]:
@@ -197,4 +199,4 @@ def at_rest(config) -> None:
                     setattr(component, signal.name, False)
 
 
-_MACHINE_LISTS = sorted(set(_MACHINE_KIND.values()))
+_MACHINE_LISTS = list(DEVICE_KINDS)

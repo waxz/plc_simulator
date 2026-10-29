@@ -27,35 +27,17 @@ import devices
 import io_signals
 from config_parser import SimulatorConfig, load_config
 from mqtt_data_exchange import apply_exchange_config
-from mqtt_message_binding import MACHINE_FIELDS as _IO_FIELDS
+from device_kinds import DEVICE_KINDS
 from physics import ParcelView
 
 # Runtime fields copied from the simulation to the window's mirror.
 BELT_FIELDS = ("speed", "run", "reverse", "actualSpeed", "running", "fault", "atSpeed", "encoderCount", "load",
                "level", "directionAngle", "reversing")
-# Machines' runtime fields (machines.py), per config list.
-MACHINE_FIELDS = {
-    "pallets": ("loadCount",),
-    "stoppers": ("isUp", "occupied", "release"),
-    "robots": ("busy", "holding", "partAtPick", "placeReady", "cycles", "toolX", "toolY", "start", "phase", "phaseT",
-               "ready", "atHome", "inPosition", "fault", "faultCode", "j1", "j2", "j3", "j4", "j5", "j6",
-               "tcpX", "tcpY", "tcpZ"),
-    "elevators": ("level", "moving", "atLevel", "occupied", "position", "targetLevel"),
-    "scanners": ("code", "destination", "noRead", "readCount", "present", "weight", "measuredLength",
-                 "measuredWidth", "measuredHeight"),
-    "diverters": ("active", "present", "presentCode", "diverted", "divert"),
-    "turntables": ("index", "turning", "inPosition", "occupied", "angle", "targetIndex"),
-    "accumulators": ("zones", "full", "release"),
-    "transfers": ("present", "centered", "up", "transferred", "lift", "transfer"),
-    "doors": ("closed", "locked", "lock"),
-    "safety": ("ok", "tripped"),
-    "sinks": ("count", "full"),
-}
-# ... and every PLC signal too (mqtt_message_binding.MACHINE_FIELDS), so the
-# designer's Data Exchange section reads them all from the window's mirror.
-for _kind, _fields in MACHINE_FIELDS.items():
-    _signals = [name for side in _IO_FIELDS.get(_kind, {}).values() for group in side for _bt, name in group]
-    MACHINE_FIELDS[_kind] = _fields + tuple(n for n in dict.fromkeys(_signals) if n not in _fields)
+# Machines' runtime fields, per config list: every PLC signal of each device
+# kind plus what the window draws (device_kinds.py), and the pallets' loads.
+MACHINE_FIELDS = {"pallets": ("loadCount",),
+                  **{name: kind.signal_names + tuple(f for f in kind.runtime if f not in kind.signal_names)
+                     for name, kind in DEVICE_KINDS.items()}}
 SNAPSHOT_TIMEOUT_S = 5.0
 
 

@@ -2,21 +2,14 @@ import re
 import struct
 import time
 from dataclasses import is_dataclass
-from enum import Enum
 from typing import Any, List, Optional, Tuple, Union
 
 from config_parser import Sensor, SimulatorConfig, load_config
+# The field types and the device kinds on the exchange (ByteType is
+# re-exported here for the modules that import it from here).
+from device_kinds import DEVICE_KINDS, ByteType, exchanged_devices, kind_of
 from metrics_store import MetricsStore
 import pandas as pd
-
-class ByteType(Enum):
-    BIT = "bit"
-    BYTE = "byte"
-    UINT16 = "uint16"
-    UINT32 = "uint32"
-    UINT64 = "uint64"
-    FLOAT = "float"
-    PADDING = "padding"
 
 
 # Mapping format layout: (Type, "component_id/property_name")
@@ -38,9 +31,7 @@ def find_component_by_id(component_id: str, config: SimulatorConfig) -> Optional
     if component_id == "clock":
         return True
 
-    for collection_name in ("sensors", "belts", "buttons", "leds", "sources", "sinks", "stoppers", "robots",
-                            "elevators", "pallets", "scanners", "diverters", "turntables", "accumulators", "doors",
-                            "safety", "transfers"):
+    for collection_name in ("sensors", "belts", "buttons", "leds", "sources", "pallets", *DEVICE_KINDS):
         collection = getattr(config, collection_name, [])
         for component in collection:
             if component.id == component_id:
@@ -264,7 +255,7 @@ def paddng_component(config: SimulatorConfig, sensor_id: Optional[Union[str, Lis
     buttons_in_config = {b.id: b for b in config.buttons}
     leds_in_config = {b.id: b for b in config.leds}
     belts_in_config = {b.id: b for b in getattr(config, "belts", [])}
-    machines_in_config = {m.id: m for kind in MACHINE_FIELDS for m in getattr(config, kind, [])}
+    machines_in_config = {m.id: m for kind in DEVICE_KINDS for m in getattr(config, kind, [])}
 
     bits: List[Tuple[ByteType, str]] = []
     wide: List[List[Tuple[ByteType, str]]] = []  # one chunk per multi-bit / register component
@@ -399,77 +390,28 @@ def known_component_ids(config: SimulatorConfig) -> "set[str]":
     """Every id custom_component_mapping()/paddng_component() actually
     recognize - sensors/belts/buttons/leds plus the virtual "clock" id.
     Sources and plain sinks have no IO fields, so they're excluded (a
-    chute - a sink with a capacity - has, see MACHINE_FIELDS).
+    chute - a sink with a capacity - has, see device_kinds.py).
     Shared by custom_component_mapping()'s own validation, the bootstrap
     CLI, and the web registry editor's live validation, so "is this a real
     component id" has exactly one answer everywhere it's asked."""
     ids = {s.id for s in config.sensors} | {b.id for b in config.belts}
     ids |= {b.id for b in config.buttons} | {l.id for l in config.leds}
-    for kind in MACHINE_FIELDS:
-        ids |= {m.id for m in getattr(config, kind, []) if kind != "sinks" or m.capacity}
+    ids |= {m.id for m in exchanged_devices(config)}
     ids.add("clock")
     return ids
 
 
 # Machines' fields per channel direction ("in" = PLC -> simulator, the
 # command; "out" = simulator -> PLC, the feedback): (bits, values) like
-# belt_fields. Pallets carry no signals.
-MACHINE_FIELDS = {
-    "stoppers": {"in": ([(ByteType.BIT, "release")], []),
-                 "out": ([(ByteType.BIT, "isUp"), (ByteType.BIT, "occupied")], [])},
-    # A 6-axis robot, FANUC UOP style (config_parser.RobotArm): enable,
-    # start, hold, fault reset, gripper + program (PNS), speed override and
-    # a target pose in; status bits, cycle count, fault code, the six
-    # joints and the tool centre point out.
-    "robots": {"in": ([(ByteType.BIT, "start"), (ByteType.BIT, "enable"), (ByteType.BIT, "hold"),
-                       (ByteType.BIT, "faultReset"), (ByteType.BIT, "gripperClose")],
-                      [(ByteType.BYTE, "program"), (ByteType.BYTE, "speedOverride"), (ByteType.FLOAT, "targetX"),
-                       (ByteType.FLOAT, "targetY"), (ByteType.FLOAT, "targetZ"), (ByteType.FLOAT, "targetYaw")]),
-               "out": ([(ByteType.BIT, "busy"), (ByteType.BIT, "holding"), (ByteType.BIT, "partAtPick"),
-                        (ByteType.BIT, "placeReady"), (ByteType.BIT, "ready"), (ByteType.BIT, "atHome"),
-                        (ByteType.BIT, "inPosition"), (ByteType.BIT, "fault")],
-                       [(ByteType.UINT16, "cycles"), (ByteType.BYTE, "faultCode"),
-                        *[(ByteType.FLOAT, f"j{i}") for i in range(1, 7)],
-                        (ByteType.FLOAT, "tcpX"), (ByteType.FLOAT, "tcpY"), (ByteType.FLOAT, "tcpZ")])},
-    # Logistics equipment (logistics.py).
-    "scanners": {"in": ([], []),
-                 "out": ([(ByteType.BIT, "noRead"), (ByteType.BIT, "present")],
-                         [(ByteType.UINT32, "code"), (ByteType.BYTE, "destination"), (ByteType.UINT16, "readCount"),
-                          (ByteType.FLOAT, "weight"), (ByteType.FLOAT, "measuredLength"),
-                          (ByteType.FLOAT, "measuredWidth"), (ByteType.FLOAT, "measuredHeight")])},
-    "diverters": {"in": ([(ByteType.BIT, "divert")], [(ByteType.FLOAT, "commandSpeed"),
-                                                        (ByteType.FLOAT, "commandAngle")]),
-                  "out": ([(ByteType.BIT, "active"), (ByteType.BIT, "present")],
-                          [(ByteType.UINT32, "presentCode"), (ByteType.UINT16, "diverted")])},
-    "turntables": {"in": ([], [(ByteType.BYTE, "targetIndex")]),
-                   "out": ([(ByteType.BIT, "turning"), (ByteType.BIT, "inPosition"), (ByteType.BIT, "occupied")],
-                           [(ByteType.BYTE, "index")])},
-    "transfers": {"in": ([(ByteType.BIT, "transfer")], []),
-                  "out": ([(ByteType.BIT, "present"), (ByteType.BIT, "centered"), (ByteType.BIT, "up")],
-                          [(ByteType.UINT16, "transferred")])},
-    "accumulators": {"in": ([(ByteType.BIT, "release")], []),
-                     "out": ([(ByteType.BIT, "full")], [(ByteType.UINT16, "zones")])},
-    "doors": {"in": ([(ByteType.BIT, "lock")], []),
-              "out": ([(ByteType.BIT, "closed"), (ByteType.BIT, "locked")], [])},
-    "safety": {"in": ([(ByteType.BIT, "reset")], []),
-               "out": ([(ByteType.BIT, "ok"), (ByteType.BIT, "tripped")], [])},
-    # A chute (a sink with a capacity): only those are on the exchange (io_topics).
-    "sinks": {"in": ([(ByteType.BIT, "empty")], []),
-              "out": ([(ByteType.BIT, "full")], [(ByteType.UINT16, "count")])},
-    "elevators": {"in": ([], [(ByteType.BYTE, "targetLevel")]),
-                  "out": ([(ByteType.BIT, "moving"), (ByteType.BIT, "atLevel"), (ByteType.BIT, "occupied")],
-                          [(ByteType.BYTE, "level")])},
-}
-_MACHINE_KIND = {"Stopper": "stoppers", "RobotArm": "robots", "Elevator": "elevators", "Scanner": "scanners",
-                 "Diverter": "diverters", "Turntable": "turntables", "Accumulator": "accumulators",
-                 "GuardDoor": "doors", "SafetyCircuit": "safety", "Sink": "sinks", "Transfer": "transfers"}
+# belt_fields - declared per device kind in device_kinds.py.
+MACHINE_FIELDS = {name: {"in": kind.commands, "out": kind.feedback} for name, kind in DEVICE_KINDS.items()}
+_MACHINE_KIND = {kind.model.__name__: name for name, kind in DEVICE_KINDS.items()}
 
 
 def machine_fields(machine, direction: str) -> Tuple[List[Tuple[ByteType, str]], List[Tuple[ByteType, str]]]:
-    """(bits, values) a stopper / robot arm / elevator contributes to a
-    frame: its command ("in") or its feedback ("out")."""
-    kind = _MACHINE_KIND[type(machine).__name__]
-    return MACHINE_FIELDS[kind]["out" if direction == "out" else "in"]
+    """(bits, values) a machine / device contributes to a frame: its
+    command ("in") or its feedback ("out")."""
+    return kind_of(machine).fields(direction)
 
 
 # Belt fields per channel direction (channel_registry's convention: "in" =

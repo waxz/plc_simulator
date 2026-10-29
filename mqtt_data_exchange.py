@@ -26,6 +26,7 @@ from typing import Dict, List, Any, Optional, Tuple
 from mqtt_manager import FlexibleProtocolMQTTManager
 from config_parser import SimulatorConfig
 from metrics_store import MetricsStore
+from device_kinds import exchanged_devices
 from mqtt_message_binding import (
     ByteType,
     ComponentMessage,
@@ -86,17 +87,14 @@ def io_topics(config: SimulatorConfig) -> Tuple[Dict[str, Dict[str, Any]], Dict[
                                  machine's feedback, then clock
       output (PLC -> simulator): every LED, then every belt, then every
                                  machine's command
-    in the layout's order (machines: stoppers, robot arms, elevators - see
-    mqtt_message_binding.MACHINE_FIELDS). The simulator (MQTTSyncEngine)
+    in the layout's order (machines kind by kind, in device_kinds.py's
+    order - see DEVICE_KINDS). The simulator (MQTTSyncEngine)
     and the PLC side (plc_mock.py) both call this, so they always agree on
     the byte layout."""
     legacy = PUBLISH_TOPICS["input"]["custom_ids"] + SUBSCRIBE_TOPICS["output"]["custom_ids"]
     if set(legacy) <= known_component_ids(config):
         return PUBLISH_TOPICS, SUBSCRIBE_TOPICS
-    machines = [m.id for m in (*config.stoppers, *config.robots, *config.elevators, *config.scanners,
-                               *config.diverters, *config.turntables, *config.transfers, *config.accumulators,
-                               *config.doors,
-                               *config.safety, *(s for s in config.sinks if s.capacity))]
+    machines = [m.id for m in exchanged_devices(config)]
     inputs = [b.id for b in config.buttons] + [s.id for s in config.sensors] + machines + ["clock"]
     outputs = [l.id for l in config.leds] + [b.id for b in config.belts] + machines
     return ({"input": {**PUBLISH_TOPICS["input"], "custom_ids": inputs}},
