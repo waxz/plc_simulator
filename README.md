@@ -272,8 +272,9 @@ in code (`toolbar_icons.py`) and follow the dark / light theme:
   Settings, Crop (export the cropped DXF), Remove; **View** - Pan,
   Measure, Clear Measurements, Fit (zoom to the whole layout, `Z`), Ports
   (show belt inlets / outlets); **Run** in the simulator (`F5`) and the theme.
-- **Row 2**: **Sketch** - Line, Arc, Rectangle, Circle, Polygon, Clear;
-  **Belts** - Belt from Sketch, Belt Path, Curved Belt, Outline Belt;
+- **Row 2**: **Sketch** - Line, Arc, Arc Center, Rectangle, Circle,
+  Polygon, Clear; **Belts** - Belt from Sketch, Roller from Sketch,
+  Divide, Belt Path, Curved Belt, Outline Belt;
   **Connections** - Connect, Fillet Belts, Disconnect, Solve, Check
   (layout check, `F7`).
 - **Left**: **Modify** (below).
@@ -282,6 +283,9 @@ in code (`toolbar_icons.py`) and follow the dark / light theme:
   only what the tool uses, nothing while no tool is active.
 
 Only Save As, the theme choice and the panels list are menu-only.
+
+The mouse wheel zooms about the cursor: the point under it stays put,
+anywhere on the canvas and at any zoom.
 
 **Modify** (the vertical tool bar left of the canvas, or Tools > Modify)
 edits sketch lines like a CAD tool; arcs stay exact, every action is one
@@ -292,6 +296,7 @@ undo step, points snap (OSNAP) and can be typed:
 | Trim | `T` | click the piece to cut away - between the lines crossing it (other sketch lines and the background drawing); it shows red under the cursor first. Repeats until Esc |
 | Extend | `E` | click near a line's end: it grows to the next line it meets (a line straight on, an arc round its circle) |
 | Break | `K` | click a point on a line: it splits in two there (a closed shape opens) |
+| Divide into Belts | `N` | click a line or arc, of the sketch or the background drawing. That piece (one segment) becomes **Parts** conveyors of equal length, each with its own drive, joined end to end: linear along a line, curved along an arc. **Surface** chooses belts or roller conveyors, **Direction** forward (as drawn) or reverse, and **Width** sets the width. The cuts and the flow show under the cursor first. Repeats until Esc |
 | Offset | `Shift+O` | set **Distance** on the tool bar, click a line, then the side: a parallel copy (mitred corners, concentric arcs) |
 | Fillet | `F` | set **Corner R**, click two lines on the sides to keep: they are joined with a tangent arc (R 0 = sharp corner) |
 | Join / Explode | `J` / `X` | the selected lines joined end to end into one / split into single segments |
@@ -336,7 +341,8 @@ numbers to type:
      - *Center, start, end*: the center, the start (sets the radius), then
        sweep round and click the end - the way you sweep sets clockwise or
        counter-clockwise, and it may go past half a turn. A typed end point
-       goes counter-clockwise.
+       goes counter-clockwise. **Arc (Center, Start, End) (Shift+A)**
+       starts the arc tool with this method chosen.
    - Basic shapes: **Sketch Rectangle (Shift+R)** (two corners),
      **Sketch Circle (Shift+C)** (center, radius) and **Sketch Polygon
      (Shift+G)** (center, a corner; toolbar Sides). Corner R rounds the

@@ -242,6 +242,25 @@ def _arc(d):
     d.use(d.accent).dot(12, 17, 1.4)
 
 
+def _arc_center(d):
+    """An arc from its center: the center first, then start and end."""
+    d.arc(12, 17, 9, 0, 180)
+    d.use(d.dim).line(12, 17, 3, 17)
+    d.use(d.dim).line(12, 17, 18.4, 10.6)
+    d.use(d.accent).dot(12, 17, 2.0)
+    d.grip(3, 17)
+    d.grip(18.4, 10.6)
+
+
+def _divide(d):
+    """A line cut into equal belts."""
+    _band(d, [(2, 14), (8, 14)])
+    _band(d, [(9, 14), (15, 14)], color=d.accent)
+    _band(d, [(16, 14), (22, 14)])
+    for x in (8.5, 15.5):
+        d.use(d.fg).line(x, 8, x, 20)
+
+
 def _rectangle(d):
     d.rect(4, 6, 16, 12)
     d.grip(4, 18)
@@ -436,7 +455,7 @@ ICONS: Dict[str, Callable[[_Pen], None]] = {
     "bg_place": _bg_place, "bg_settings": _bg_settings, "bg_crop": _bg_crop, "bg_remove": _bg_remove,
     "pan": _pan, "measure": _measure, "clear_measure": _clear_measure, "fit": _fit, "ports": _ports,
     "run": _run, "theme": _theme,
-    "line": _line, "arc": _arc, "rectangle": _rectangle, "circle": _circle, "polygon": _polygon, "clear": _clear,
+    "line": _line, "arc": _arc, "arc_center": _arc_center, "divide": _divide, "rectangle": _rectangle, "circle": _circle, "polygon": _polygon, "clear": _clear,
     "belt_pick": _belt_pick, "roller_pick": _roller_pick, "belt_path": _belt_path, "curved_belt": _curved_belt, "outline_belt": _outline_belt,
     "connect": _connect, "disconnect": _disconnect, "fillet_belts": _fillet_belts, "solve": _solve,
     "check": _check,

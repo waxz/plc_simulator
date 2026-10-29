@@ -10,6 +10,9 @@ undo step (SketchCommand).
                   piece under the cursor shows red first. Repeats until Esc.
   Extend (E)      click near a line's end: it grows to the next line it meets
   Break (K)       click a point on a line: split in two there
+  Divide into Belts (N)   click a line or arc (sketch or background drawing):
+                  it becomes Parts belts / roller conveyors of equal length,
+                  joined end to end (tool bar Parts, Surface, Direction, Width)
   Offset (Shift+O) tool bar Distance; click a line, then the side
   Fillet (F)      tool bar Corner R; click two lines: joined with a tangent arc
   Move (M) / Copy (Shift+M) / Rotate (R) / Mirror (I) / Scale
@@ -30,8 +33,10 @@ from PySide6.QtWidgets import QGraphicsPathItem
 
 from cad import modify
 from cad import path as cpath
+from cad.belts import divide_segment, divided_belts, reversed_segment
 from cad.modify import ModifyError
 from config_parser import SketchEntity
+from id_utils import next_indexed_id
 from path_tool import _PointTool
 
 PICK_PX = 10.0       # a click this close to a line picks it
@@ -238,6 +243,120 @@ class BreakTool(_ModifyTool):
             return
         self.replace([index], parts, "Break")
         self._status(f"Split into {len(parts)} line{'s' if len(parts) != 1 else ''}.", 3000)
+
+
+class DivideTool(_ModifyTool):
+    """Divide into Belts: click a line or an arc - of the sketch or of the
+    imported drawing - and that piece becomes tool bar Parts conveyors of
+    equal length, each with its own drive, joined end to end: linear along
+    a line, curved along an arc, belts or roller conveyors (Surface),
+    running the way it was drawn or the other way (Direction). The piece
+    under the cursor shows where it will be cut first. Repeats until Esc."""
+
+    title = "Divide into Belts"
+    hint = ("Divide into Belts: click a line or arc (sketch or drawing) - it becomes Parts conveyors of equal "
+            "length, joined end to end. Tool bar: Parts, Surface, Direction, Width. Esc to finish.")
+    ROLLER_SPEED = 0.3
+
+    def _configure_toolbar(self):
+        self.toolbar.configure(self.title, segments=False, width=True, corner=False, points=False, divide=True)
+        self.toolbar.on_options_changed = self._update_preview
+
+    def stop(self):
+        self.toolbar.on_options_changed = None
+        super().stop()
+
+    def segment_at(self, p):
+        """The line / arc segment nearest p within the pick distance - of a
+        sketch line first, else of the background drawing - or None."""
+        tol = self.pick_tolerance()
+        near = (p[0] - tol, p[1] - tol, p[0] + tol, p[1] + tol)
+        best, best_d = None, tol
+        candidates = self.shapes() + [s for box, s in self.background() if _boxes_touch(box, near)]
+        for shape in candidates:
+            s, d = modify.nearest_param(shape, p)
+            if d <= best_d:
+                segs = cpath.segments(*shape)
+                if segs:
+                    best, best_d = segs[min(int(s), len(segs) - 1)], d
+        return best
+
+    def build(self, seg):
+        bar = self.toolbar
+        roller = bar.divide_surface_combo.currentData() == "roller"
+        taken = [i.model.id for i in self.window.items_list]
+        prefix = "roller" if roller else "belt"
+
+        def new_id():
+            taken.append(next_indexed_id(taken, prefix))
+            return taken[-1]
+
+        return divided_belts(new_id, seg, bar.parts_spin.value(), bar.width_spin.value(),
+                             reverse=bar.divide_direction_combo.currentData() == "reverse",
+                             speed=self.ROLLER_SPEED if roller else 1.0,
+                             color="#4b5563" if roller else "#3b82f6", surface="roller" if roller else "belt")
+
+    def mouse_press(self, event) -> bool:
+        if event.button() == Qt.RightButton:
+            self.finish()
+            return True
+        if event.button() != Qt.LeftButton:
+            return False
+        seg = self.segment_at(self.raw_point(event))
+        if seg is None:
+            self._status("Divide into Belts: click on a line or an arc.", 4000)
+            return True
+        try:
+            belts = self.build(seg)
+        except ValueError as exc:
+            self._status(f"Divide into Belts: {exc}", 6000)
+            return True
+        self.cad.add_belt_chain(belts, False, "Divide into Belts")
+        what = "roller conveyors" if belts[0].surface == "roller" else "belts"
+        self._status(f"Divided into {len(belts)} {what} ({belts[0].id} .. {belts[-1].id}), joined end to end. "
+                     f"Click another, or Esc to finish.", 8000)
+        self._update_preview()
+        return True
+
+    def mouse_move(self, event) -> bool:
+        self.cursor = self.raw_point(event)
+        self._update_preview()
+        return True
+
+    def _update_preview(self):
+        self._clear_preview()
+        if not self.active or self.cursor is None:
+            return
+        seg = self.segment_at(self.cursor)
+        if seg is None:
+            return
+        if self.toolbar.divide_direction_combo.currentData() == "reverse":
+            seg = reversed_segment(seg)
+        pieces = divide_segment(seg, self.toolbar.parts_spin.value())
+        for k, piece in enumerate(pieces):
+            shape = ([piece.p0, piece.p1], [0.0 if piece.kind == "line" else
+                                           math.tan(piece.sweep / 4.0), 0.0], False)
+            self.draw_shape(shape, "#22d3ee" if k % 2 == 0 else "#f59e0b", 4.0)
+        # Where it is cut, and the flow at the end.
+        for piece in pieces[1:]:
+            c = self.to_scene(*piece.p0)
+            mark = QPainterPath()
+            mark.addEllipse(c, 4.0, 4.0)
+            pen = QPen(QColor("#ffffff"), 1.5)
+            pen.setCosmetic(True)
+            self._add_preview(QGraphicsPathItem(mark)).setPen(pen)
+        end, heading = pieces[-1].p1, pieces[-1].heading_at(1.0)
+        tip = self.to_scene(*end)
+        arrow = QPainterPath()
+        size = 10.0
+        for side in (-0.5, 0.5):
+            a = heading + math.pi + side
+            arrow.moveTo(tip)
+            arrow.lineTo(tip.x() + size * math.cos(a), tip.y() - size * math.sin(a))
+        pen = QPen(QColor("#f59e0b"), 2.0)
+        pen.setCosmetic(True)
+        self._add_preview(QGraphicsPathItem(arrow)).setPen(pen)
+        self._draw_readout(f"{len(pieces)} x {pieces[0].length:.3f} m")
 
 
 class OffsetTool(_ModifyTool):

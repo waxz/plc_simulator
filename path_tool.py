@@ -204,6 +204,24 @@ class PathToolbar(QToolBar):
         self.sides_actions = [self.addWidget(QLabel(" Sides "))]
         self.sides_spin = QSpinBox(minimum=3, maximum=64, value=6)
         self.sides_actions.append(self.addWidget(self.sides_spin))
+        # Divide into Belts: how many, belt or roller, which way parcels go.
+        self.divide_actions = [self.addWidget(QLabel(" Parts "))]
+        self.parts_spin = QSpinBox(minimum=1, maximum=200, value=4)
+        self.parts_spin.setToolTip("How many belts of equal length the line / arc becomes")
+        self.divide_actions.append(self.addWidget(self.parts_spin))
+        self.divide_actions.append(self.addWidget(QLabel(" Surface ")))
+        self.divide_surface_combo = QComboBox()
+        for label, key in (("Belt", "belt"), ("Roller", "roller")):
+            self.divide_surface_combo.addItem(label, key)
+        self.divide_surface_combo.setToolTip("Belt conveyors, or driven roller conveyors (pallets, totes)")
+        self.divide_actions.append(self.addWidget(self.divide_surface_combo))
+        self.divide_actions.append(self.addWidget(QLabel(" Direction ")))
+        self.divide_direction_combo = QComboBox()
+        for label, key in (("Forward", "forward"), ("Reverse", "reverse")):
+            self.divide_direction_combo.addItem(label, key)
+        self.divide_direction_combo.setToolTip("Forward: parcels run the way the line / arc was drawn; "
+                                               "Reverse: the other way. The preview arrows show it.")
+        self.divide_actions.append(self.addWidget(self.divide_direction_combo))
         # Belt from Sketch/Drawing: what kind of belt, which way parcels go.
         self.pick_actions = [self.addWidget(QLabel(" Type "))]
         self.type_combo = QComboBox()
@@ -238,7 +256,8 @@ class PathToolbar(QToolBar):
         self.pick_actions.append(self.addWidget(self.gap_spin))
         self.on_options_changed: Optional[Callable[[], None]] = None
         for signal in (self.type_combo.currentIndexChanged, self.surface_combo.currentIndexChanged,
-                       self.direction_combo.currentIndexChanged,
+                       self.direction_combo.currentIndexChanged, self.parts_spin.valueChanged,
+                       self.divide_surface_combo.currentIndexChanged, self.divide_direction_combo.currentIndexChanged,
                        self.gap_spin.valueChanged, self.width_spin.valueChanged, self.sides_spin.valueChanged,
                        self.corner_spin.valueChanged):
             signal.connect(self._options_changed)
@@ -258,7 +277,7 @@ class PathToolbar(QToolBar):
         """No tool active: no options shown - just OSNAP and the input, greyed."""
         for actions in (self.segment_actions, self.width_actions, self.corner_actions, self.distance_actions,
                         self.keep_actions, self.split_actions, self.arc_method_actions, self.pick_actions,
-                        self.sides_actions):
+                        self.sides_actions, self.divide_actions):
             for action in actions:
                 action.setVisible(False)
         self.mode_label.setText("  ")
@@ -292,7 +311,7 @@ class PathToolbar(QToolBar):
 
     def configure(self, title: str, *, segments: bool, width: bool, corner: bool, points: bool,
                   belt_type: bool = False, sides: bool = False, split: bool = False, arc_method: bool = False,
-                  distance: bool = False, keep: bool = False):
+                  distance: bool = False, keep: bool = False, divide: bool = False):
         self.setEnabled(True)
         self.mode_label.setText(f"  {title}  ")
         for actions, shown in ((self.segment_actions, segments), (self.width_actions, width),
@@ -303,6 +322,8 @@ class PathToolbar(QToolBar):
         self.input.setEnabled(points)
         for action in self.pick_actions:
             action.setVisible(belt_type)
+        for action in self.divide_actions:
+            action.setVisible(divide)
         for action in self.sides_actions:
             action.setVisible(sides)
         for action in self.split_actions:
@@ -735,6 +756,16 @@ class SketchArcTool(_PointTool):
         self.toolbar.configure(self.toolbar_title, segments=False, width=self.toolbar_width, corner=False,
                                points=True, arc_method=True)
         self.toolbar.on_arc_method_changed = self._method_changed
+
+    def start(self, method: Optional[str] = None):
+        """method: "3pt" / "center" preselects the toolbar's Arc method
+        (Tools > Arc (Center, Start, End)); None keeps it."""
+        if method is not None:
+            combo = self.toolbar.arc_method_combo
+            combo.blockSignals(True)
+            combo.setCurrentIndex(max(0, combo.findData(method)))
+            combo.blockSignals(False)
+        super().start()
 
     def _method_changed(self):
         """Switching method mid-arc starts the arc again."""

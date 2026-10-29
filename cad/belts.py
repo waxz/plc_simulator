@@ -173,6 +173,58 @@ def segment_belts(new_id, points: Sequence[Point], bulges: Sequence[float], clos
     return belts
 
 
+def divide_segment(seg, parts: int):
+    """A line or arc segment (cad/path.Segment) cut into `parts` equal
+    pieces, in its own direction."""
+    from cad.path import Segment
+    if parts < 1:
+        raise ValueError("Divide into at least one part.")
+    pieces = []
+    for k in range(parts):
+        t0, t1 = k / parts, (k + 1) / parts
+        p0, p1 = seg.point_at(t0), seg.point_at(t1)
+        if seg.kind == "arc":
+            pieces.append(Segment("arc", p0, p1, seg.center, seg.radius, seg.start_angle + seg.sweep * t0,
+                                  seg.sweep / parts))
+        else:
+            pieces.append(Segment("line", p0, p1))
+    return pieces
+
+
+def reversed_segment(seg):
+    """The same segment, run the other way."""
+    from cad.path import Segment
+    if seg.kind == "arc":
+        return Segment("arc", seg.p1, seg.p0, seg.center, seg.radius, seg.start_angle + seg.sweep, -seg.sweep)
+    return Segment("line", seg.p1, seg.p0)
+
+
+def divided_belts(new_id, seg, parts: int, width: float, reverse: bool = False, speed: float = 1.0,
+                  color: str = "#3b82f6", surface: str = "belt", roller_pitch: float = 0.125) -> List[Belt]:
+    """A line or arc as `parts` belts of equal length, each with its own
+    drive, in flow order (from its start; `reverse`: from its end) - linear
+    belts along a line, curved belts along an arc; `surface` "roller" makes
+    them roller conveyors. `new_id()` gives each its id. Connect them with
+    belt_chain_connections. ValueError with the reason when the arc is too
+    tight for the width."""
+    if reverse:
+        seg = reversed_segment(seg)
+    if seg.length < 1e-6:
+        raise ValueError("The line has no length.")
+    if seg.kind == "arc" and width > 2 * seg.radius + 1e-9:
+        raise ValueError(f"An arc of radius {seg.radius:.3f} m is too tight for a {width:.3f} m wide conveyor.")
+    belts = []
+    for piece in divide_segment(seg, parts):
+        if piece.kind == "arc":
+            belt = curved_belt_from_segment(new_id(), piece, width, speed=speed, color=color)
+        else:
+            belt = linear_belt(new_id(), piece.p0, piece.p1, width, speed=speed, color=color)
+        if surface == "roller":
+            belt.surface, belt.rollerPitch = "roller", roller_pitch
+        belts.append(belt)
+    return belts
+
+
 def belt_chain_connections(belts: Sequence[Belt], closed: bool = False) -> List[BeltConnection]:
     """Each belt's outlet joined to the next one's inlet (and the last to the
     first for a loop)."""

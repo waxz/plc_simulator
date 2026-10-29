@@ -45,7 +45,8 @@ from id_utils import next_indexed_id
 from sketch_grips import SketchGripManager
 from modify_tool import (
     PlaceBackgroundTool,
-    BreakTool, CopyTool, ExtendTool, FilletTool, MirrorTool, MoveTool, OffsetTool, RotateTool, ScaleTool, TrimTool,
+    BreakTool, CopyTool, DivideTool, ExtendTool, FilletTool, MirrorTool, MoveTool, OffsetTool, RotateTool, ScaleTool,
+    TrimTool,
 )
 from path_tool import (
     AnchorGripManager, CurvedBeltDrawTool, OutlineDrawTool, PathDrawTool, PathToolbar, PickFromDrawingTool,
@@ -352,6 +353,8 @@ class CadController:
             tool = cls(window, self.draw_toolbar, self.snap, belt_item_cls=belt_item_cls)
             tool.cad = self
             self.modify_tools[name] = tool
+        self.divide_tool = DivideTool(window, self.draw_toolbar, self.snap, belt_item_cls=belt_item_cls)
+        self.divide_tool.cad = self
         self.place_tool = PlaceBackgroundTool(window, self.draw_toolbar, self.snap, belt_item_cls=belt_item_cls)
         self.place_tool.cad = self
         self.sketch_items: List[SketchItem] = []
@@ -755,6 +758,8 @@ class CadController:
         sketch_actions = [
             add(tools, "Line", self.sketch_line_tool.start, "S", "line"),
             add(tools, "Arc", self.sketch_arc_tool.start, "Shift+S", "arc"),
+            add(tools, "Arc (Center, Start, End)", lambda: self.sketch_arc_tool.start("center"), "Shift+A",
+                "arc_center", "Arc Center"),
             add(tools, "Rectangle", self.sketch_rect_tool.start, "Shift+R", "rectangle"),
             add(tools, "Circle", self.sketch_circle_tool.start, "Shift+C", "circle"),
             add(tools, "Polygon", self.sketch_polygon_tool.start, "Shift+G", "polygon"),
@@ -783,6 +788,7 @@ class CadController:
                 "Belt from Sketch"),
             add(tools, "Roller from Sketch/Drawing", lambda: self.pick_tool.start("roller"), "Ctrl+Shift+B",
                 "roller_pick", "Roller from Sketch"),
+            add(tools, "Divide into Belts", self.divide_tool.start, "N", "divide", "Divide"),
             add(tools, "Draw Belt Path", self.path_tool.start, "P", "belt_path", "Belt Path"),
             add(tools, "Draw Curved Belt", self.curved_tool.start, "U", "curved_belt", "Curved Belt"),
             add(tools, "Draw Belt Outline", self.outline_tool.start, "O", "outline_belt", "Outline Belt"),

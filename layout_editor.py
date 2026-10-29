@@ -3605,6 +3605,8 @@ class CanvasView(QGraphicsView):
         self.viewport().setMouseTracking(True)
         self.setRenderHint(QPainter.Antialiasing)
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
+        half = self.CANVAS_EXTENT
+        self.setSceneRect(QRectF(-half, -half, 2 * half, 2 * half))
         # Needed to actually receive key events (Ctrl+C/V, Delete) - a plain
         # QGraphicsView defaults to NoFocus.
         self.setFocusPolicy(Qt.StrongFocus)
@@ -3692,9 +3694,34 @@ class CanvasView(QGraphicsView):
         else:
             self._do_remove_item(item)
 
+    # Scrolling room around any layout: without it the view can only scroll
+    # within the items' bounds (and centres them when they fit), so a zoom
+    # near the edge of the layout - or out - drifts away from the cursor.
+    CANVAS_EXTENT = 1.0e7
+
     def wheelEvent(self, event):
+        """Zoom about the cursor: the point under it stays under it."""
+        if not event.angleDelta().y():
+            return
         factor = 1.15 if event.angleDelta().y() > 0 else 1 / 1.15
+        self.zoom_at(factor, event.position().toPoint())
+        event.accept()
+
+    def zoom_at(self, factor: float, pos=None):
+        """Scale the view by `factor` keeping the scene point at viewport
+        `pos` (default: the centre) where it is."""
+        if pos is None:
+            pos = self.viewport().rect().center()
+        before = self.mapToScene(pos)
+        anchor = self.transformationAnchor()
+        self.setTransformationAnchor(QGraphicsView.NoAnchor)
         self.scale(factor, factor)
+        self.setTransformationAnchor(anchor)
+        # Scroll the scene point back under `pos` (the view scrolls: its
+        # scroll bars, not the transform, place it).
+        moved = self.mapFromScene(before) - pos
+        self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() + moved.x())
+        self.verticalScrollBar().setValue(self.verticalScrollBar().value() + moved.y())
 
     def set_pan_mode(self, enabled: bool):
         """Toggle a persistent "Pan Tool" (left-click-drag always pans the
