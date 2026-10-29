@@ -1032,6 +1032,21 @@ python tools/verify_exchange.py logistics_full.json --seconds 60
 `test_device_kinds.py` also sends every field of both frames across and
 compares them value by value.
 
+**Seeing the frames.** `tools/frame_map.py` draws a layout's frames as a
+byte and bit map, one colour per component, with each field's name, type
+and offset on hover, and a table of where every component sits. It also
+checks the mapping:
+
+- the offsets add up to the packer's size;
+- every field reads back at its offset, with an independent decoder;
+- the generated PLC serializers' bytes decode in the simulator;
+- each frame, with its 14 bytes of framing, fits the AX library's
+  256-byte buffers.
+
+```bash
+python tools/frame_map.py logistics_full.json        # -> logistics_full.frame_map.html
+```
+
 **Adding a kind of device.** Every kind of machine and logistics device on
 the exchange is declared once in `device_kinds.py`: its config list, model,
 PLC commands and feedback, and the name of its PLC STRUCTs. The frames

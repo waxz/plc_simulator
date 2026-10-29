@@ -161,6 +161,23 @@ class FullSystemTest(unittest.TestCase):
         self.assertLessEqual({m.id for m in exchanged_devices(self.config)
                               if kind_of(m).commands != device_kinds.NONE}, devices)
 
+    def test_the_frame_map_checks_and_draws_the_frames(self):
+        import sys
+        import tempfile
+        sys.path.insert(0, os.path.join(HERE, "tools"))
+        import frame_map
+        results = frame_map.check(load_config(FULL), "LE", lambda: load_config(FULL))
+        layout_checks = [(name, ok, detail) for name, ok, detail in results if "AX buffers" not in name]
+        self.assertTrue(all(ok for _n, ok, _d in layout_checks), layout_checks)
+        buffers = {name.split(":")[0]: ok for name, ok, _d in results if "AX buffers" in name}
+        self.assertEqual(buffers, {"input": True, "output": False})          # 261 bytes > 256: flagged
+        out = os.path.join(tempfile.mkdtemp(), "map.html")
+        self.assertEqual(frame_map.main([FULL, "--out", out]), 0)
+        with open(out, encoding="utf-8") as f:
+            page = f.read()
+        self.assertIn("165 bytes, layout 083EBF55", page)
+        self.assertIn("div_1/presentCode", page)
+
     def test_the_plc_structs_cover_every_kind(self):
         structs = st_export.device_structs(self.config)
         for kind in DEVICE_KINDS.values():

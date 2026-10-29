@@ -97,7 +97,9 @@ a list of `(type, "component/field[index]")` entries (`io_layout.py`).
   values further on. The generated serializers and `plc_mock.py` handle
   this for you.
 
-To see any layout's exact byte map:
+For a graph of both frames (byte and bit map per component, with the
+mapping checks), run `python tools/frame_map.py <layout>`. To see any
+layout's exact byte map as text:
 
 ```bash
 python io_layout.py logistics_full.json          # byte.bit / type / field, both frames
