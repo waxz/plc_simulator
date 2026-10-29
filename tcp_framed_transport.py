@@ -34,6 +34,7 @@ class FrameType(IntEnum):
     LAYOUT_CHECK = 7    # PLC <-> simulator: I/O layout fingerprints + sizes, see io_layout.py
     INPUT_IMAGE = 8     # PLC -> monitor (plc_foxglove_bridge.py): the input image the PLC works on,
                         # same layout as the simulator's IO_MAPPING input frame
+    JSON = 9            # PLC -> monitor (plc_foxglove_bridge.py): a UTF-8 JSON object, published as is
 
 
 class ParsedFrame(NamedTuple):

@@ -76,6 +76,7 @@ ones behind it. Payloads can be at most 2048 bytes.
 | `BELT_FEEDBACK` | 6 | sim -> PLC | per belt `actualSpeed` + `encoderCount`, only with `beltFeedback` on |
 | `LAYOUT_CHECK` | 7 | both | layout fingerprints and sizes (section 2.4) |
 | `INPUT_IMAGE` | 8 | PLC -> monitor | the input image the PLC worked on (Foxglove bridge) |
+| `JSON` | 9 | PLC -> monitor | a UTF-8 JSON object, published as is on `/plc/json/<topic>` (Foxglove bridge) |
 
 ### 2.2 Payload packing
 

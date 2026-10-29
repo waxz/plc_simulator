@@ -16,6 +16,9 @@ Frames from the PLC (frame type in the header):
   METRIC_LAYOUT_n  its metrics layouts                       -> /plc/metrics/<name>
   LAYOUT_CHECK     answered like the simulator does: the PLC learns whether
                    both sides use the same I/O layout
+  JSON             a UTF-8 JSON object, published as is   -> /plc/json/<topic>
+                   (its "topic" member, default "data"): no packing on the
+                   PLC side and no layout needed to read it
 Composed here:
   /plc/lines       per line (L1, L2, ...): state RUN / HOLD / STOP / ERROR
                    from its lamps and belts, belts moving, sensors blocked
@@ -31,6 +34,8 @@ PLC sends its output STRUCT as IO_MAPPING and its input STRUCT as INPUT_IMAGE
 """
 import argparse
 import copy
+import json
+import re
 import struct
 import threading
 import time
@@ -253,6 +258,7 @@ class PlcFoxgloveBridge:
                            for ft, (name_, _m) in self.metrics.items()}
         self.ch_stats = foxglove.Channel("/bridge/stats", context=ctx)
         self.ch_events = LogChannel("/plc/events", context=ctx)
+        self.ch_json: Dict[str, Any] = {}     # /plc/json/<topic>, made on a topic's first message
 
         self._lock = threading.Lock()
         self.last_outputs: Optional[dict] = None
@@ -318,6 +324,8 @@ class PlcFoxgloveBridge:
                 self._io(frame, self.input_msg, "inputs")
             elif frame.frame_type == FrameType.LAYOUT_CHECK:
                 self._layout_check(frame)
+            elif frame.frame_type == FrameType.JSON:
+                self._json(frame)
             elif frame.frame_type in self.metrics:
                 self._metrics(frame)
         except Exception as exc:  # noqa: BLE001 - one bad frame must not stop the bridge
@@ -364,6 +372,16 @@ class PlcFoxgloveBridge:
         reply = struct.pack(self.endian + io_layout._CHECK, *self.mine,
                             io_layout.CHECK_MISMATCH if problems else io_layout.CHECK_MATCH)
         self.tcp.send_to(frame.conn, reply, frame_type=FrameType.LAYOUT_CHECK, node_id=frame.node_id)
+
+    def _json(self, frame: ParsedFrame):
+        msg = json.loads(frame.payload.decode("utf-8"))
+        if not isinstance(msg, dict):
+            raise ValueError("a JSON frame holds an object")
+        topic = re.sub(r"[^A-Za-z0-9_/-]", "_", str(msg.pop("topic", "data"))).strip("/") or "data"
+        channel = self.ch_json.get(topic)
+        if channel is None:
+            channel = self.ch_json[topic] = foxglove.Channel(f"/plc/json/{topic}", context=self.context)
+        channel.log(self._stamp({"node": frame.node_id, **msg}))
 
     def _metrics(self, frame: ParsedFrame):
         name, message = self.metrics[frame.frame_type]
@@ -428,7 +446,7 @@ def main():
     print(f"[Bridge] Input image {bridge.input_msg.payload_size} bytes: {io_layout.describe(bridge.input_mapping)}")
     print(f"[Bridge] Output image {bridge.output_msg.payload_size} bytes: {io_layout.describe(bridge.output_mapping)}")
     bridge.start()
-    print("[Bridge] Topics: /plc/outputs /plc/inputs /plc/lines /plc/metrics/* /plc/events /bridge/stats. Ctrl+C to stop.")
+    print("[Bridge] Topics: /plc/outputs /plc/inputs /plc/lines /plc/metrics/* /plc/json/* /plc/events /bridge/stats. Ctrl+C to stop.")
     try:
         while True:
             time.sleep(5.0)

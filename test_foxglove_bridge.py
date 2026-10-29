@@ -7,6 +7,7 @@ outputs, inputs, line states, metrics, events, stats, the layout check
 reply - and plc_mock.py itself reporting to the bridge with no simulator.
 """
 import copy
+import json
 import os
 import socket
 import subprocess
@@ -135,6 +136,27 @@ class BridgeTest(unittest.TestCase):
         self.assertEqual(stats["nodes"]["3"]["frames"]["METRIC_LAYOUT_1"], 1)
         self.assertTrue(got["/plc/events"])                                          # foxglove.Log (protobuf)
         self.assertTrue(any(b"PLC node 0 is sending" in e for e in got["/plc/events"]))
+
+    def test_json_frames_are_published_as_is(self):
+        status = {"topic": "stations", "link_ok": True, "stations": [{"running": True, "error": False}],
+                  "speed": 0.5}
+        self.plc.send(json.dumps(status).encode("utf-8"), frame_type=FrameType.JSON, node_id=4)
+        self.assertTrue(wait_until(lambda: "stations" in self.bridge.ch_json))
+        self.assertIn("/plc/json/stations", self.probe.wait_for_topics(["/plc/json/stations"], timeout=5.0))
+        self.probe.subscribe(["/plc/json/stations", "/bridge/stats"])
+        time.sleep(1.6)
+        self.plc.send(json.dumps(status).encode("utf-8"), frame_type=FrameType.JSON, node_id=4)
+        self.plc.send(b"{not json", frame_type=FrameType.JSON, node_id=4)
+        self.plc.send(b"[1, 2]", frame_type=FrameType.JSON, node_id=4)                 # not an object
+        got = self.collect(2.2)
+        msg = got["/plc/json/stations"][-1]
+        self.assertEqual(msg["node"], 4)
+        self.assertEqual(msg["stations"], [{"running": True, "error": False}])
+        self.assertEqual(msg["speed"], 0.5)
+        self.assertNotIn("topic", msg)
+        self.assertIn("timestamp", msg)
+        self.assertEqual(got["/bridge/stats"][-1]["malformed"], 2)
+        self.assertEqual(got["/bridge/stats"][-1]["nodes"]["4"]["frames"]["JSON"], 4)
 
     def test_layout_check_is_answered(self):
         out_map, in_map = self.bridge.output_mapping, self.bridge.input_mapping
