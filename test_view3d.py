@@ -134,6 +134,12 @@ class LogisticsSceneTest(unittest.TestCase):
         self.assertEqual(state["doors"]["door_1"], [True, False])
         self.assertTrue(any(row[10] > 1000000 for row in state["bodies"]))   # barcodes on the parcels
         self.assertEqual(len(state["belts"]["tt_belt"]), 3)              # speed, z, table angle
+        # A diverter: active, and the angle it steers at - a commanded one when it follows commands.
+        wheels = next(d for d in config.diverters if d.diverterType == "wheels")
+        self.assertEqual(state["diverters"][wheels.id][1], wheels.divertAngle)
+        wheels.control, wheels.commandAngle = "manual", -30.0
+        state = scene3d.dynamic_state(config, engine.parcel_views(), engine.sim_time)
+        self.assertEqual(state["diverters"][wheels.id][1], -30.0)
 
 
 class ServerTest(unittest.TestCase):
@@ -202,6 +208,24 @@ class ServerTest(unittest.TestCase):
         with urllib.request.urlopen(req, timeout=10) as r:
             self.assertEqual(json.loads(r.read()), {"ok": True})
         self.assertEqual(self.server.take_commands(), [("door", "door_1", True)])
+
+    def test_a_new_simulator_is_a_new_layout_to_an_open_page(self):
+        # A page left open from an earlier simulator compares layout versions:
+        # a new server's first layout must not reuse the old one's number.
+        time.sleep(0.002)
+        later = view3d.View3DServer(port=0)
+        later.set_layout(self.config, DEMO)
+        self.assertNotEqual(later.version, self.server.version)
+
+    def test_a_taken_port_is_not_shared(self):
+        second = view3d.View3DServer(port=self.server.port)
+        second.set_layout(self.config, DEMO)
+        url = second.start()
+        self.addCleanup(second.stop)
+        self.assertNotEqual(second.port, self.server.port)              # moved to a free one
+        self.assertEqual(url, second.url)
+        status, _, _ = self.get("scene")                                # the first still answers its own
+        self.assertEqual(status, 200)
 
     def test_no_frames_are_built_without_a_viewer(self):
         built = []

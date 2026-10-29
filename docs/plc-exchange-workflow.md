@@ -123,12 +123,17 @@ Migration steps:
 
 **Checking the interface by hand.** The designer's **PLC I/O** sections
 list each component's signals, named and typed as in the generated STRUCTs
-(`io_signals.py` reads the same mapping), with their live values once
-**Run in Simulator** has the layout running. While you bring up one PLC
-function block, set the other components' **Command source** to `manual`:
-the simulator then ignores their part of the PLC frames, and you set their
-commands from the designer. For example, run a belt or fire a pusher by
-hand, or force a sensor, and watch the PLC's reaction in the feedback rows.
+(`io_signals.py` reads the same mapping). The simulator window's inspector
+shows the same signals with their live values. While you bring up one PLC
+function block, set the other components' **Command source** to `manual`
+there: the simulator then ignores their part of the PLC frames, and you set
+their commands in the inspector. For example, run a belt, fire a pusher,
+steer a wheel diverter, or force a sensor, and watch the PLC's reaction in
+the feedback rows.
+
+Note: diverters now take `commandSpeed` and `commandAngle` (REAL, 0 = the
+layout's value) after `divert`. Layouts with diverters get a longer input
+frame, so regenerate the AX side (`apax gen_io`).
 
 ## 4. TCP exchange: what changed in Python (compatible with the current PLC)
 

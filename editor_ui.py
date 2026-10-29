@@ -1,9 +1,14 @@
-"""The simulator window's panels: the toolbar under the status bar, a read-only inspector
-of the selected component and the Components tree. Layouts are designed in
-the layout editor (layout_editor.py, "Edit in Designer"); this window only
-runs and watches them."""
+"""The simulator window's panels: the toolbar under the status bar, an inspector of the
+selected component and the Components tree. Layouts are designed in the
+layout editor (layout_editor.py, "Edit in Designer"); this window runs and
+watches them. The inspector's properties are read-only; its PLC I/O section
+(io_signals.py) shows the component's PLC signals live and lets the
+operator drive its commands: Source picks where they come from (auto /
+plc / manual), and in manual its commands - a sensor: its output - are set
+right there."""
 import pygame
 import hmi_style as hmi
+import io_signals
 import pygame_gui
 from config_parser import Belt, Sensor, Source, Sink, ControlButton, LedIndicator, Pallet, Stopper, RobotArm, Elevator
 from config_parser import Accumulator, Diverter, GuardDoor, SafetyCircuit, Scanner, Transfer, Turntable
@@ -34,17 +39,16 @@ INSPECTOR_FIELDS = {
     ControlButton: ("id", "label", "x", "y", "rotation", "width", "height"),
     LedIndicator: ("id", "label", "x", "y", "radius"),
     Pallet: ("id", "label", "x", "y", "rotation", "width", "height", "mass", "capacity", "level"),
-    Stopper: ("id", "label", "x", "y", "rotation", "width", "depth", "level", "control", "holdTime",
-              "releaseTime"),
-    RobotArm: ("id", "label", "x", "y", "reach", "pickX", "pickY", "placeX", "placeY", "cycleTime", "control"),
+    Stopper: ("id", "label", "x", "y", "rotation", "width", "depth", "level", "holdTime", "releaseTime"),
+    RobotArm: ("id", "label", "x", "y", "reach", "pickX", "pickY", "placeX", "placeY", "cycleTime"),
     Elevator: ("id", "label", "x", "y", "rotation", "width", "height", "levels", "levelHeight", "liftSpeed",
-               "beltId", "control"),
+               "beltId"),
     Scanner: ("id", "label", "scannerType", "x", "y", "rotation", "width", "height", "level"),
     Diverter: ("id", "label", "diverterType", "x", "y", "rotation", "width", "height", "divertAngle", "speed",
-               "destination", "control"),
-    Turntable: ("id", "label", "x", "y", "radius", "beltId", "turnSpeed", "control"),
-    Accumulator: ("id", "label", "x", "y", "mode", "control"),
-    Transfer: ("id", "label", "x", "y", "rotation", "width", "height", "crossAngle", "speed", "stop", "control"),
+               "destination"),
+    Turntable: ("id", "label", "x", "y", "radius", "beltId", "turnSpeed"),
+    Accumulator: ("id", "label", "x", "y", "mode"),
+    Transfer: ("id", "label", "x", "y", "rotation", "width", "height", "crossAngle", "speed", "stop"),
     GuardDoor: ("id", "label", "x", "y", "rotation", "width"),
     SafetyCircuit: ("id", "label", "x", "y"),
 }
@@ -55,6 +59,23 @@ BELT_GEOMETRY = {
 }
 ROW_H = 24
 PANEL_W = 250
+SCROLLBAR_W = 16
+# Tooltips of the PLC I/O section's Source buttons (a component's `control`).
+SOURCE_TIPS = {
+    "auto": "Its own controller sets the commands",
+    "plc": "The PLC data exchange sets the commands",
+    "manual": "Set the commands here; PLC frames leave them alone",
+    "sim": "The simulation decides the output",
+}
+
+
+def io_text(value) -> str:
+    """A PLC signal's value as the PLC would show it."""
+    if isinstance(value, bool):
+        return "TRUE" if value else "FALSE"
+    if isinstance(value, float):
+        return f"{value:.3f}"
+    return "-" if value is None else str(value)
 
 
 def _kind_name(item) -> str:
@@ -119,15 +140,23 @@ class EditorUI:
             relative_rect=pygame.Rect(self.width - PANEL_W, CANVAS_TOP, PANEL_W, self._panel_height()),
             manager=self.manager
         )
+        # Everything in it scrolls (a robot's PLC signals don't fit a short window).
+        self.prop_scroll = pygame_gui.elements.UIScrollingContainer(
+            pygame.Rect(0, 0, PANEL_W - 4, self._panel_height() - 4), manager=self.manager,
+            container=self.prop_panel, allow_scroll_x=False)
         self.prop_rows = {}       # attr -> (name label, value label)
         self.live_rows = {}       # live readout name -> (name label, value label)
+        self.io_rows = {}         # PLC signal name -> (Signal, value label / editor)
+        self.io_source_buttons = {}   # Source button -> its `control` value
+        self._io_widgets = []
+        self._io_shown = {}
         self.prop_title = pygame_gui.elements.UILabel(
             relative_rect=pygame.Rect(8, 8, PANEL_W - 16, 18), text="", manager=self.manager,
-            container=self.prop_panel, object_id="#prop_kind")
+            container=self.prop_scroll, object_id="#prop_kind")
         self.prop_hint = pygame_gui.elements.UILabel(
             relative_rect=pygame.Rect(8, 8, PANEL_W - 16, 40),
             text="Click a component to inspect it", manager=self.manager,
-            container=self.prop_panel, object_id="#prop_name")
+            container=self.prop_scroll, object_id="#prop_name")
         self.selected_item = None
         self.show_props_for(None)
 
@@ -148,16 +177,16 @@ class EditorUI:
         if group not in headers:
             headers[group] = pygame_gui.elements.UILabel(
                 relative_rect=pygame.Rect(8, 0, PANEL_W - 16, 20), text=group.upper(), manager=self.manager,
-                container=self.prop_panel, object_id="#prop_group")
+                container=self.prop_scroll, object_id="#prop_group")
         return headers[group]
 
     def _row(self, rows: dict, key: str, name: str):
         if key not in rows:
             rows[key] = (
                 pygame_gui.elements.UILabel(pygame.Rect(8, 0, 96, ROW_H), name, self.manager,
-                                            container=self.prop_panel, object_id="#prop_name"),
-                pygame_gui.elements.UILabel(pygame.Rect(110, 0, PANEL_W - 122, ROW_H), "", self.manager,
-                                            container=self.prop_panel, object_id="#prop_value"),
+                                            container=self.prop_scroll, object_id="#prop_name"),
+                pygame_gui.elements.UILabel(pygame.Rect(110, 0, PANEL_W - 122 - SCROLLBAR_W, ROW_H), "",
+                                            self.manager, container=self.prop_scroll, object_id="#prop_value"),
             )
         return rows[key]
 
@@ -187,10 +216,12 @@ class EditorUI:
     def show_props_for(self, item):
         self.selected_item = item
         self.hide_all_props()
+        self._clear_io()
         self._live_shown = {}
         if not item:
             self.prop_title.hide()
             self.prop_hint.show()
+            self.prop_scroll.set_scrollable_area_dimensions((PANEL_W - 4 - SCROLLBAR_W, 60))
             return
         self.prop_hint.hide()
         self.prop_title.set_text(_kind_name(item).upper())
@@ -211,7 +242,120 @@ class EditorUI:
             for key in live:
                 name, value = self._row(self.live_rows, key, key)
                 y = self._place_row(name, value, y)
+        y = self._place_io(item, y)
+        self.prop_scroll.set_scrollable_area_dimensions((PANEL_W - 4 - SCROLLBAR_W, y + 8))
         self.update_live()
+
+    # -- PLC I/O -------------------------------------------------------------------
+
+    def _clear_io(self):
+        for widget in self._io_widgets:
+            widget.kill()
+        self._io_widgets = []
+        self.io_rows = {}
+        self.io_source_buttons = {}
+        self._io_shown = {}
+
+    def _io_widget(self, widget):
+        self._io_widgets.append(widget)
+        return widget
+
+    def _place_io(self, item, y: int) -> int:
+        """The PLC I/O section: Source (where the commands come from), then
+        the commands and the feedback by their PLC names. In manual, a
+        command (a sensor: its output) is an editor - a toggle for a BOOL,
+        a text box for a number (Enter sets it) - else a live readout."""
+        signals = io_signals.signals(item)
+        if not signals:
+            return y
+        control = getattr(item, "control", None)
+        options = io_signals.control_options(item)
+        scroll = self.prop_scroll
+        if options:
+            y = self._place_header("Command source", y)
+            width = (PANEL_W - 20 - SCROLLBAR_W) // len(options)
+            for i, option in enumerate(options):
+                button = self._io_widget(pygame_gui.elements.UIButton(
+                    pygame.Rect(8 + i * width, y + 1, width - 2, ROW_H - 2), option, self.manager,
+                    container=scroll, tool_tip_text=SOURCE_TIPS.get(option)))
+                if option == control:
+                    button.select()
+                self.io_source_buttons[button] = option
+            y += ROW_H + 2
+        for direction, title in (("command", "PLC commands"), ("feedback", "PLC feedback")):
+            rows = [s for s in signals if s.direction == direction]
+            if not rows:
+                continue
+            y = self._place_header(title, y)
+            for signal in rows:
+                self._io_widget(pygame_gui.elements.UILabel(
+                    pygame.Rect(8, y, 100, ROW_H), signal.name, self.manager, container=scroll,
+                    object_id="#prop_name"))
+                rect = pygame.Rect(110, y + 1, PANEL_W - 122 - SCROLLBAR_W, ROW_H - 2)
+                if control == "manual" and signal.settable:
+                    if signal.count == 1 and signal.byte_type == io_signals.ByteType.BIT:
+                        widget = pygame_gui.elements.UIButton(rect, "", self.manager, container=scroll,
+                                                              object_id="#io_toggle")
+                    else:
+                        widget = pygame_gui.elements.UITextEntryLine(rect, self.manager, container=scroll,
+                                                                     object_id="#io_entry")
+                else:
+                    widget = pygame_gui.elements.UILabel(rect, "", self.manager, container=scroll,
+                                                         object_id="#prop_value")
+                self.io_rows[signal.name] = (signal, self._io_widget(widget))
+                y += ROW_H
+        return y
+
+    def _update_io(self):
+        item = self.selected_item
+        for name, (signal, widget) in self.io_rows.items():
+            text = io_text(io_signals.value_of(item, signal))
+            if isinstance(widget, pygame_gui.elements.UITextEntryLine):
+                if widget.is_focused:
+                    continue                       # the operator is typing in it
+            if self._io_shown.get(name) == text:
+                continue
+            self._io_shown[name] = text
+            if isinstance(widget, pygame_gui.elements.UIButton):
+                widget.set_text("ON" if text == "TRUE" else "OFF")
+                (widget.select if text == "TRUE" else widget.unselect)()
+            else:
+                widget.set_text(text)
+
+    def typing(self) -> bool:
+        """Whether a PLC I/O text box has the keyboard (no shortcuts then)."""
+        return any(isinstance(w, pygame_gui.elements.UITextEntryLine) and w.is_focused
+                   for _, w in self.io_rows.values())
+
+    def _io_event(self, event):
+        """("SET_IO", component id, signal or "control", value) for a PLC
+        I/O edit, else None."""
+        item = self.selected_item
+        if item is None:
+            return None
+        if event.type == pygame_gui.UI_BUTTON_PRESSED:
+            option = self.io_source_buttons.get(event.ui_element)
+            if option is not None:
+                return ("SET_IO", item.id, "control", option)
+            for name, (signal, widget) in self.io_rows.items():
+                if widget is event.ui_element:
+                    return ("SET_IO", item.id, name, not io_signals.value_of(item, signal))
+        if event.type == pygame_gui.UI_TEXT_ENTRY_FINISHED:
+            for name, (signal, widget) in self.io_rows.items():
+                if widget is event.ui_element:
+                    text = widget.get_text().strip()
+                    self._io_shown.pop(name, None)            # show the value it really got
+                    try:
+                        if signal.count > 1:
+                            value = text
+                        elif signal.byte_type == io_signals.ByteType.FLOAT:
+                            value = float(text)
+                        else:
+                            value = int(float(text))
+                    except ValueError:
+                        return None
+                    return ("SET_IO", item.id, name, value)
+        return None
 
     def _place_header(self, group: str, y: int) -> int:
         header = self._group_header(group)
@@ -293,6 +437,7 @@ class EditorUI:
             if key in self.live_rows and shown.get(key) != text:
                 shown[key] = text
                 self.live_rows[key][1].set_text(text)
+        self._update_io()
 
     def update_sensor_state(self, physics_engine: PhysicsEngine):
         """Called every frame by the renderer."""
@@ -436,6 +581,7 @@ class EditorUI:
         self.toolbar_panel.set_dimensions((width, TOOLBAR_H))
         self.prop_panel.set_position((width - PANEL_W, CANVAS_TOP))
         self.prop_panel.set_dimensions((PANEL_W, self._panel_height()))
+        self.prop_scroll.set_dimensions((PANEL_W - 4, self._panel_height() - 4))
         # Keep the Components window from being stranded off-screen
         if self.manager_window and self.manager_window.alive():
             rect = self.manager_window.rect
@@ -443,7 +589,11 @@ class EditorUI:
                                               max(0, min(rect.y, height - rect.height))))
 
     def handle_event(self, event):
-        """Returns a command ("TOGGLE_PLAY", "OPEN_DESIGNER", ("SELECT_ITEM", item), ...) or None."""
+        """Returns a command ("TOGGLE_PLAY", "OPEN_DESIGNER", ("SELECT_ITEM", item),
+        ("SET_IO", id, name, value), ...) or None."""
+        io = self._io_event(event)
+        if io is not None:
+            return io
         if event.type == pygame_gui.UI_BUTTON_PRESSED:
             for button, command in ((self.sim_play_btn, "TOGGLE_PLAY"), (self.sim_speed_btn, "CYCLE_SPEED"),
                                     (self.sim_clear_btn, "CLEAR"),

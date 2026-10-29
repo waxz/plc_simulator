@@ -213,27 +213,16 @@ The Qt layout editor is where belt shapes and positions are designed:
   Motion, Signal, Operation, Display) with units on every number. Sensors
   expose on/off delay, light-on (NC) and bit/byte packing; buttons their type,
   NC contact and key; belts the speed or VFD command format.
-- **PLC I/O** sections at the end of the property grid show the selected
+- **PLC I/O** sections at the end of the property grid list the selected
   component's PLC signals as they are on the wire (`io_signals.py`, from
-  the same mapping as the frames): **Commands (PLC -> simulator)**, such as a
-  belt's `speed`, a stopper's `release` or a diverter's `divert`, and
-  **Feedback (simulator -> PLC)**, such as a sensor's output, a belt's
-  `actualSpeed` or a stopper's `isUp`. Each signal shows its PLC type. When the
-  simulator runs this layout (after **Run in Simulator**), the values are
-  live, read a few times a second over the designer-simulator link
-  (`sim_link.request_io`). It is a quick way to check the API before writing
-  the PLC side.
-  - **Command source** (the component's `control`) says where the commands
-    come from: `auto` (the machine's built-in controller), `plc` (the PLC
-    data exchange) or `manual`. In `manual` the commands become editors (a
-    checkbox, a number, a beam string) that set the values in the running
-    simulator, and PLC frames leave that component alone. You can test a
-    belt, a pusher or a lamp by hand while the PLC runs the rest. A sensor's
-    source is `sim` or `manual`: in `manual` its output is forced to the
-    value you set, parcels or not.
-  - The source is a layout setting (saved, undoable); a change is also sent
-    to the running simulator at once. The values you type are live only and
-    are not saved.
+  the same mapping as the frames), each with its PLC type: **Commands (PLC
+  -> simulator)**, such as a belt's `speed`, a stopper's `release` or a
+  diverter's `divert`, and **Feedback (simulator -> PLC)**, such as a
+  sensor's output, a belt's `actualSpeed` or a stopper's `isUp`. Use them to
+  check the API before writing the PLC side. **Command source** (the
+  component's `control`: `auto`, `plc` or `manual`; a sensor `sim` or
+  `manual`) is set here as part of the layout. The live values, and setting
+  commands by hand, are in the simulator window's inspector (see below).
 - **Run in Simulator** (toolbar, `F5`) shows the layout as it is on the
   canvas in the simulator **without saving it**: it writes a run copy to
   `<temp>/conveyor_sim_runs/` and runs that (`main.py <copy> --source
@@ -535,6 +524,24 @@ inspector on the right (the editor's sections, wording and units) with a
 (or blocked beams) for a sensor, the contact for a push button, the lamp for
 an LED. Dragging on the canvas always pans the view.
 
+The inspector also has the component's **PLC I/O**: its PLC commands and
+feedback by name (`io_signals.py`), with their values live. The panel
+scrolls with the mouse wheel when they don't fit.
+
+- **Command source** buttons: `auto` (its own controller), `plc` (the PLC
+  data exchange) or `manual`; a sensor has `sim` or `manual`. Click one to
+  switch the running simulation, even while it runs.
+- In `manual` the commands become controls: an ON / OFF toggle for a BOOL,
+  a text box for a number (type it, then Enter). PLC frames leave that
+  component alone, so you can drive one machine by hand while the PLC runs
+  the rest. For example, run a wheel diverter (`divert`) at the speed and
+  direction you type (`commandSpeed`, `commandAngle`), run a belt, or
+  release a stopper. A sensor in `manual` is forced: its output is what you
+  set, parcels or not.
+- Shortcuts (Space, R, C, ...) pause while a text box has the keyboard.
+- The source you click here applies to this run only. To keep it, set
+  **Command source** in the designer.
+
 | Control | Key | Does |
 |---|---|---|
 | Simulation > Start / Pause | `Space` | run or pause the physics (green Start, amber Pause) |
@@ -651,8 +658,8 @@ folders. Each stopper, robot arm and elevator has a `control` setting:
 - `"auto"` (the default): a small built-in controller runs it, so a layout
   works without a PLC.
 - `"plc"`: it follows its command fields from the PLC.
-- `"manual"`: it follows command fields you set by hand in the designer's
-  PLC I/O section; PLC frames leave them alone.
+- `"manual"`: it follows command fields you set by hand in the simulator
+  window's inspector (PLC I/O); PLC frames leave them alone.
 
 Its feedback fields go to the PLC either way.
 
@@ -809,7 +816,7 @@ the source's mass range.
 | Equipment | Set up | Does | PLC signals (in / out) |
 |---|---|---|---|
 | Scanner | zone over the belt, `scannerType` "barcode" / "rfid" / "dws" | Reads each parcel once as it enters. A barcode scanner gives a no-read on an unreadable label, RFID always reads, and a DWS (dimension-weight-scan) also measures the parcel | - / `code` UDINT, `destination` BYTE (as a warehouse system would answer), `readCount` UINT (+1 per parcel), `noRead`, `present`; DWS: `weight`, `measuredLength`, `measuredWidth`, `measuredHeight` REALs |
-| Diverter | zone on the belt, `diverterType` "pusher" / "wheels", `divertAngle` (+-90 pusher, ~30 wheels), `speed`, `destination` | Steers the parcels in its zone onto the branch while active. Auto: active while a readable parcel for its destination is there | `divert` / `active`, `present`, `presentCode` UDINT, `diverted` UINT |
+| Diverter | zone on the belt, `diverterType` "pusher" / "wheels", `divertAngle` (+-90 pusher, ~30 wheels), `speed`, `destination` | Steers the parcels in its zone onto the branch while active. Auto: active while a readable parcel for its destination is there. Following commands: active while `divert` is on, at `commandSpeed` / `commandAngle` (0 = the layout's `speed` / `divertAngle`) | `divert` BOOL, `commandSpeed` REAL, `commandAngle` REAL / `active`, `present`, `presentCode` UDINT, `diverted` UINT |
 | 90° transfer | zone (`width` along the travel, `height` across), `crossAngle` (+90 left / -90 right), `speed`, `liftTime`, `stop` | The chain transfer of a pallet line, at a corner or junction of roller conveyors. A pallet stops centred on it (`stop`). Chain strands then lift it off the rollers and carry it sideways onto the crossing conveyor, without turning it, and drop. Auto: transfers whatever arrives (a corner) | `transfer` / `present`, `centered` (stopped on it, ready), `up`, `transferred` UINT |
 | Turntable | `radius`, `beltId` (its platform belt), `angles`, `turnSpeed` | Turns its belt, and what is on it, between positions. Auto: loads at `autoFrom`, turns to `autoTo`, unloads, turns back | `targetIndex` BYTE / `index` BYTE, `turning`, `inPosition`, `occupied` |
 | Accumulation conveyor | `beltIds` (its zones, in flow order), `mode` "singulation" / "train" | Zero-pressure accumulation, with a photo-eye at each zone's end. A full zone holds its belt while the next zone is occupied ("train": unless the next one is moving). The last zone discharges while released | `release` / `zones` UINT (bit mask), `full` |
@@ -883,8 +890,11 @@ robots, lifting arms) only report a z; the viewer draws what it gets.
   **Floor plan** (D) shows / hides the drawing and **Labels** (L) the names.
   Hover anything to see its name.
 - The page is served by the simulator itself on 127.0.0.1, port 8765
-  (`--view3d-port`). `--view3d serve` serves without opening a browser, for
-  `--headless` or a browser elsewhere through a tunnel. It uses no extra
+  (`--view3d-port`). If another simulator already has that port, it takes a
+  free one and prints the address (the 3D View button opens the right one).
+  A page left open from an earlier run reloads the new layout once a new
+  simulator serves it. `--view3d serve` serves without opening a browser,
+  for `--headless` or a browser elsewhere through a tunnel. It uses no extra
   Python packages.
 - three.js 0.160 comes from the jsDelivr CDN. On a PC without internet, unpack
   the npm package `three@0.160.0` into `view3d_web/vendor/three` and the page

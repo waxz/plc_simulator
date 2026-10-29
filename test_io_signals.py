@@ -3,14 +3,13 @@ test_io_signals.py - a component's PLC signals by name (io_signals.py) and
 the "manual" command source: the signals match the exchange mapping, set by
 hand only in manual and with the wire's types, PLC frames leave manual
 components alone, a forced sensor keeps its output, manual machines follow
-their commands; the simulator's link answers the designer's reads and
-queues its writes (sim_link.py), the window applies them here and in the
-simulation process; and the designer's PLC I/O section shows it all, live.
+their commands (a diverter: run, speed, direction); the simulator window's
+inspector shows the PLC I/O live and sets commands by hand there and in the
+simulation process; the designer lists the signals and the command source.
 """
 import os
 import shutil
 import tempfile
-import time
 import unittest
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -18,14 +17,15 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 _SETTINGS_DIR = tempfile.mkdtemp()
 os.environ["CONVEYOR_SIM_SETTINGS"] = os.path.join(_SETTINGS_DIR, "settings.json")  # never the user's
 
+import pygame  # noqa: E402
+import pygame_gui  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 import io_signals  # noqa: E402
-import sim_link  # noqa: E402
-from config_parser import (Belt, ControlButton, Diverter, LedIndicator, Sensor, SimulatorConfig, Sink,  # noqa: E402
+import logistics  # noqa: E402
+from config_parser import (Belt, ControlButton, Diverter, LedIndicator, Sensor, SimulatorConfig,  # noqa: E402
                            Source, Stopper, load_config)
-from mqtt_message_binding import (MACHINE_FIELDS, ComponentMessage, paddng_component,  # noqa: E402
-                                  _MACHINE_KIND)
+from mqtt_message_binding import MACHINE_FIELDS, ComponentMessage, paddng_component  # noqa: E402
 from physics import PhysicsEngine  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -176,6 +176,18 @@ class ManualModeTest(unittest.TestCase):
         self.assertEqual(config.sensors[0].risingEdges, 1)
         self.assertFalse(io_signals.read(config, ["forced"])["forced"]["values"]["sensor_states"])
 
+    def test_a_diverter_runs_at_its_commanded_speed_and_direction(self):
+        d = Diverter(id="d", x=5.0, y=0.0, divertAngle=-90.0, speed=1.0)
+        self.assertEqual(logistics.diverter_motion(d), (1.0, -90.0))
+        d.commandSpeed, d.commandAngle = 0.4, 90.0
+        self.assertEqual(logistics.diverter_motion(d), (1.0, -90.0))       # auto: the layout's
+        d.control = "manual"
+        self.assertEqual(logistics.diverter_motion(d), (0.4, 90.0))
+        d.commandSpeed = d.commandAngle = 0.0
+        self.assertEqual(logistics.diverter_motion(d), (1.0, -90.0))       # 0: the layout's
+        commands = [s.name for s in io_signals.signals(d) if s.direction == "command"]
+        self.assertEqual(commands, ["divert", "commandSpeed", "commandAngle"])
+
     def test_manual_machines_follow_their_commands(self):
         config = SimulatorConfig(belts=[belt()], useSurfaceVelocity=True,
                                  diverters=[Diverter(id="d", x=5.0, y=0.0, control="manual")],
@@ -191,38 +203,105 @@ class ManualModeTest(unittest.TestCase):
         self.assertFalse(config.stoppers[0].isUp)
 
 
-class LinkTest(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, self.tmp, True)
-        self.layout = os.path.join(self.tmp, "line.json")
-        shutil.copy(DEMO, self.layout)
-        self.copy = os.path.join(self.tmp, "run", "line.json")
-        self.link = sim_link.SimulatorLink(self.copy, source=self.layout)
-        self.addCleanup(self.link.close)
+class SimulatorInspectorTest(unittest.TestCase):
+    """The simulator window's inspector (editor_ui.py): PLC I/O live, and
+    commands set by hand in manual."""
 
-    def test_no_simulator_no_answer(self):
-        self.link.close()
-        self.assertIsNone(sim_link.request_io(["div_1"]))
-        self.assertFalse(sim_link.request_set("div_1", "control", "manual"))
+    @classmethod
+    def setUpClass(cls):
+        from visualizer import Renderer
+        cls.config = load_config(DEMO)
+        cls.config.sensors.append(sensor("eye", x=3.0, y=0.0))
+        cls.engine = PhysicsEngine(cls.config)
+        cls.r = Renderer(cls.config, headless=False)
+        cls.r.physics = cls.engine
+        cls.ui = cls.r.editor_ui
 
-    def test_reads_and_queued_writes(self):
-        self.assertIsNone(sim_link.request_io(["div_1"]))          # no layout running yet
-        self.link.config = load_config(DEMO)
-        reply = sim_link.request_io(["div_1", "infeed"])
-        self.assertEqual(set(reply["values"]), {"div_1", "infeed"})
-        self.assertEqual(reply["values"]["div_1"]["control"], "auto")
-        self.assertTrue(sim_link.runs_layout(reply, self.layout))         # its run copy's source
-        self.assertTrue(sim_link.runs_layout(reply, None, self.copy))
-        self.assertFalse(sim_link.runs_layout(reply, os.path.join(self.tmp, "other.json")))
-        self.assertTrue(sim_link.request_set("div_1", "control", "manual"))
-        self.assertTrue(sim_link.request_set("div_1", "divert", True))
-        self.assertEqual(self.link.take_commands(), [("div_1", "control", "manual"), ("div_1", "divert", True)])
-        self.assertEqual(self.link.take_commands(), [])
-        with open(sim_link.registry_path("sim"), encoding="utf-8") as f:
-            self.assertIn("line.json", f.read())
+    @classmethod
+    def tearDownClass(cls):
+        pygame.display.quit()
 
-    def test_the_window_applies_them(self):
+    def inspect(self, component_id):
+        item = next(c for kind in ("diverters", "belts", "sensors", "scanners") for c in getattr(self.config, kind)
+                    if c.id == component_id)
+        self.r.selected_item = item
+        self.ui.show_props_for(item)
+        return item
+
+    def press(self, element):
+        pygame.event.post(pygame.event.Event(pygame_gui.UI_BUTTON_PRESSED, {"ui_element": element}))
+        self.r.process_events()
+
+    def source_button(self, option):
+        return next(b for b, o in self.ui.io_source_buttons.items() if o == option)
+
+    def test_live_readouts_in_auto(self):
+        d = self.inspect("div_2")
+        self.assertEqual(set(self.ui.io_source_buttons.values()), {"auto", "plc", "manual"})
+        self.assertTrue(self.source_button("auto").is_selected)
+        self.assertEqual(list(self.ui.io_rows), ["divert", "commandSpeed", "commandAngle", "active", "present",
+                                                 "presentCode", "diverted"])
+        widget = self.ui.io_rows["divert"][1]
+        self.assertIsInstance(widget, pygame_gui.elements.UILabel)       # not set by hand in auto
+        d.diverted = 5
+        self.ui.update_live()
+        self.assertEqual(self.ui.io_rows["diverted"][1].text, "5")
+        self.assertEqual(self.ui.io_rows["active"][1].text, "FALSE")
+
+    def test_manual_commands_set_from_the_inspector(self):
+        d = self.inspect("div_1")
+        self.press(self.source_button("manual"))
+        self.assertEqual(d.control, "manual")
+        toggle = self.ui.io_rows["divert"][1]
+        self.assertIsInstance(toggle, pygame_gui.elements.UIButton)
+        self.press(toggle)
+        self.assertTrue(d.divert)
+        self.ui.update_live()
+        self.assertEqual(toggle.text, "ON")
+        entry = self.ui.io_rows["commandAngle"][1]
+        self.assertIsInstance(entry, pygame_gui.elements.UITextEntryLine)
+        entry.set_text("45")
+        pygame.event.post(pygame.event.Event(pygame_gui.UI_TEXT_ENTRY_FINISHED, {"ui_element": entry,
+                                                                                 "text": "45"}))
+        self.r.process_events()
+        self.assertEqual(d.commandAngle, 45.0)
+        self.engine.run_for(0.1)
+        self.assertTrue(d.active)
+        self.assertEqual(logistics.diverter_motion(d)[1], 45.0)
+        self.press(self.source_button("auto"))                            # back: readouts again
+        self.assertEqual(d.control, "auto")
+        self.assertIsInstance(self.ui.io_rows["divert"][1], pygame_gui.elements.UILabel)
+
+    def test_typing_a_value_is_not_a_shortcut(self):
+        self.inspect("infeed")
+        self.press(self.source_button("manual"))
+        entry = self.ui.io_rows["speed"][1]
+        entry.focus()
+        self.assertTrue(self.ui.typing())
+        playing = self.r.playing
+        pygame.event.post(pygame.event.Event(pygame.KEYDOWN, {"key": pygame.K_SPACE, "unicode": " ", "mod": 0,
+                                                              "scancode": 44}))
+        self.r.process_events()
+        self.assertEqual(self.r.playing, playing)                         # Space typed, not Start
+        entry.unfocus()
+        self.press(self.source_button("plc"))
+
+    def test_a_sensor_is_forced_in_manual(self):
+        sensor = self.inspect("eye")
+        self.assertEqual(set(self.ui.io_source_buttons.values()), {"sim", "manual"})
+        self.press(self.source_button("manual"))
+        self.press(self.ui.io_rows["sensor_states"][1])
+        self.engine.run_for(0.2)
+        self.assertTrue(io_signals.value_of(sensor, io_signals.signals(sensor)[0]))
+
+    def test_a_scanner_only_reports(self):
+        self.inspect("dws_1")
+        self.assertEqual(self.ui.io_source_buttons, {})
+        self.assertIn("weight", self.ui.io_rows)
+
+
+class WindowApplyTest(unittest.TestCase):
+    def test_the_window_applies_them_here_and_in_the_simulation_process(self):
         from visualizer import Renderer
         config = load_config(DEMO)
         renderer = Renderer(config, headless=True)
@@ -233,7 +312,7 @@ class LinkTest(unittest.TestCase):
         sent = []
         renderer.physics = type("Proxy", (), {"set_io": lambda self, *a: sent.append(a)})()
         self.assertTrue(renderer.set_io("infeed", "control", "manual"))
-        self.assertEqual(sent, [("infeed", "control", "manual")])   # and to the simulation process
+        self.assertEqual(sent, [("infeed", "control", "manual")])
 
 
 class ProxyTest(unittest.TestCase):
@@ -265,11 +344,8 @@ class DesignerPanelTest(unittest.TestCase):
         _app.processEvents()
         self.addCleanup(self._close)
         self.panel = self.window.properties_panel
-        self.link = None
 
     def _close(self):
-        if self.link is not None:
-            self.link.close()
         self.window.undo_stack.setClean()
         self.window.close()
         self.window.deleteLater()
@@ -279,55 +355,28 @@ class DesignerPanelTest(unittest.TestCase):
         next(i for i in self.window.items_list if i.model.id == component_id).setSelected(True)
         _app.processEvents()
 
-    def run_simulator(self, path=None):
-        self.link = sim_link.SimulatorLink(path or self.layout)
-        self.link.config = load_config(path or self.layout)
-        return self.link.config
-
     def group_rows(self, title):
         tree = self.panel.tree
         group = next(tree.topLevelItem(i) for i in range(tree.topLevelItemCount())
                      if tree.topLevelItem(i).text(0) == title)
         return [group.child(i).text(0) for i in range(group.childCount())]
 
-    def test_sections_and_offline(self):
+    def test_signals_and_command_source(self):
         from layout_editor import IO_COMMANDS, IO_FEEDBACK, IO_GROUP
         self.select("div_1")
-        self.assertEqual(self.group_rows(IO_GROUP), ["Command source", "Simulator"])
-        self.assertEqual(self.group_rows(IO_COMMANDS), ["divert"])
+        self.assertEqual(self.group_rows(IO_GROUP), ["Command source"])
+        self.assertEqual(self.group_rows(IO_COMMANDS), ["divert", "commandSpeed", "commandAngle"])
         self.assertEqual(self.group_rows(IO_FEEDBACK), ["active", "present", "presentCode", "diverted"])
-        self.assertEqual([self.panel.combos["control"].itemText(i) for i in range(3)], ["auto", "plc", "manual"])
-        self.panel.refresh_io()
-        self.assertIn("not running", self.panel.io_status.text())
-        self.assertEqual(self.panel.io_rows["active"][1].text(), "-")
+        self.assertEqual(self.panel.tree.itemWidget(self.panel.io_rows["presentCode"], 1).text(), "DWORD")
+        combo = self.panel.combos["control"]
+        self.assertEqual([combo.itemText(i) for i in range(combo.count())], ["auto", "plc", "manual"])
+        combo.setCurrentText("manual")                                  # a layout setting, undoable
+        self.assertEqual(self.window.scene.selectedItems()[0].model.control, "manual")
+        self.window.undo_stack.undo()
+        self.assertEqual(combo.currentText(), "auto")
         self.select("dws_1")                                            # a scanner: feedback only
         self.assertNotIn("control", self.panel.combos)
         self.assertEqual(self.group_rows(IO_FEEDBACK)[:2], ["noRead", "present"])
-
-    def test_live_values_and_manual_commands(self):
-        sim = self.run_simulator()
-        self.select("div_1")
-        self.panel.refresh_io()
-        self.assertIn("live", self.panel.io_status.text())
-        self.assertEqual(self.panel.io_rows["divert"][1].text(), "FALSE")
-        editor = self.panel.io_rows["divert"][2]
-        self.assertFalse(editor.isVisibleTo(self.panel))                 # auto: shown, not set here
-        sim.diverters[0].diverted = 7
-        self.panel.refresh_io()
-        self.assertEqual(self.panel.io_rows["diverted"][1].text(), "7")
-        # Switch to manual: the layout changes (undoable) and so does the simulator.
-        self.panel.combos["control"].setCurrentText("manual")
-        self.assertEqual(self.window.scene.selectedItems()[0].model.control, "manual")
-        self.assertTrue(editor.isVisibleTo(self.panel))
-        editor.setChecked(True)
-        deadline = time.monotonic() + 3.0
-        commands = []
-        while len(commands) < 2 and time.monotonic() < deadline:
-            commands += self.link.take_commands()
-            time.sleep(0.02)
-        self.assertEqual(commands, [("div_1", "control", "manual"), ("div_1", "divert", True)])
-        self.window.undo_stack.undo()
-        self.assertEqual(self.panel.combos["control"].currentText(), "auto")
 
     def test_a_new_diverter_type_redraws_what_it_covers(self):
         self.select("div_1")
@@ -337,44 +386,6 @@ class DesignerPanelTest(unittest.TestCase):
         self.assertLess(item.boundingRect().height(), with_body.height() - 50)
         self.window.undo_stack.undo()
         self.assertEqual(item.boundingRect(), with_body)
-
-    def test_a_source_set_before_the_simulator_ran_is_sent(self):
-        self.select("infeed")
-        self.panel.combos["control"].setCurrentText("manual")           # offline: the layout only
-        self.run_simulator()                                            # still "plc" there
-        self.panel.refresh_io()
-        self.assertEqual(self.panel.io_live["control"], "manual")
-        self.assertTrue(self.panel.io_rows["speed"][2].isVisibleTo(self.panel))
-        deadline = time.monotonic() + 3.0
-        commands = []
-        while not commands and time.monotonic() < deadline:
-            commands = self.link.take_commands()
-            time.sleep(0.02)
-        self.assertEqual(commands, [("infeed", "control", "manual")])
-
-    def test_another_layout_is_not_live(self):
-        other = os.path.join(self.tmp, "other.json")
-        shutil.copy(DEMO, other)
-        self.run_simulator(other)
-        self.select("infeed")
-        self.panel.refresh_io()
-        self.assertIsNone(self.panel.io_live)
-        self.assertIn("another layout", self.panel.io_status.text())
-        self.assertIn("(other.json)", self.panel.io_status.toolTip())
-
-    def test_the_run_copy_is_live(self):
-        with mock_popen():
-            self.window.run_simulation()
-        self.run_simulator(self.window._run_file)
-        self.select("infeed")
-        self.panel.refresh_io()
-        self.assertIsNotNone(self.panel.io_live)
-        self.assertEqual(self.panel.io_rows["speed"][1].text(), "1.000")
-
-
-def mock_popen():
-    from unittest import mock
-    return mock.patch("layout_editor.subprocess.Popen")
 
 
 if __name__ == "__main__":

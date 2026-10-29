@@ -96,7 +96,7 @@ class EditorClicksTest(unittest.TestCase):
         self.assertTrue(panel.tree.isVisible())
         self.assertIn("button_1_1_2", panel.header.text())
         groups = [panel.tree.topLevelItem(i).text(0) for i in range(panel.tree.topLevelItemCount())]
-        self.assertEqual(groups, ["Identity", "Position", "Geometry", "Operation", "Display", "PLC I/O",
+        self.assertEqual(groups, ["Identity", "Position", "Geometry", "Operation", "Display",
                                   "Feedback (simulator -> PLC)"])        # a button: its contact, to the PLC
 
         # Click the NC contact box: the model changes, undo puts it back.
@@ -405,7 +405,7 @@ class SimulatorClicksTest(unittest.TestCase):
         self.assertEqual(ui.live_rows["State"][1].text, "clear")
         # read-only: labels, no text entries or Delete / Copy
         self.assertFalse(any(isinstance(w, pygame_gui.elements.UITextEntryLine)
-                             for w in ui.prop_panel.get_container().elements))
+                             for w in ui.prop_scroll.get_container().elements))
         # a drag that starts on the component pans the view; the sensor stays put
         x, y = sensor.x, sensor.y
         camera = self.r.camera_x

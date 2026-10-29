@@ -265,11 +265,20 @@ class Renderer:
             if ui_cmd in ("TOGGLE_PLAY", "CLEAR", "RESET", "TOGGLE_THEME", "TOGGLE_DRAWING", "CYCLE_SPEED"):
                 cmd = self.run_command(ui_cmd)
                 continue
+            if isinstance(ui_cmd, tuple) and ui_cmd[0] == "SET_IO":
+                # The inspector's PLC I/O section: a Source or a command set by hand.
+                _, component_id, name, value = ui_cmd
+                self.set_io(component_id, name, value)
+                if name == "control":
+                    self.editor_ui.show_props_for(self.selected_item)    # editors <-> readouts
+                continue
             if ui_cmd:
                 cmd = ui_cmd
                 if isinstance(ui_cmd, tuple) and ui_cmd[0] == "SELECT_ITEM":
                     self.selected_item = ui_cmd[1]
                     continue
+            if event.type in (pygame.KEYDOWN, pygame.KEYUP) and self.editor_ui.typing():
+                continue                        # typed into a PLC I/O box, not a shortcut
                 
             # A button's keyboard key (ControlButton.key) presses it while held.
             if event.type in (pygame.KEYDOWN, pygame.KEYUP) and self._button_for_key(event) is not None:
@@ -326,6 +335,8 @@ class Renderer:
                     self.is_dragging = True
                     self.drag_start = event.pos
                     self.camera_start = (self.camera_x, self.camera_y)
+                elif event.button in (4, 5) and self.editor_ui.is_ui_blocking_point(event.pos):
+                    continue                    # the wheel scrolls the panel under it
                 elif event.button == 4: # Scroll up
                     self._zoom_at(1.1, event.pos)
                 elif event.button == 5: # Scroll down
@@ -384,8 +395,8 @@ class Renderer:
 
     def set_io(self, component_id: str, name: str, value) -> bool:
         """A component's `control` or one of its PLC signals set by hand
-        (the designer's Data Exchange section, io_signals.apply): here and,
-        with the simulation in its own process, there too."""
+        (the inspector's PLC I/O section, io_signals.apply): here and, with
+        the simulation in its own process, there too."""
         import io_signals
         with self.sim_lock:
             error = io_signals.apply(self.config, component_id, name, value)

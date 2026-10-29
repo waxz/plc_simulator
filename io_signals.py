@@ -1,7 +1,7 @@
 """
 io_signals.py - one component's PLC signals, by name: what the designer's
-Data Exchange section shows (live from the running simulator) and what an
-operator may set by hand there.
+PLC I/O sections list and the simulator window's inspector shows live
+(editor_ui.py), where an operator may also set them by hand.
 
 The signals are the component's part of the PLC data exchange, taken from
 the same mapping the frames are built from (mqtt_message_binding.

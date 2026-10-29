@@ -12,7 +12,7 @@ import {
   buildChute, buildConsole, buildDiverter, buildDoor, buildEye, buildPallet, buildRobot6, buildRollerArc,
   buildRollerConveyor,
   buildSafety, buildScanner, buildTransfer, buildTurntableRing, setChute, setDevice, setDoor, setRobot6, setSafety,
-  setScanner, setTransfer, stepDiverter, stepDoor, stepTransfer, turnRollers,
+  setDiverter, setScanner, setTransfer, stepDiverter, stepDoor, stepTransfer, turnRollers,
 } from "./models.js";
 
 THREE.Object3D.DEFAULT_UP.set(0, 0, 1);
@@ -448,7 +448,10 @@ function applyState(state) {
   }
   for (const [id, u] of live.scanners) if (state.scanners && state.scanners[id]) setScanner(u, state.scanners[id]);
   for (const [id, u] of live.transfers) if (state.transfers && state.transfers[id]) setTransfer(u, state.transfers[id]);
-  for (const [id, u] of live.diverters) if (state.diverters) u.target = state.diverters[id] ? 1 : 0;
+  for (const [id, u] of live.diverters) {
+    const s = state.diverters && state.diverters[id];
+    if (s) setDiverter(u, s);
+  }
   for (const [id, eyes] of live.eyes) {
     const zones = (state.accumulators || {})[id] || 0;
     eyes.forEach((u, i) => { if (u) u.beam.material.color.setHex(zones >> i & 1 ? COLORS.sensorOn : COLORS.sensorOff); });

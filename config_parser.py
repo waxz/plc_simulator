@@ -490,10 +490,11 @@ class Diverter(BaseModel):
     for a pusher (left / right), about +-30 for pop-up wheels - at `speed`.
 
     control "auto": active while a readable parcel for `destination` is in
-    the zone (a sorter's own tracking). control "plc": active while the
-    PLC's `divert` is on. Feedback: `active`, `present` (a parcel in the
-    zone), `presentCode` (UDINT, its barcode; 0 for a no-read) and
-    `diverted` (UINT count)."""
+    the zone (a sorter's own tracking). control "plc" / "manual": active
+    while `divert` is on, at `commandSpeed` m/s and `commandAngle` degrees
+    (0 = the layout's `speed` / `divertAngle`; logistics.diverter_motion).
+    Feedback: `active`, `present` (a parcel in the zone), `presentCode`
+    (UDINT, its barcode; 0 for a no-read) and `diverted` (UINT count)."""
     id: str
     x: float
     y: float
@@ -508,7 +509,9 @@ class Diverter(BaseModel):
     color: str = "#f97316"
     level: int = 0
     control: ControlMode = "auto"
-    divert: bool = False                                     # command
+    divert: bool = False                                     # command: run
+    commandSpeed: float = 0.0                                # command: m/s, 0 = `speed`
+    commandAngle: float = 0.0                                # command: deg, 0 = `divertAngle`
     active: bool = Field(default=False, exclude=True)        # feedback
     present: bool = Field(default=False, exclude=True)
     presentCode: int = Field(default=0, exclude=True)

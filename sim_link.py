@@ -14,18 +14,8 @@ running one:
 Only if none answers is a new process started. Two simulators would also
 fight over the PLC exchange port.
 
-The designer's Data Exchange section also reads a component's PLC signals
-live from the simulator and sets them by hand (io_signals.py):
-
-  request_io(ids)                 -> the values, or None (no simulator)
-  request_set(id, name, value)    -> queued for the simulator's next frame
-
 Protocol: one JSON line each way.
   -> {"cmd": "reload" | "open", "config": "<layout.json>", "source": ...}
-  <- {"ok": true, "pid": 1234}
-  -> {"cmd": "io", "ids": ["belt_1", ...]}
-  <- {"ok": true, "pid": 1234, "config": ..., "source": ..., "values": {...}}
-  -> {"cmd": "set", "id": "div_1", "name": "divert", "value": true}
   <- {"ok": true, "pid": 1234}
 """
 import json
@@ -38,7 +28,6 @@ from typing import Optional
 import hmi_style as hmi
 
 TIMEOUT_S = 2.0
-IO_TIMEOUT_S = 0.3          # the designer polls io several times a second: never hang it
 COMMANDS = {"sim": "reload", "designer": "open"}
 
 
@@ -139,39 +128,11 @@ class InstanceLink:
 
 
 class SimulatorLink(InstanceLink):
-    """The simulator's listener: reload requests, plus the Data Exchange
-    section's reads (answered here, from `config` - the layout the window
-    shows) and hand-set values (queued: take_commands() hands them to the
-    window loop, which applies them to the simulation)."""
-
     def __init__(self, config_path: Optional[str], source: Optional[str] = None):
-        self.config = None          # set by the window loop (main.run_pygame)
-        self._commands: list = []
         super().__init__("sim", config_path, source)
 
     def take_reload(self) -> Optional[str]:
         return self.take()
-
-    def take_commands(self) -> list:
-        """[(component id, signal name, value), ...] set since the last call."""
-        with self._lock:
-            commands, self._commands = self._commands, []
-        return commands
-
-    def _handle(self, request: dict) -> dict:
-        cmd = request.get("cmd")
-        if cmd == "io":
-            import io_signals
-            config = self.config
-            ids = [str(i) for i in request.get("ids") or []]
-            values = io_signals.read(config, ids) if config is not None else {}
-            return {"ok": config is not None, "config": self.config_path, "source": self.source,
-                    "values": values}
-        if cmd == "set" and request.get("id") and request.get("name"):
-            with self._lock:
-                self._commands.append((str(request["id"]), str(request["name"]), request.get("value")))
-            return {"ok": True}
-        return super()._handle(request)
 
 
 def _exchange(entry: dict, request: dict, timeout: float) -> Optional[dict]:
@@ -218,31 +179,3 @@ def request_open_designer(config_path: str) -> Optional[int]:
     it if another layout is open). Its pid, or None if none is running."""
     return _request("designer", config_path)
 
-
-def request_io(ids, timeout: float = IO_TIMEOUT_S) -> Optional[dict]:
-    """The running simulator's live PLC signals of the components `ids`
-    (io_signals.read), with the layout it runs ("config", and "source" when
-    that is a run copy); None if no simulator answers."""
-    entry = _read_registry("sim")
-    if entry is None:
-        return None
-    reply = _exchange(entry, {"cmd": "io", "ids": list(ids)}, timeout)
-    return reply if reply and reply.get("ok") else None
-
-
-def request_set(component_id: str, name: str, value, timeout: float = IO_TIMEOUT_S) -> bool:
-    """Ask the running simulator to set a component's `control` or one of
-    its signals by hand (io_signals.apply, on its next frame)."""
-    entry = _read_registry("sim")
-    if entry is None:
-        return False
-    reply = _exchange(entry, {"cmd": "set", "id": component_id, "name": name, "value": value}, timeout)
-    return bool(reply and reply.get("ok"))
-
-
-def runs_layout(reply: Optional[dict], *paths: Optional[str]) -> bool:
-    """Whether a request_io reply comes from a simulator running one of
-    these layout files (as itself or as its run copy)."""
-    if not reply:
-        return False
-    return any(same_layout(reply.get(key), path) for key in ("config", "source") for path in paths)

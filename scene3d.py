@@ -29,6 +29,7 @@ import math
 import re
 from typing import Dict, List, Optional, Sequence
 
+import logistics
 import robot6
 from config_parser import SimulatorConfig
 from heights import BELT_TOP, PALLET_H, PARCEL_H, level_height, parcel_height, surface_z  # noqa: F401 (re-exported)
@@ -335,7 +336,8 @@ def dynamic_state(config: SimulatorConfig, views: Sequence, sim_time: float = 0.
         "robots": robots,
         "elevators": {e.id: [_r(e.position * lh), bool(e.moving)] for e in config.elevators},
         "scanners": {s.id: [bool(s.present), s.code, bool(s.noRead), s.readCount] for s in config.scanners},
-        "diverters": {d.id: bool(d.active) for d in config.diverters},
+        # Active, and the angle it steers at now (commands can change it).
+        "diverters": {d.id: [bool(d.active), _r(logistics.diverter_motion(d)[1])] for d in config.diverters},
         "turntables": {t.id: _r(t.angle) for t in config.turntables},
         "transfers": {t.id: [_r(t.lift), bool(t.up)] for t in config.transfers},
         "accumulators": {a.id: a.zones for a in config.accumulators},

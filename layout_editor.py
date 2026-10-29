@@ -69,10 +69,8 @@ rotation is applied.
 import argparse
 import math
 import os
-import queue
 import subprocess
 import sys
-import threading
 from copy import deepcopy
 from dataclasses import dataclass
 from typing import Callable, List, Optional
@@ -99,7 +97,6 @@ from config_parser import Accumulator, Diverter, GuardDoor, SafetyCircuit, Scann
 import equipment_geometry as geo
 import hmi_style as hmi
 import io_signals
-import sim_link
 from cad.path import (
     belt_local_path, flatten as path_flatten, footprint as path_footprint, path_flow_sign, path_length,
     segments as path_segments,
@@ -4155,31 +4152,11 @@ _FIELD_UNITS = hmi.PROPERTY_UNITS
 IO_GROUP = "PLC I/O"
 IO_COMMANDS = "Commands (PLC -> simulator)"
 IO_FEEDBACK = "Feedback (simulator -> PLC)"
-IO_POLL_MS = 300
-# Command source -> (status line, its tooltip).
-_CONTROL_HINTS = {
-    "auto": ("auto", "Its own controller sets the commands."),
-    "plc": ("from the PLC", "The PLC data exchange sets the commands."),
-    "manual": ("set by hand", "Set the commands below - PLC frames leave them alone."),
-    "sim": ("simulated", "The simulation sets the output."),
-}
-_IO_NOT_RUNNING = ("not running", "Run in Simulator (F5) to see the live values here.")
 _CONTROL_TIP = ("Where the commands come from:\n"
                 "  auto - the component's built-in controller (runs without a PLC)\n"
                 "  plc - the PLC data exchange\n"
-                "  manual - by hand, below (live in the running simulator); PLC frames are ignored\n"
-                "A sensor: sim - the simulation decides its output; manual - forced by hand.")
-
-
-def _io_text(value) -> str:
-    """A live signal value as the PLC would show it."""
-    if value is None:
-        return "-"
-    if isinstance(value, bool):
-        return "TRUE" if value else "FALSE"
-    if isinstance(value, float):
-        return f"{value:.3f}"
-    return str(value)
+                "  manual - set by hand in the simulator window (select it, PLC I/O); PLC frames are ignored\n"
+                "A sensor: sim - the simulation decides its output; manual - forced by hand there.")
 
 
 class PropertiesPanel(QWidget):
@@ -4208,21 +4185,7 @@ class PropertiesPanel(QWidget):
         self.id_edit: Optional[QLineEdit] = None
         self.color_btn: Optional[QPushButton] = None
         self._collapsed_groups = set()
-        # PLC I/O (_build_io): the selected component's PLC signals, live from
-        # the simulator running this layout (sim_link.request_io, polled on
-        # a worker thread so a slow or vanished simulator never stalls the UI).
-        self.layout_paths: Optional[Callable[[], tuple]] = None   # MainWindow: (layout file, run copy)
-        self.io_rows = {}                   # signal name -> (Signal, value label, editor or None)
-        self.io_status: Optional[QLabel] = None
-        self.io_live: Optional[dict] = None    # {"control", "values"} while the simulator runs this layout
-        self._io_jobs: "queue.Queue" = queue.Queue()
-        self._io_reply = None               # (ids, reply) from the worker, for the UI thread
-        self._io_busy = False
-        self._io_worker: Optional[threading.Thread] = None
-        self.io_timer = QTimer(self)
-        self.io_timer.setInterval(IO_POLL_MS)
-        self.io_timer.timeout.connect(self._poll_io)
-        self.io_timer.start()
+        self.io_rows = {}                   # PLC I/O (_build_io): signal name -> its row
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(4, 4, 4, 4)
@@ -4293,9 +4256,6 @@ class PropertiesPanel(QWidget):
         self.id_edit = None
         self.color_btn = None
         self.io_rows = {}
-        self.io_status = None
-        self.io_live = None
-        self._io_offline = None
 
     def _update_header(self):
         item = self.current
@@ -4550,11 +4510,6 @@ class PropertiesPanel(QWidget):
 
     def _do_apply_combo_field(self, item, attr: str, value):
         setattr(item.model, attr, value)
-        if attr == "control" and item is self.current and self.io_live is not None:
-            # The simulator runs this layout: switch it there too, now.
-            self._io_send(item.model.id, "control", value)
-            self.io_live["control"] = value
-            self._show_io()
         if attr == "sensorType" and value == "laser_banner":
             item.model.laserCount = item.model.laserCount or 16
             item.model.beamDistance = item.model.beamDistance or 0.05
@@ -4582,12 +4537,11 @@ class PropertiesPanel(QWidget):
     # -- PLC I/O --------------------------------------------------------------------
 
     def _build_io(self):
-        """The PLC I/O sections: where the commands come from (`control`),
-        whether the simulator runs this layout, and every PLC signal - its
-        commands and its feedback, named and typed as on the wire
-        (io_signals.py), with the live values. In "manual" the commands
-        (a sensor: its output) become editors that set them in the running
-        simulator."""
+        """The PLC I/O sections: where the commands come from (`control`, a
+        layout setting) and every PLC signal - its commands and its
+        feedback, named and typed as on the wire (io_signals.py). The live
+        values, and setting the commands by hand in "manual", are in the
+        simulator window's inspector."""
         model = self.current.model
         signals = io_signals.signals(model)
         if not signals:
@@ -4600,162 +4554,15 @@ class PropertiesPanel(QWidget):
             combo.currentTextChanged.connect(lambda text: self._apply_combo_field("control", text))
             self.combos["control"] = combo
             self._add_row(IO_GROUP, "Command source", combo)
-        self.io_status = QLabel()
-        self.io_status.setObjectName("ioStatus")
-        self.io_status.setWordWrap(True)
-        self._add_row(IO_GROUP, "Simulator", self.io_status)
         dim = hmi.hex_(hmi.TEXT_DIM)
         for signal in signals:
-            cell = QWidget()
-            row_layout = QHBoxLayout(cell)
-            row_layout.setContentsMargins(0, 0, 0, 0)
-            row_layout.setSpacing(6)
-            value = QLabel("-")
-            row_layout.addWidget(value, 1)
-            editor = self._io_editor(signal) if signal.settable else None
-            if editor is not None:
-                editor.hide()
-                row_layout.addWidget(editor, 1)
             plc_type = QLabel(signal.plc_type)
             plc_type.setStyleSheet(f"color: {dim}")
-            row_layout.addWidget(plc_type)
             command = signal.direction == "command"
-            row = self._add_row(IO_COMMANDS if command else IO_FEEDBACK, signal.name, cell)
+            row = self._add_row(IO_COMMANDS if command else IO_FEEDBACK, signal.name, plc_type)
             row.setToolTip(0, f"{model.id}/{signal.name}: {signal.plc_type}, "
                               f"{'PLC -> simulator' if command else 'simulator -> PLC'}")
-            self.io_rows[signal.name] = (signal, value, editor)
-        self._show_io()
-
-    def _io_editor(self, signal) -> QWidget:
-        """The editor a settable signal gets in "manual"."""
-        name = signal.name
-        if signal.count > 1:
-            editor = QLineEdit()
-            editor.setPlaceholderText("0" * signal.count)
-            editor.setToolTip("Beam 0 first, one 0 / 1 per beam")
-            editor.editingFinished.connect(lambda e=editor: self._set_io(name, e.text().strip()))
-        elif signal.byte_type == io_signals.ByteType.BIT:
-            editor = QCheckBox()
-            editor.toggled.connect(lambda on: self._set_io(name, on))
-        elif signal.byte_type == io_signals.ByteType.FLOAT:
-            editor = QDoubleSpinBox()
-            editor.setRange(-1e6, 1e6)
-            editor.setDecimals(3)
-            editor.setSingleStep(0.1)
-            editor.setKeyboardTracking(False)          # set on Enter / arrows, not per keystroke
-            editor.valueChanged.connect(lambda v: self._set_io(name, v))
-        else:
-            editor = QSpinBox()
-            editor.setRange(0, min((1 << io_signals._WIDTH.get(signal.byte_type, 32)) - 1, 2 ** 31 - 1))
-            editor.setKeyboardTracking(False)
-            editor.valueChanged.connect(lambda v: self._set_io(name, v))
-        editor.setObjectName(f"io_{name}")
-        return editor
-
-    def _show_io(self):
-        """Live values (or "-"), the status line, and editors where the
-        commands are set by hand in the running simulator."""
-        if self.io_status is None:
-            return
-        live = self.io_live
-        control = (live or {}).get("control") or getattr(self.current.model, "control", None)
-        editable = live is not None and control == "manual"
-        # Short (it shares a row with its label); the explanation in the tooltip.
-        if live is not None:
-            short, tip = _CONTROL_HINTS.get(control, ("", ""))
-            color = hmi.hex_(hmi.RUNNING)
-            self.io_status.setText(f"<span style='color:{color}'>&#9679; live</span> &middot; {short}")
-        else:
-            short, tip = self._io_offline or _IO_NOT_RUNNING
-            self.io_status.setText(f"&#9675; {short}")
-        self.io_status.setToolTip(tip)
-        on = hmi.hex_(hmi.RUNNING)
-        for name, (signal, label, editor) in self.io_rows.items():
-            value = live["values"].get(name) if live is not None else None
-            label.setText(_io_text(value))
-            label.setStyleSheet(f"color: {on}; font-weight: bold" if value is True else "")
-            if editor is None:
-                continue
-            editor.setVisible(editable)
-            label.setVisible(not editable)
-            if editable and not editor.hasFocus() and value is not None:
-                editor.blockSignals(True)
-                if isinstance(editor, QCheckBox):
-                    editor.setChecked(bool(value))
-                elif isinstance(editor, QLineEdit):
-                    editor.setText(str(value))
-                else:
-                    editor.setValue(value)
-                editor.blockSignals(False)
-
-    _io_offline = None              # (status, tooltip) while not live
-
-    def _set_io(self, name: str, value):
-        """An editor's value, to the running simulator (manual only)."""
-        if self.current is None or self.io_live is None:
-            return
-        self._io_send(self.current.model.id, name, value)
-        self.io_live["values"][name] = value
-
-    def _io_send(self, component_id: str, name: str, value):
-        self._io_job(("set", (component_id, name, value)))
-
-    def _io_job(self, job):
-        if self._io_worker is None:
-            self._io_worker = threading.Thread(target=self._io_work, name="designer-io", daemon=True)
-            self._io_worker.start()
-        self._io_jobs.put(job)
-
-    def _io_work(self):
-        """The worker thread: talks to the simulator, in order."""
-        while True:
-            kind, args = self._io_jobs.get()
-            if kind == "io":
-                self._io_reply = (args, sim_link.request_io(args))
-                self._io_busy = False
-            else:
-                sim_link.request_set(*args)
-
-    def _poll_io(self):
-        reply, self._io_reply = self._io_reply, None
-        if reply is not None:
-            self._apply_io_reply(*reply)
-        if not self.io_rows or self.current is None or self._io_busy or not self.isVisible():
-            return
-        self._io_busy = True
-        self._io_job(("io", [self.current.model.id]))
-
-    def refresh_io(self):
-        """Read the live values now, on this thread (tests, scripts)."""
-        if self.current is not None and self.io_rows:
-            ids = [self.current.model.id]
-            self._apply_io_reply(ids, sim_link.request_io(ids, timeout=sim_link.TIMEOUT_S))
-
-    def _apply_io_reply(self, ids, reply):
-        item = self.current
-        if item is None or not self.io_rows or ids != [item.model.id]:
-            return                                  # an answer for an earlier selection
-        paths = self.layout_paths() if self.layout_paths is not None else ()
-        live = None
-        if reply is None:
-            self._io_offline = None
-        elif not sim_link.runs_layout(reply, *paths):
-            name = os.path.basename(reply.get("source") or reply.get("config") or "")
-            self._io_offline = ("another layout", f"The simulator runs another layout ({name}). "
-                                                  f"Run in Simulator (F5) to test this one.")
-        elif item.model.id not in reply.get("values", {}):
-            self._io_offline = ("not in the run", "This component is not in the layout the simulator runs. "
-                                                  "Run in Simulator (F5) again.")
-        else:
-            live = reply["values"][item.model.id]
-            ours = getattr(item.model, "control", None)
-            if ours is not None and live.get("control") != ours:
-                # Changed here before the simulator was seen running: this layout's
-                # setting wins (the simulator runs this layout).
-                self._io_send(item.model.id, "control", ours)
-                live["control"] = ours
-        self.io_live = live
-        self._show_io()
+            self.io_rows[signal.name] = row
 
     def _apply_id(self):
         item = self.current
@@ -5211,7 +5018,6 @@ class MainWindow(QMainWindow):
         properties_panel = PropertiesPanel(self.scene, self.items_list, on_model_changed=manager_panel.refresh)
         self.properties_panel = properties_panel
         properties_panel.undo_stack = self.undo_stack
-        properties_panel.layout_paths = lambda: (self.config_path, getattr(self, "_run_file", None))
         props_dock = QDockWidget("Properties", self)
         props_dock.setWidget(properties_panel)
         self.addDockWidget(Qt.RightDockWidgetArea, props_dock)

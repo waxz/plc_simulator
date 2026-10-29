@@ -20,6 +20,8 @@ for the whole simulator process, across layout reloads (set_layout).
 import json
 import os
 import queue
+import socket
+import sys
 import threading
 import time
 import webbrowser
@@ -42,12 +44,30 @@ CONTENT_TYPES = {".html": "text/html; charset=utf-8", ".js": "text/javascript; c
                  ".css": "text/css; charset=utf-8"}
 
 
+class _ExclusiveServer(ThreadingHTTPServer):
+    """One server per port. http.server binds with SO_REUSEADDR, which on
+    Windows lets a second simulator bind a port the first still serves -
+    and the browser then talks to the old one (the old layout). Bind it
+    exclusively instead (Windows: SO_EXCLUSIVEADDRUSE)."""
+    allow_reuse_address = sys.platform != "win32"
+    daemon_threads = True
+
+    def server_bind(self):
+        if sys.platform == "win32":
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        super().server_bind()
+
+
 class View3DServer:
     def __init__(self, host: str = "127.0.0.1", port: int = DEFAULT_PORT):
         self.host, self.port = host, port
         self.config = None
         self.config_path: Optional[str] = None
-        self.version = 0
+        # Layout versions go out with every frame; the page reloads the scene
+        # when the number changes. Start from the clock, not 0: a page still
+        # open from an earlier simulator reconnects to this one and must see a
+        # new number, not the "1" its old layout also had.
+        self.version = int(time.time() * 1000)
         self._scene_json: Optional[bytes] = None
         self._frame: Optional[bytes] = None
         self._frame_id = 0
@@ -74,8 +94,12 @@ class View3DServer:
             class Handler(_Handler):
                 view = server
 
-            self._httpd = ThreadingHTTPServer((self.host, self.port), Handler)
-            self._httpd.daemon_threads = True
+            try:
+                self._httpd = _ExclusiveServer((self.host, self.port), Handler)
+            except OSError:
+                # Another simulator (or program) has the port: take a free one.
+                print(f"[3D] Port {self.port} is in use (another simulator?) - using a free port.")
+                self._httpd = _ExclusiveServer((self.host, 0), Handler)
             self.port = self._httpd.server_address[1]          # port 0: the one the OS picked
             threading.Thread(target=self._httpd.serve_forever, name="view3d", daemon=True).start()
             print(f"[3D] 3D view at {self.url}")

@@ -81,6 +81,15 @@ def _in_rect(x: float, y: float, cx: float, cy: float, along: float, across: flo
     return abs(u) <= along / 2.0 and abs(v) <= across / 2.0
 
 
+def diverter_motion(d: Diverter):
+    """(speed m/s, angle deg to the travel) a diverter steers parcels at:
+    the layout's, or - following commands ("plc" / "manual") - the
+    commanded ones where they are set (non-zero)."""
+    if d.control == "auto":
+        return d.speed, d.divertAngle
+    return d.commandSpeed or d.speed, d.commandAngle or d.divertAngle
+
+
 class LogisticsRuntime:
     def __init__(self, engine):
         self.engine = engine
@@ -282,8 +291,9 @@ class LogisticsRuntime:
             d.active = any(getattr(p, "readable", True) and getattr(p, "destination", 0) == d.destination
                            for p in inside)
         if d.active:
-            a = math.radians(d.rotation + d.divertAngle)
-            self._diverting.append((d, d.speed * math.cos(a), d.speed * math.sin(a)))
+            speed, angle = diverter_motion(d)
+            a = math.radians(d.rotation + angle)
+            self._diverting.append((d, speed * math.cos(a), speed * math.sin(a)))
 
     # -- right-angle transfers ----------------------------------------------------------------
 

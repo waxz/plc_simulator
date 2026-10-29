@@ -548,6 +548,12 @@ export function buildDiverter(d) {
   return unit;
 }
 
+// Live: [active, the angle it steers at] (wheels follow a commanded direction).
+export function setDiverter(unit, [active, angle]) {
+  unit.target = active ? 1 : 0;
+  if (unit.wheels && angle != null) unit.steer = deg(Math.max(-60, Math.min(60, angle)));
+}
+
 const _wq = new THREE.Quaternion();
 export function stepDiverter(unit, dt) {
   unit.stroke += (unit.target - unit.stroke) * Math.min(1, dt * 10);
