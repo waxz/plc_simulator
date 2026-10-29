@@ -40,7 +40,7 @@ def find_component_by_id(component_id: str, config: SimulatorConfig) -> Optional
 
     for collection_name in ("sensors", "belts", "buttons", "leds", "sources", "sinks", "stoppers", "robots",
                             "elevators", "pallets", "scanners", "diverters", "turntables", "accumulators", "doors",
-                            "safety"):
+                            "safety", "transfers"):
         collection = getattr(config, collection_name, [])
         for component in collection:
             if component.id == component_id:
@@ -443,6 +443,9 @@ MACHINE_FIELDS = {
     "turntables": {"in": ([], [(ByteType.BYTE, "targetIndex")]),
                    "out": ([(ByteType.BIT, "turning"), (ByteType.BIT, "inPosition"), (ByteType.BIT, "occupied")],
                            [(ByteType.BYTE, "index")])},
+    "transfers": {"in": ([(ByteType.BIT, "transfer")], []),
+                  "out": ([(ByteType.BIT, "present"), (ByteType.BIT, "centered"), (ByteType.BIT, "up")],
+                          [(ByteType.UINT16, "transferred")])},
     "accumulators": {"in": ([(ByteType.BIT, "release")], []),
                      "out": ([(ByteType.BIT, "full")], [(ByteType.UINT16, "zones")])},
     "doors": {"in": ([(ByteType.BIT, "lock")], []),
@@ -458,7 +461,7 @@ MACHINE_FIELDS = {
 }
 _MACHINE_KIND = {"Stopper": "stoppers", "RobotArm": "robots", "Elevator": "elevators", "Scanner": "scanners",
                  "Diverter": "diverters", "Turntable": "turntables", "Accumulator": "accumulators",
-                 "GuardDoor": "doors", "SafetyCircuit": "safety", "Sink": "sinks"}
+                 "GuardDoor": "doors", "SafetyCircuit": "safety", "Sink": "sinks", "Transfer": "transfers"}
 
 
 def machine_fields(machine, direction: str) -> Tuple[List[Tuple[ByteType, str]], List[Tuple[ByteType, str]]]:

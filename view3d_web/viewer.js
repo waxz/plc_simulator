@@ -9,8 +9,9 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import {
-  buildChute, buildConsole, buildDiverter, buildDoor, buildEye, buildPallet, buildRobot6, buildSafety, buildScanner,
-  buildTurntableRing, setChute, setDevice, setDoor, setRobot6, setSafety, setScanner, stepDiverter, stepDoor,
+  buildChute, buildConsole, buildDiverter, buildDoor, buildEye, buildPallet, buildRobot6, buildRollerConveyor,
+  buildSafety, buildScanner, buildTransfer, buildTurntableRing, setChute, setDevice, setDoor, setRobot6, setSafety,
+  setScanner, setTransfer, stepDiverter, stepDoor, stepTransfer, turnRollers,
 } from "./models.js";
 
 THREE.Object3D.DEFAULT_UP.set(0, 0, 1);
@@ -53,6 +54,7 @@ let layout = null;
 let sceneInfo = null;
 let sceneVersion = -1;
 const live = { belts: new Map(), sensors: new Map(), devices: new Map(), stoppers: new Map(), scanners: new Map(),
+               transfers: new Map(), rollers: new Map(),
                diverters: new Map(), eyes: new Map(), chutes: new Map(), doors: new Map(), safety: new Map(),
                robots: new Map(), elevators: new Map(), bodies: new Map(), drawing: null, labels: [] };
 const ui = { drawing: true, labels: false };
@@ -169,6 +171,23 @@ function shapeOf(outline, holes) {
 }
 
 function buildBelt(b) {
+  if (b.roller && !b.table && !b.elevator) {
+    // A roller conveyor: rollers and side frames, on stands.
+    const unit = buildRollerConveyor(b.roller, b.color);
+    unit.group.position.z = beltTopZ(b.level);
+    const step = Math.max(1, Math.round(b.outline.length / 10));
+    const z = unit.group.position.z;
+    const stands = new THREE.Group();
+    for (let i = 0; i < b.outline.length; i += step) {
+      const [x, y] = b.outline[i];
+      stands.add(post(x, y, 0, z - 0.12, 0.05, mat(COLORS.metal, { metalness: 0.5 })));
+    }
+    layout.add(stands);
+    layout.add(tagged(unit.group, `Roller conveyor ${b.id}`));
+    live.belts.set(b.id, { group: unit.group, texture: null, dir: null, pivot: null, angle0: 0 });
+    live.rollers.set(b.id, unit);
+    return;
+  }
   const t = sceneInfo.beltThickness;
   const geo = new THREE.ExtrudeGeometry(shapeOf(b.outline, b.holes), { depth: t, bevelEnabled: false });
   let top = mat(COLORS.rubber, { roughness: 0.9 });
@@ -315,7 +334,7 @@ function buildElevator(e) {
 function buildLayout(info) {
   if (layout) scene.remove(layout);
   for (const key of ["belts", "sensors", "devices", "stoppers", "robots", "elevators", "scanners", "diverters", "eyes",
-                     "chutes", "doors", "safety"]) live[key].clear();
+                     "chutes", "doors", "safety", "transfers", "rollers"]) live[key].clear();
   for (const entry of live.bodies.values()) bodyGroup.remove(entry.mesh);
   live.bodies.clear();
   live.labels = [];
@@ -340,6 +359,7 @@ function buildLayout(info) {
   for (const sc of info.scanners || []) { const u = buildScanner(sc); layout.add(u.group); live.scanners.set(sc.id, u); }
   for (const d of info.diverters || []) { const u = buildDiverter(d); layout.add(u.group); live.diverters.set(d.id, u); }
   for (const t of info.turntables || []) layout.add(buildTurntableRing(t));
+  for (const t of info.transfers || []) { const u = buildTransfer(t); layout.add(u.group); live.transfers.set(t.id, u); }
   for (const e of info.eyes || []) {
     const u = buildEye(e);
     layout.add(u.group);
@@ -426,6 +446,7 @@ function applyState(state) {
     if (row) e.platform.position.z = row[0] + sceneInfo.beltTop - sceneInfo.beltThickness - 0.05;
   }
   for (const [id, u] of live.scanners) if (state.scanners && state.scanners[id]) setScanner(u, state.scanners[id]);
+  for (const [id, u] of live.transfers) if (state.transfers && state.transfers[id]) setTransfer(u, state.transfers[id]);
   for (const [id, u] of live.diverters) if (state.diverters) u.target = state.diverters[id] ? 1 : 0;
   for (const [id, eyes] of live.eyes) {
     const zones = (state.accumulators || {})[id] || 0;
@@ -582,6 +603,11 @@ function animate() {
     entry.mesh.rotation.z = shortestAngle(entry.mesh.rotation.z, entry.yaw) * k + entry.mesh.rotation.z * (1 - k);
   }
   for (const u of live.diverters.values()) stepDiverter(u, dt);
+  for (const u of live.transfers.values()) stepTransfer(u, dt);
+  for (const [id, u] of live.rollers) {
+    const speed = live.belts.get(id)?.speed;
+    if (speed) turnRollers(u, speed * dt);
+  }
   for (const u of live.doors.values()) stepDoor(u, dt);
   for (const s of live.stoppers.values()) {
     s.up += ((s.target ?? 1) - s.up) * Math.min(1, dt * 12);

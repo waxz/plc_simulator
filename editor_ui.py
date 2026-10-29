@@ -6,7 +6,7 @@ import pygame
 import hmi_style as hmi
 import pygame_gui
 from config_parser import Belt, Sensor, Source, Sink, ControlButton, LedIndicator, Pallet, Stopper, RobotArm, Elevator
-from config_parser import Accumulator, Diverter, GuardDoor, SafetyCircuit, Scanner, Turntable
+from config_parser import Accumulator, Diverter, GuardDoor, SafetyCircuit, Scanner, Transfer, Turntable
 from physics import PhysicsEngine
 
 
@@ -44,6 +44,7 @@ INSPECTOR_FIELDS = {
                "destination", "control"),
     Turntable: ("id", "label", "x", "y", "radius", "beltId", "turnSpeed", "control"),
     Accumulator: ("id", "label", "x", "y", "mode", "control"),
+    Transfer: ("id", "label", "x", "y", "rotation", "width", "height", "crossAngle", "speed", "stop", "control"),
     GuardDoor: ("id", "label", "x", "y", "rotation", "width"),
     SafetyCircuit: ("id", "label", "x", "y"),
 }
@@ -62,7 +63,7 @@ def _kind_name(item) -> str:
     return {Sensor: "sensor", Source: "source", Sink: "sink", ControlButton: "push button",
             LedIndicator: "LED", Pallet: "pallet", Stopper: "stopper", RobotArm: "robot arm",
             Elevator: "elevator", Scanner: "scanner", Diverter: "diverter", Turntable: "turntable",
-            Accumulator: "accumulation conveyor", GuardDoor: "guard door",
+            Accumulator: "accumulation conveyor", GuardDoor: "guard door", Transfer: "90-degree transfer",
             SafetyCircuit: "safety circuit"}.get(type(item), "component")
 
 
@@ -270,6 +271,9 @@ class EditorUI:
         if isinstance(item, Turntable):
             return {"Table": "turning" if item.turning else f"position {item.index}",
                     "Platform": "loaded" if item.occupied else "empty"}
+        if isinstance(item, Transfer):
+            state = "UP - carrying across" if item.up else ("pallet centred" if item.centered else "down")
+            return {"Transfer": state, "Transferred": str(item.transferred)}
         if isinstance(item, Accumulator):
             return {"Zones": format(item.zones, "b")[::-1] or "0", "Full": "yes" if item.full else "no"}
         if isinstance(item, Sink) and item.capacity:
@@ -369,6 +373,7 @@ class EditorUI:
             ("scanner", "Scanners", self.config.scanners),
             ("diverter", "Diverters", self.config.diverters),
             ("turntable", "Turntables", self.config.turntables),
+            ("transfer", "Transfers", self.config.transfers),
             ("accumulator", "Accumulation", self.config.accumulators),
             ("door", "Guard Doors", self.config.doors),
             ("safety", "Safety Circuits", self.config.safety),

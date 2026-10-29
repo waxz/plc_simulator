@@ -166,6 +166,8 @@ class MachineControl:
             in its zone is for its destination
           - "plc" turntables: the same cycle as auto mode
           - "plc" accumulators: released while the line runs
+          - "plc" right-angle transfers: lift once a pallet stands centred,
+            run until it has left
           - chutes without an empty time: emptied a while after they fill
             (the operator swapping the bin)
           - guard doors locked while the line runs
@@ -206,6 +208,13 @@ class MachineControl:
         for acc in cfg.accumulators:
             if acc.control == "plc":
                 acc.release = running
+        for t in cfg.transfers:
+            if t.control == "plc":
+                # Lift once the pallet stands centred; keep running until it has left.
+                transfer = running and (t.centered or (t.transfer and t.present))
+                if transfer and not t.transfer:
+                    events.append(f"transfer {t.id}")
+                t.transfer = transfer
         chutes = self.__dict__.setdefault("_chutes", {})
         for sink in cfg.sinks:
             if sink.capacity and not sink.emptyTime:

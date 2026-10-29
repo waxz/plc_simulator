@@ -10,7 +10,7 @@ import time
 from typing import Tuple, Optional, List
 from config_parser import SimulatorConfig, Belt, Sensor, ControlButton, LedIndicator, Elevator, RobotArm, Stopper
 from config_parser import GuardDoor
-from logistics_draw import draw_logistics, hit_logistics
+from logistics_draw import draw_logistics, draw_rollers, hit_logistics
 from math_utils import get_rect_vertices, point_in_polygon, point_in_arc, get_belt_polygon, get_default_quad_vertices
 from surface import belt_contains
 import devices
@@ -548,6 +548,8 @@ class Renderer:
             # Rotate surface (pygame rotation is counter-clockwise, matching World CCW)
             rotated_surf = self._cached_rotated_fill(w, h, (*color, 255), belt.rotation)
             self.screen.blit(rotated_surf, rotated_surf.get_rect(center=self._world_to_screen(belt.x, belt.y)))
+            if belt.surface == "roller":
+                draw_rollers(self, belt)
         elif belt.type == "curved":
             if belt.radius <= 0 or belt.beltWidth <= 0:
                 return

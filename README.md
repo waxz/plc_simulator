@@ -704,7 +704,10 @@ the line is stopped, every stopper stays up.
 `machines_demo.json` uses all four:
 
 - A pallet loop where a robot loads parts from a stopped feeder onto
-  pallets held by a stopper.
+  pallets held by a stopper. The loop is built like a real pallet line: four
+  straight roller conveyors, with a 90-degree transfer at each corner that
+  carries the pallet onto the next side without turning it. There are no
+  curved belts.
 - A sink that unloads the pallets.
 - A lift that carries cartons up to a level-1 belt, which runs above a
   level-0 belt that never sees them.
@@ -741,6 +744,13 @@ or follows the PLC (`"plc"`), and its feedback goes to the PLC either way.
 Like the machines, each one joins the generated I/O frames when a layout has
 it (`MACHINE_FIELDS`).
 
+**Roller conveyors.** A straight conveyor with `surface: "roller"` (and
+`rollerPitch`) is a driven roller conveyor, the usual way to move pallets.
+It moves its load like a belt does. It is drawn as rollers in the simulator
+window and the designer, and in the 3D view as steel rollers in side frames
+that turn at the conveyor's actual speed. In the designer it is **Roller
+Conveyor** in the Belts folder, or a belt's **Surface** property.
+
 **Parcel identity.** A source numbers its parcels (`barcodeStart`), gives
 each a destination from `destinations` / `destinationWeights`, and a share
 (`noReadRate`) with an unreadable label. Each parcel also gets a weight in
@@ -750,6 +760,7 @@ the source's mass range.
 |---|---|---|---|
 | Scanner | zone over the belt, `scannerType` "barcode" / "rfid" / "dws" | Reads each parcel once as it enters. A barcode scanner gives a no-read on an unreadable label, RFID always reads, and a DWS (dimension-weight-scan) also measures the parcel | - / `code` UDINT, `destination` BYTE (as a warehouse system would answer), `readCount` UINT (+1 per parcel), `noRead`, `present`; DWS: `weight`, `measuredLength`, `measuredWidth`, `measuredHeight` REALs |
 | Diverter | zone on the belt, `diverterType` "pusher" / "wheels", `divertAngle` (+-90 pusher, ~30 wheels), `speed`, `destination` | Steers the parcels in its zone onto the branch while active. Auto: active while a readable parcel for its destination is there | `divert` / `active`, `present`, `presentCode` UDINT, `diverted` UINT |
+| 90° transfer | zone (`width` along the travel, `height` across), `crossAngle` (+90 left / -90 right), `speed`, `liftTime`, `stop` | The chain transfer of a pallet line, at a corner or junction of roller conveyors. A pallet stops centred on it (`stop`). Chain strands then lift it off the rollers and carry it sideways onto the crossing conveyor, without turning it, and drop. Auto: transfers whatever arrives (a corner) | `transfer` / `present`, `centered` (stopped on it, ready), `up`, `transferred` UINT |
 | Turntable | `radius`, `beltId` (its platform belt), `angles`, `turnSpeed` | Turns its belt, and what is on it, between positions. Auto: loads at `autoFrom`, turns to `autoTo`, unloads, turns back | `targetIndex` BYTE / `index` BYTE, `turning`, `inPosition`, `occupied` |
 | Accumulation conveyor | `beltIds` (its zones, in flow order), `mode` "singulation" / "train" | Zero-pressure accumulation, with a photo-eye at each zone's end. A full zone holds its belt while the next zone is occupied ("train": unless the next one is moving). The last zone discharges while released | `release` / `zones` UINT (bit mask), `full` |
 | Chute | a sink with `capacity`, `emptyTime` | Holds `capacity` parcels, then is `full` and parcels back up in front of it. Emptied after `emptyTime`, or by `empty`. Only chutes go on the exchange, not plain sinks | `empty` / `count` UINT, `full` |

@@ -76,6 +76,11 @@ class Belt(BaseModel):
     # turns it into `actualSpeed`, which is what physics uses.
     drive: Optional[DriveConfig] = None
     friction: float = 0.5     # belt/parcel friction coefficient (friction traction)
+    # What carries the load: a belt, or driven rollers (pallets: a roller
+    # conveyor, `rollerPitch` m between roller centres). It moves things
+    # the same way; it is drawn as rollers (2D, designer, 3D).
+    surface: Literal["belt", "roller"] = "belt"
+    rollerPitch: float = 0.125
     # Floor level (0 = ground, 1 = the level above, ...): a belt moves only
     # what is on its level. An elevator's platform belt changes level with
     # the platform (-1 while travelling: it moves nothing).
@@ -524,6 +529,42 @@ class Turntable(BaseModel):
     angle: float = Field(default=0.0, exclude=True)          # runtime: the table's turn now (deg)
 
 
+class Transfer(BaseModel):
+    """A right-angle (90 degree) transfer - the chain / belt transfer of a
+    pallet line - at a corner or junction of roller conveyors: a pallet
+    rolling in along `rotation` stops centred on it (when `stop`), chain
+    strands lift it off the rollers and carry it at `crossAngle` degrees to
+    its travel (+90 left, -90 right) at `speed` onto the crossing conveyor,
+    without turning it, then drop. The zone is `width` along the travel and
+    `height` across, centred at (x, y).
+
+    control "auto": transfers whatever arrives (a corner). control "plc":
+    lifts and runs while `transfer` is on (a junction: on for pallets that
+    turn off, off for those that go straight - then set `stop` false).
+    Feedback: `present` (something in the zone), `centered` (stopped on the
+    transfer, ready), `up` (lifted), `transferred` (UINT count)."""
+    id: str
+    x: float
+    y: float
+    rotation: float = 0.0
+    width: float = 1.0
+    height: float = 1.0
+    crossAngle: float = 90.0
+    speed: float = 0.5
+    liftTime: float = 0.4
+    stop: bool = True
+    label: str = ""
+    color: str = "#a3a3a3"
+    level: int = 0
+    control: ControlMode = "auto"
+    transfer: bool = False                                   # command
+    present: bool = Field(default=False, exclude=True)       # feedback
+    centered: bool = Field(default=False, exclude=True)
+    up: bool = Field(default=False, exclude=True)
+    transferred: int = Field(default=0, exclude=True)
+    lift: float = Field(default=0.0, exclude=True)           # runtime: 0 down .. 1 up (drawing)
+
+
 class Accumulator(BaseModel):
     """A zero-pressure accumulation conveyor: the belts `beltIds` (in flow
     order) are its zones, each with a photo-eye at its end. A zone runs
@@ -690,6 +731,7 @@ class SimulatorConfig(BaseModel):
     diverters: List[Diverter] = Field(default_factory=list)
     turntables: List[Turntable] = Field(default_factory=list)
     accumulators: List[Accumulator] = Field(default_factory=list)
+    transfers: List[Transfer] = Field(default_factory=list)
     doors: List[GuardDoor] = Field(default_factory=list)
     safety: List[SafetyCircuit] = Field(default_factory=list)
     mqttSettings: MqttSettings = Field(default_factory=MqttSettings)

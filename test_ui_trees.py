@@ -53,7 +53,7 @@ class EditorTreesTest(unittest.TestCase):
         self.assertEqual(top, ["Belts", "Sensors", "Parcel Flow", "Machines", "Logistics", "Safety",
                                "Operator Panel", "My Components"])
         belts = tree.topLevelItem(0)
-        self.assertEqual([belts.child(i).text(0) for i in range(belts.childCount())], ["Linear Belt", "Curved Belt"])
+        self.assertEqual([belts.child(i).text(0) for i in range(belts.childCount())], ["Linear Belt", "Roller Conveyor", "Curved Belt"])
         self.assertEqual(tree.folder_of(tree._row("Push Button")), "Operator Panel")
         # Components drag, folders don't.
         self.assertIsNotNone(tree.mimeData([tree._row("Sink")]))

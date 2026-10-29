@@ -5,6 +5,7 @@ destination, PLC command), chutes with capacity, accumulation zones,
 turntables, guard doors and safety circuits, their PLC frame fields, and
 the logistics_demo.json sorting line end to end.
 """
+import math
 import random
 import unittest
 
@@ -193,6 +194,67 @@ class TurntableTest(unittest.TestCase):
         self.assertNotIn(p, e.parcels)
         self.assertEqual(t.index, 0)                                     # back for the next one
         self.assertAlmostEqual(c.belts[1].rotation, 0.0)
+
+
+class TransferTest(unittest.TestCase):
+    """A pallet corner of roller conveyors with a 90-degree transfer."""
+
+    def layout(self, control="auto"):
+        from config_parser import Pallet, Transfer
+        c = SimulatorConfig(belts=[belt("in", 2.5, 0.0, 4.0), belt("out", 4.0, 2.5, 4.0, rotation=90.0)],
+                            transfers=[Transfer(id="t", x=4.0, y=0.0, control=control)],
+                            pallets=[Pallet(id="p", x=1.0, y=0.0)], useSurfaceVelocity=True)
+        for b in c.belts:
+            b.surface = "roller"
+        c.belts[0].length, c.belts[0].x = 5.0, 2.0          # the infeed runs into the corner square
+        return c
+
+    def test_auto_stops_the_pallet_centred_and_carries_it_across_unturned(self):
+        c = self.layout()
+        e = PhysicsEngine(c)
+        pallet = e.machines.pallets[0]
+        t = c.transfers[0]
+        lifted_at = None
+        for _ in range(int(12.0 / c.physicsDt)):
+            e.step(c.physicsDt)
+            if t.lift > 0 and lifted_at is None:
+                lifted_at = tuple(pallet.body.position)
+        self.assertAlmostEqual(lifted_at[0], 4.0, delta=0.05)          # stopped on the centre
+        self.assertGreater(pallet.body.position.y, 1.5)                 # on the cross conveyor
+        self.assertAlmostEqual(pallet.body.position.x, 4.0, delta=0.05)
+        self.assertAlmostEqual(pallet.body.angle, 0.0, places=6)        # not turned
+        self.assertEqual(t.transferred, 1)
+        self.assertFalse(t.up)
+
+    def test_plc_holds_it_until_told_to_transfer(self):
+        c = self.layout(control="plc")
+        e = PhysicsEngine(c)
+        t = c.transfers[0]
+        e.run_for(8.0)
+        self.assertTrue(t.centered)
+        self.assertFalse(t.up)
+        pallet = e.machines.pallets[0]
+        self.assertAlmostEqual(pallet.body.position.x, 4.0, delta=0.05)
+        t.transfer = True
+        e.run_for(1.0)
+        self.assertTrue(t.up)
+        e.run_for(5.0)
+        self.assertGreater(pallet.body.position.y, 1.5)
+        pub, sub = io_topics(c)
+        outputs = [p for _bt, p in custom_component_mapping(c, pub["input"]["custom_ids"], direction="out")]
+        self.assertIn("t/centered", outputs)
+
+    def test_the_demo_pallet_loop_runs_on_rollers_and_transfers(self):
+        random.seed(3)
+        c = load_config("machines_demo.json")
+        self.assertFalse([b for b in c.belts if b.type != "linear"])     # no curves
+        self.assertEqual({b.surface for b in c.belts if b.id.startswith("loop_")}, {"roller"})
+        e = PhysicsEngine(c)
+        e.run_for(60.0)
+        self.assertTrue(all(t.transferred >= 2 for t in c.transfers))
+        for p in e.machines.pallets:
+            self.assertAlmostEqual(math.sin(p.body.angle - math.radians(p.model.rotation)), 0.0, places=4)
+        self.assertGreater(c.robots[0].cycles, 1)
 
 
 class SafetyTest(unittest.TestCase):

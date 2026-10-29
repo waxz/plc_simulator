@@ -44,6 +44,7 @@ MACHINE_FIELDS = {
     "diverters": ("active", "present", "presentCode", "diverted", "divert"),
     "turntables": ("index", "turning", "inPosition", "occupied", "angle", "targetIndex"),
     "accumulators": ("zones", "full", "release"),
+    "transfers": ("present", "centered", "up", "transferred", "lift", "transfer"),
     "doors": ("closed", "locked", "lock"),
     "safety": ("ok", "tripped"),
     "sinks": ("count", "full"),

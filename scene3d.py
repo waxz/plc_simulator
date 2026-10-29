@@ -176,6 +176,10 @@ def static_scene(config: SimulatorConfig, config_path: Optional[str] = None, ver
             "elevator": elevator_belts.get(belt.id),
             "table": ({"x": table_belts[belt.id].x, "y": table_belts[belt.id].y, "angle": table_belts[belt.id].angle}
                       if belt.id in table_belts else None),
+            # A roller conveyor: drawn as rollers across it instead of a belt.
+            "roller": ({"x": belt.x, "y": belt.y, "rot": belt.rotation, "length": belt.length, "width": belt.beltWidth,
+                        "pitch": belt.rollerPitch}
+                       if belt.surface == "roller" and belt.type == "linear" and not belt.vertexs else None),
             # Straight belts get a moving surface texture along this heading.
             "dir": _r(belt.rotation + belt.directionAngle) if belt.type == "linear" and not belt.vertexs else None,
         })
@@ -234,6 +238,9 @@ def logistics_scene(config: SimulatorConfig, lh: float) -> dict:
         "diverters": [{"id": d.id, "x": d.x, "y": d.y, "w": d.width, "h": d.height, "rot": d.rotation,
                        "angle": d.divertAngle, "type": d.diverterType, "z": surface_z(config, d.level, lh),
                        "color": d.color, "label": d.label, "destination": d.destination} for d in config.diverters],
+        "transfers": [{"id": t.id, "x": t.x, "y": t.y, "w": t.width, "h": t.height, "rot": t.rotation,
+                       "cross": t.crossAngle, "z": surface_z(config, t.level, lh), "color": t.color, "label": t.label}
+                      for t in config.transfers],
         "turntables": [{"id": t.id, "x": t.x, "y": t.y, "r": t.radius, "z": surface_z(config, t.level, lh),
                         "color": t.color, "label": t.label} for t in config.turntables],
         "eyes": eyes,
@@ -315,6 +322,7 @@ def dynamic_state(config: SimulatorConfig, views: Sequence, sim_time: float = 0.
         "scanners": {s.id: [bool(s.present), s.code, bool(s.noRead), s.readCount] for s in config.scanners},
         "diverters": {d.id: bool(d.active) for d in config.diverters},
         "turntables": {t.id: _r(t.angle) for t in config.turntables},
+        "transfers": {t.id: [_r(t.lift), bool(t.up)] for t in config.transfers},
         "accumulators": {a.id: a.zones for a in config.accumulators},
         "chutes": {s.id: [s.count, bool(s.full)] for s in config.sinks if s.capacity},
         "doors": {d.id: [bool(d.closed), bool(d.locked)] for d in config.doors},

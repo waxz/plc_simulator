@@ -44,6 +44,8 @@ def draw_logistics(r) -> None:
         _draw_accumulator(r, acc)
     for table in c.turntables:
         _draw_turntable(r, table)
+    for t in c.transfers:
+        _draw_transfer(r, t)
     for d in c.diverters:
         _draw_diverter(r, d)
     for s in c.scanners:
@@ -53,6 +55,54 @@ def draw_logistics(r) -> None:
     for circuit in c.safety:
         _draw_safety(r, circuit)
     _ = screen
+
+
+def draw_rollers(r, belt) -> None:
+    """A straight roller conveyor: a line per roller across it (every
+    second / fourth one when zoomed out)."""
+    a = math.radians(belt.rotation)
+    ca, sa = math.cos(a), math.sin(a)
+    pitch = max(0.02, belt.rollerPitch)
+    step = 1
+    while r._scale_val(pitch * step) < 5 and step < 64:
+        step *= 2
+    n = int(belt.length / pitch)
+    hw = belt.beltWidth / 2.0 * 0.92
+    color = hmi.shade(r._hex_to_rgb(belt.color), 1.45)
+    for i in range(0, n + 1, step):
+        u = -belt.length / 2.0 + (i + 0.5) * pitch
+        if u > belt.length / 2.0:
+            break
+        cx, cy = belt.x + u * ca, belt.y + u * sa
+        p0 = r._world_to_screen(cx - hw * -sa, cy - hw * ca)
+        p1 = r._world_to_screen(cx + hw * -sa, cy + hw * ca)
+        pygame.draw.line(r.screen, color, p0, p1, 1)
+
+
+def _draw_transfer(r, t) -> None:
+    """A right-angle transfer: its chain strands across the travel (bright
+    while lifted) and an arrow to the side it transfers to."""
+    color = _color(r, t.color)
+    pts = r._rect_screen(t.x, t.y, t.width, t.height, t.rotation)
+    a = math.radians(t.rotation)
+    ca, sa = math.cos(a), math.sin(a)
+    c = math.radians(t.rotation + t.crossAngle)
+    strand = hmi.WARNING if t.up else hmi.shade(color, 0.8)
+    for k in (-0.3, 0.0, 0.3):
+        u = k * t.width
+        cx, cy = t.x + u * ca, t.y + u * sa
+        hw = t.height / 2.0 * 0.95
+        p0 = r._world_to_screen(cx - hw * math.cos(c), cy - hw * math.sin(c))
+        p1 = r._world_to_screen(cx + hw * math.cos(c), cy + hw * math.sin(c))
+        pygame.draw.line(r.screen, strand, p0, p1, 3 if t.up else 2)
+    pygame.draw.polygon(r.screen, color, pts, 1)
+    x0, y0 = r._world_to_screen(t.x, t.y)
+    reach = min(t.width, t.height) * 0.42
+    x1, y1 = r._world_to_screen(t.x + reach * math.cos(c), t.y + reach * math.sin(c))
+    pygame.draw.line(r.screen, strand, (x0, y0), (x1, y1), 2)
+    head = math.atan2(y1 - y0, x1 - x0)
+    for side in (-0.5, 0.5):
+        pygame.draw.line(r.screen, strand, (x1, y1), (x1 - 7 * math.cos(head + side), y1 - 7 * math.sin(head + side)), 2)
 
 
 def _draw_scanner(r, s) -> None:
@@ -205,6 +255,9 @@ def hit_logistics(config, wx: float, wy: float) -> Optional[object]:
             return d
     for t in config.turntables:
         if math.hypot(wx - t.x, wy - t.y) <= t.radius:
+            return t
+    for t in config.transfers:
+        if point_in_polygon(wx, wy, get_rect_vertices(t.x, t.y, t.width, t.height, t.rotation)):
             return t
     for acc in config.accumulators:
         if math.hypot(wx - acc.x, wy - acc.y) <= 0.4:

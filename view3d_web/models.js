@@ -288,6 +288,71 @@ export function setRobot6(robot, [a1, a2, a3, a4, a5, a6, holding, fault]) {
   robot.lampOk.material.emissiveIntensity = fault ? 0 : 1.2;
 }
 
+// -- roller conveyors and right-angle transfers --------------------------------------------------
+
+const ROLLER_R = 0.03;
+
+// A roller conveyor (local x along it, the group at the roller tops): side
+// frames and one instanced mesh of rollers, turned by turnRollers().
+export function buildRollerConveyor(r, color) {
+  const g = new THREE.Group();
+  g.position.set(r.x, r.y, 0);
+  g.rotation.z = deg(r.rot);
+  const frame = mat(new THREE.Color(color).getHex(), { metalness: 0.4, roughness: 0.5 });
+  for (const y of [-r.width / 2 - 0.03, r.width / 2 + 0.03]) {
+    g.add(cuboid(r.length, 0.05, 0.12, frame, 0, y, -0.07));
+  }
+  const n = Math.max(1, Math.floor(r.length / r.pitch));
+  const geo = new THREE.CylinderGeometry(ROLLER_R, ROLLER_R, r.width, 14);       // along local y
+  const rollers = new THREE.InstancedMesh(geo, mat(0xb8bec5, { metalness: 0.75, roughness: 0.3 }), n);
+  rollers.castShadow = rollers.receiveShadow = true;
+  const xs = [];
+  for (let i = 0; i < n; i++) xs.push(-r.length / 2 + (i + 0.5) * (r.length / n));
+  const unit = { group: g, rollers, xs, angle: 0 };
+  g.add(rollers);
+  turnRollers(unit, 0);
+  return unit;
+}
+
+const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _p = new THREE.Vector3(), _s = new THREE.Vector3(1, 1, 1);
+const _yAxis = new THREE.Vector3(0, 1, 0);
+export function turnRollers(unit, distance) {
+  unit.angle -= distance / ROLLER_R;                   // rolling the load forward (+x)
+  _q.setFromAxisAngle(_yAxis, -unit.angle);
+  unit.xs.forEach((x, i) => {
+    _p.set(x, 0, -ROLLER_R);
+    unit.rollers.setMatrixAt(i, _m.compose(_p, _q, _s));
+  });
+  unit.rollers.instanceMatrix.needsUpdate = true;
+}
+
+// A right-angle transfer: a drive box under the rollers and chain strands
+// across the travel that rise above the rollers when it lifts.
+export function buildTransfer(t) {
+  const g = new THREE.Group();
+  g.position.set(t.x, t.y, t.z);
+  g.rotation.z = deg(t.rot);
+  g.add(cuboid(t.w * 0.85, t.h * 0.85, 0.12, mat(0x30353b), 0, 0, -0.2));
+  const strands = new THREE.Group();
+  const chain = mat(0x2a2d31, { metalness: 0.6, roughness: 0.45 });
+  for (const k of [-0.3, 0, 0.3]) strands.add(cuboid(0.035, t.h * 0.95, 0.03, chain, k * t.w, 0, 0));
+  strands.rotation.z = deg(t.cross - 90);        // strands run in the transfer direction
+  g.add(strands);
+  g.traverse((o) => { o.userData.label = `${t.label || t.id} (90-degree transfer)`; });
+  const unit = { group: g, strands, lift: 0, target: 0 };
+  setTransfer(unit, [0, false]);
+  return unit;
+}
+
+export function setTransfer(unit, [lift]) {
+  unit.target = lift;
+}
+
+export function stepTransfer(unit, dt) {
+  unit.lift += (unit.target - unit.lift) * Math.min(1, dt * 15);
+  unit.strands.position.z = -0.05 + 0.065 * unit.lift;      // below the rollers .. 15 mm above them
+}
+
 // -- logistics equipment (logistics.py) -------------------------------------------------------------
 
 const STEEL = 0x9aa3ad, DARK = 0x2b3038;

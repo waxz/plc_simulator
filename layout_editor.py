@@ -93,7 +93,7 @@ from config_parser import (
     Belt, ControlButton, Elevator, LedIndicator, Pallet, RobotArm, Sensor, SimulatorConfig, Sink, Source, Stopper,
     load_config,
 )
-from config_parser import Accumulator, Diverter, GuardDoor, SafetyCircuit, Scanner, Turntable
+from config_parser import Accumulator, Diverter, GuardDoor, SafetyCircuit, Scanner, Transfer, Turntable
 import hmi_style as hmi
 from cad.path import (
     belt_local_path, flatten as path_flatten, footprint as path_footprint, path_flow_sign, path_length,
@@ -1345,6 +1345,8 @@ class BeltItem(PlacedItem):
             self._paint_path(painter, option)
             return
         super().paint(painter, option, widget)
+        if self.model.surface == "roller" and not self.is_curved() and not self.is_custom_shape():
+            self._paint_rollers(painter)
         # Direction arrow, rotated locally by `directionAngle` (the belt's
         # travel direction offset from its own shape orientation - see
         # physics.py's `rotation + directionAngle`), plus a speed label.
@@ -1364,6 +1366,21 @@ class BeltItem(PlacedItem):
         ])
         painter.setBrush(QBrush(hmi.qcolor(hmi.FLOW, 170)))
         painter.drawPolygon(head)
+        painter.restore()
+
+
+    def _paint_rollers(self, painter: QPainter):
+        """A roller conveyor: a line per roller across it (local x is the
+        length, y the width)."""
+        m = self.model
+        pitch = max(0.02, m.rollerPitch) * SCALE
+        half_l, half_w = m.length * SCALE / 2.0, m.beltWidth * SCALE / 2.0 * 0.92
+        painter.save()
+        painter.setPen(QPen(QColor(m.color).lighter(160), 0))
+        x = -half_l + pitch / 2.0
+        while x < half_l:
+            painter.drawLine(QPointF(x, -half_w), QPointF(x, half_w))
+            x += pitch
         painter.restore()
 
 
@@ -1916,6 +1933,37 @@ class DiverterItem(_MachineItem):
         painter.setPen(QPen(hmi.qcolor(hmi.TEXT), 0))
         painter.drawText(self.polygon().boundingRect(), Qt.AlignBottom | Qt.AlignHCenter,
                          f"-> {self.model.destination}")
+
+
+class TransferItem(_MachineItem):
+    """A right-angle transfer: its zone, chain strands across the travel and
+    an arrow to the side it transfers to."""
+
+    kind = "transfer"
+
+    def __init__(self, model: Transfer):
+        super().__init__(model, _rect_points(model.width, model.height))
+        self.setPen(Qt.NoPen)
+
+    def _outline(self):
+        return _rect_points(self.model.width, self.model.height)
+
+    def paint(self, painter: QPainter, option, widget=None):
+        color = QColor(self.model.color)
+        self.setBrush(Qt.NoBrush)
+        self.setPen(QPen(color, 0))
+        super().paint(painter, option, widget)
+        w, h = self.model.width * SCALE, self.model.height * SCALE
+        a = math.radians(self.model.crossAngle)
+        dx, dy = math.cos(a), -math.sin(a)                          # local, y down
+        painter.setPen(QPen(color, max(1.0, min(w, h) * 0.04)))
+        for k in (-0.3, 0.0, 0.3):
+            cx = k * w
+            painter.drawLine(QPointF(cx - dx * h * 0.45, -dy * h * 0.45), QPointF(cx + dx * h * 0.45, dy * h * 0.45))
+        tip = QPointF(dx * h * 0.4, dy * h * 0.4)
+        for side in (-0.5, 0.5):
+            back = math.atan2(dy, dx) + math.pi + side
+            painter.drawLine(tip, tip + QPointF(math.cos(back) * h * 0.15, math.sin(back) * h * 0.15))
 
 
 class TurntableItem(_MachineItem):
@@ -2477,6 +2525,15 @@ class ShapeDesignerDialog(QDialog):
         self.accept()
 
 
+def _make_roller_conveyor(new_id: str) -> Belt:
+    return Belt(id=new_id, type="linear", x=0.0, y=0.0, length=4.0, beltWidth=1.0, rotation=0.0, speed=0.3,
+                directionAngle=0.0, color="#4b5563", surface="roller")
+
+
+def _make_transfer(new_id: str) -> Transfer:
+    return Transfer(id=new_id, x=0.0, y=0.0, label="90° transfer")
+
+
 def _make_linear_belt(new_id: str) -> Belt:
     return Belt(
         id=new_id, type="linear", x=0.0, y=0.0, length=4.0, beltWidth=1.0,
@@ -2604,6 +2661,7 @@ ITEM_CLASS_FOR_KIND = {
     "scanner": ScannerItem,
     "diverter": DiverterItem,
     "turntable": TurntableItem,
+    "transfer": TransferItem,
     "accumulator": AccumulatorItem,
     "door": GuardDoorItem,
     "safety": SafetyItem,
@@ -2625,6 +2683,7 @@ KIND_FOR_MODEL_CLASS = {
     Scanner: "scanner",
     Diverter: "diverter",
     Turntable: "turntable",
+    Transfer: "transfer",
     Accumulator: "accumulator",
     GuardDoor: "door",
     SafetyCircuit: "safety",
@@ -2650,6 +2709,7 @@ CONFIG_LIST_ATTR_FOR_KIND = {
     "scanner": "scanners",
     "diverter": "diverters",
     "turntable": "turntables",
+    "transfer": "transfers",
     "accumulator": "accumulators",
     "door": "doors",
     "safety": "safety",
@@ -2687,7 +2747,7 @@ def build_items_from_config(config, scene: QGraphicsScene, items_list: list):
         item = LedItem(model)
         scene.addItem(item)
         items_list.append(item)
-    for kind in ("elevator", "turntable", "pallet", "stopper", "robot", "scanner", "diverter", "accumulator",
+    for kind in ("elevator", "turntable", "transfer", "pallet", "stopper", "robot", "scanner", "diverter", "accumulator",
                  "door", "safety"):
         for model in getattr(config, CONFIG_LIST_ATTR_FOR_KIND[kind]):
             item = ITEM_CLASS_FOR_KIND[kind](model)
@@ -2719,11 +2779,13 @@ class ComponentLibrary(QTreeWidget):
                        "button": "Operator Panel", "led": "Operator Panel", "pallet": "Machines",
                        "stopper": "Machines", "robot": "Machines", "elevator": "Machines",
                        "scanner": "Logistics", "diverter": "Logistics", "turntable": "Logistics",
+                       "transfer": "Logistics",
                        "accumulator": "Logistics", "door": "Safety", "safety": "Safety"}
     FOLDER_ORDER = ("Belts", "Sensors", "Parcel Flow", "Machines", "Logistics", "Safety", "Operator Panel",
                     MY_COMPONENTS)
     BUILT_INS = (
         ("Linear Belt", "belt", _make_linear_belt),
+        ("Roller Conveyor", "belt", _make_roller_conveyor),
         ("Curved Belt", "belt", _make_curved_belt),
         ("IR Sensor", "sensor", _make_ir_sensor),
         ("Laser Banner", "sensor", _make_banner_sensor),
@@ -2740,6 +2802,7 @@ class ComponentLibrary(QTreeWidget):
         ("Pusher Diverter", "diverter", _make_pusher),
         ("Wheel Diverter", "diverter", _make_wheel_diverter),
         ("Turntable", "turntable", _make_turntable),
+        ("90° Transfer", "transfer", _make_transfer),
         ("Accumulation Conveyor", "accumulator", _make_accumulator),
         ("Chute", "sink", _make_chute),
         ("Guard Door", "door", _make_door),
@@ -3760,6 +3823,10 @@ def _field_specs_for(item: PlacedItem):
         specs.append(("float", "rotation", "Rotation", -360.0, 360.0, 1.0))
     if isinstance(item, BeltItem):
         specs.append(("combo", "commandFormat", "Command", ["speed", "vfd"]))
+        if item.model.type == "linear" and not item.is_custom_shape():
+            specs.append(("combo", "surface", "Surface", ["belt", "roller"]))
+            if item.model.surface == "roller":
+                specs.append(("float", "rollerPitch", "Roller pitch", 0.03, 1.0, 0.005))
         specs.append(("float", "directionAngle", "Direction", -360.0, 360.0, 1.0))
         if item.is_path():
             specs.append(("float", "beltWidth", "Width", 0.05, 100.0, 0.05))
@@ -3869,6 +3936,13 @@ def _field_specs_for(item: PlacedItem):
                   ("text", "angles", "Positions"), ("float", "turnSpeed", "Turn speed", 1.0, 720.0, 5.0),
                   ("combo", "control", "Control", ["auto", "plc"]), ("int", "autoFrom", "Auto from", 0, 20),
                   ("int", "autoTo", "Auto to", 0, 20), ("text", "label", "Label")]
+    elif isinstance(item, TransferItem):
+        specs += [("float", "width", "Zone length", 0.2, 10.0, 0.05), ("float", "height", "Zone width", 0.2, 10.0, 0.05),
+                  ("float", "crossAngle", "Transfer angle", -180.0, 180.0, 90.0),
+                  ("float", "speed", "Transfer speed", 0.05, 5.0, 0.05),
+                  ("float", "liftTime", "Lift time", 0.0, 5.0, 0.05), ("bool", "stop", "Stops pallets"),
+                  ("combo", "control", "Control", ["auto", "plc"]), ("int", "level", "Level", 0, 20),
+                  ("text", "label", "Label")]
     elif isinstance(item, AccumulatorItem):
         specs += [("text", "beltIds", "Zone belts"), ("combo", "mode", "Mode", ["singulation", "train"]),
                   ("combo", "control", "Control", ["auto", "plc"]), ("text", "label", "Label")]
@@ -4260,7 +4334,7 @@ class PropertiesPanel(QWidget):
             item._sync_brush()
         item.update()
         if item is self.current:
-            if attr == "sensorType":
+            if attr in ("sensorType", "surface"):
                 # Adding/removing laserCount/beamDistance rows here (mid-
                 # signal, inside this very combo box's own currentTextChanged
                 # handler) would delete a widget while it's still emitting -
@@ -4344,12 +4418,14 @@ class PropertiesPanel(QWidget):
 
 
 _KIND_ORDER = {"belt": 0, "sensor": 1, "source": 2, "sink": 3, "button": 4, "led": 5, "pallet": 6, "stopper": 7,
-               "robot": 8, "elevator": 9, "scanner": 10, "diverter": 11, "turntable": 12, "accumulator": 13,
+               "robot": 8, "elevator": 9, "scanner": 10, "diverter": 11, "turntable": 12, "transfer": 12,
+               "accumulator": 13,
                "door": 14, "safety": 15}
 _KIND_COLORS = {"belt": (156, 163, 175), "sensor": hmi.ALARM, "source": hmi.SOURCE, "sink": hmi.SINK,
                 "button": hmi.ACCENT, "led": hmi.RUNNING, "pallet": (180, 83, 9), "stopper": (220, 38, 38),
                 "robot": (124, 58, 237), "elevator": (8, 145, 178), "scanner": (14, 165, 233),
-                "diverter": (249, 115, 22), "turntable": (100, 116, 139), "accumulator": (34, 197, 94),
+                "diverter": (249, 115, 22), "turntable": (100, 116, 139), "transfer": (163, 163, 163),
+                "accumulator": (34, 197, 94),
                 "door": (250, 204, 21), "safety": (234, 179, 8)}
 _KIND_ICONS = {}
 
@@ -4375,7 +4451,8 @@ class ComponentManagerPanel(QWidget):
     FOLDERS = (("belt", "Belts"), ("sensor", "Sensors"), ("source", "Sources"), ("sink", "Sinks"),
                ("button", "Buttons"), ("led", "LEDs"), ("pallet", "Pallets"), ("stopper", "Stoppers"),
                ("robot", "Robot Arms"), ("elevator", "Elevators"), ("scanner", "Scanners"),
-               ("diverter", "Diverters"), ("turntable", "Turntables"), ("accumulator", "Accumulation"),
+               ("diverter", "Diverters"), ("turntable", "Turntables"), ("transfer", "Transfers"),
+               ("accumulator", "Accumulation"),
                ("door", "Guard Doors"), ("safety", "Safety Circuits"))
 
     def __init__(self, scene: SnapGuideScene, items, view: QGraphicsView, config=None):
@@ -4443,6 +4520,8 @@ class ComponentManagerPanel(QWidget):
                 return f"path{' loop' if m.closed else ''}, {len(m.path or [])} anchors{drive}"
             if m.shape == "quadrilateral":
                 return f"polygon, {len(m.vertexs or [])} corners{drive}"
+            if m.surface == "roller":
+                return f"roller conveyor {m.length:g} × {m.beltWidth:g} m{drive}"
             return f"linear {m.length:g} × {m.beltWidth:g} m{drive}"
         if kind == "sensor":
             return "IR" if m.sensorType == "ir" else f"laser banner, {m.laserCount or 16} beams"
@@ -4472,6 +4551,8 @@ class ComponentManagerPanel(QWidget):
             return f"{m.control}, positions {', '.join(f'{a:g}' for a in m.angles)}"
         if kind == "accumulator":
             return f"{m.mode}, {len(m.beltIds)} zones, {m.control}"
+        if kind == "transfer":
+            return f"{'left' if m.crossAngle > 0 else 'right'} {abs(m.crossAngle):g} deg, {m.control}"
         if kind == "sink" and getattr(m, "capacity", 0):
             return f"chute, {m.capacity} parcels"
         if kind == "door":
