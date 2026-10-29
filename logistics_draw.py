@@ -58,8 +58,11 @@ def draw_logistics(r) -> None:
 
 
 def draw_rollers(r, belt) -> None:
-    """A straight roller conveyor: a line per roller across it (every
-    second / fourth one when zoomed out)."""
+    """A roller conveyor: a line per roller across it - along radii on a
+    curve (every second / fourth one when zoomed out)."""
+    if belt.type == "curved":
+        _draw_arc_rollers(r, belt)
+        return
     a = math.radians(belt.rotation)
     ca, sa = math.cos(a), math.sin(a)
     pitch = max(0.02, belt.rollerPitch)
@@ -77,6 +80,23 @@ def draw_rollers(r, belt) -> None:
         p0 = r._world_to_screen(cx - hw * -sa, cy - hw * ca)
         p1 = r._world_to_screen(cx + hw * -sa, cy + hw * ca)
         pygame.draw.line(r.screen, color, p0, p1, 1)
+
+
+def _draw_arc_rollers(r, belt) -> None:
+    from cad.ports import arc_angles
+    start, end = arc_angles(belt)
+    pitch = max(0.02, belt.rollerPitch)
+    n = max(1, int(math.radians(end - start) * belt.radius / pitch))
+    step = 1
+    while r._scale_val(pitch * step) < 5 and step < 64:
+        step *= 2
+    r0, r1 = belt.radius - belt.beltWidth / 2.0 * 0.92, belt.radius + belt.beltWidth / 2.0 * 0.92
+    color = hmi.shade(r._hex_to_rgb(belt.color), 1.45)
+    for i in range(0, n, step):
+        a = math.radians(start + (end - start) * (i + 0.5) / n)
+        c, s = math.cos(a), math.sin(a)
+        pygame.draw.line(r.screen, color, r._world_to_screen(belt.x + r0 * c, belt.y + r0 * s),
+                         r._world_to_screen(belt.x + r1 * c, belt.y + r1 * s), 1)
 
 
 def _draw_transfer(r, t) -> None:

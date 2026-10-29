@@ -157,17 +157,23 @@ class EditorClicksTest(unittest.TestCase):
 
     # -- run in simulator --------------------------------------------------------------
 
-    def test_run_in_simulator_saves_and_starts_main(self):
+    def test_run_in_simulator_runs_the_canvas_without_saving(self):
+        with open(self.layout, encoding="utf-8") as f:
+            before = f.read()
         self.click_on_canvas("belt_1_1_2")
         self.window.properties_panel.spins["speed"].setValue(1.25)    # unsaved edit
         with mock.patch("layout_editor.subprocess.Popen") as popen:
             QTest.mouseClick(self.toolbar_button(self.window.run_sim_action), Qt.LeftButton)
         args = popen.call_args[0][0]
         self.assertTrue(args[1].endswith("main.py"))
-        self.assertEqual(args[2], self.layout)
-        self.assertTrue(self.window.undo_stack.isClean(), "saved first")
-        saved = load_config(self.layout)
-        self.assertEqual(next(b for b in saved.belts if b.id == "belt_1_1_2").speed, 1.25)
+        run_copy = args[2]
+        self.assertNotEqual(os.path.normcase(run_copy), os.path.normcase(os.path.abspath(self.layout)))
+        self.assertEqual(args[3:], ["--source", os.path.abspath(self.layout)])
+        self.assertEqual(next(b for b in load_config(run_copy).belts if b.id == "belt_1_1_2").speed, 1.25)
+        self.assertFalse(self.window.undo_stack.isClean(), "still unsaved")
+        with open(self.layout, encoding="utf-8") as f:
+            self.assertEqual(f.read(), before)                          # the layout file untouched
+        self.assertIn("not saved", self.window.statusBar().currentMessage())
 
     def test_the_running_designer_shows_the_layout_asked_for(self):
         import layout_editor
@@ -204,7 +210,8 @@ class EditorClicksTest(unittest.TestCase):
             QTest.mouseClick(self.toolbar_button(self.window.run_sim_action), Qt.LeftButton)
             QTest.mouseClick(self.toolbar_button(self.window.run_sim_action), Qt.LeftButton)
         popen.assert_not_called()                                   # no second simulator
-        self.assertEqual(os.path.normcase(link.take_reload()), os.path.normcase(os.path.abspath(self.layout)))
+        self.assertEqual(os.path.normcase(link.take_reload()), os.path.normcase(self.window._run_file))
+        self.assertEqual(os.path.normcase(link.pending_source), os.path.normcase(os.path.abspath(self.layout)))
         self.assertIn("reloading", self.window.statusBar().currentMessage())
         link.close()
         with mock.patch("layout_editor.subprocess.Popen") as popen:  # it closed: start one

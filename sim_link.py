@@ -56,6 +56,7 @@ class InstanceLink:
         self.role = role
         self.config_path = os.path.abspath(config_path) if config_path else None
         self._pending: Optional[str] = None
+        self.pending_source: Optional[str] = None       # the layout file a run copy was made from
         self._lock = threading.Lock()
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.bind(("127.0.0.1", 0))
@@ -92,6 +93,8 @@ class InstanceLink:
                     if ok:
                         with self._lock:
                             self._pending = os.path.abspath(request["config"])
+                            source = request.get("source")
+                            self.pending_source = os.path.abspath(source) if source else None
                     conn.sendall((json.dumps({"ok": ok, "pid": os.getpid()}) + "\n").encode("utf-8"))
                 except (OSError, ValueError):
                     pass
@@ -123,7 +126,7 @@ class SimulatorLink(InstanceLink):
         return self.take()
 
 
-def _request(role: str, config_path: str) -> Optional[int]:
+def _request(role: str, config_path: str, source: Optional[str] = None) -> Optional[int]:
     entry = _read_registry(role)
     if entry is None:
         return None
@@ -138,18 +141,22 @@ def _request(role: str, config_path: str) -> Optional[int]:
     try:
         with socket.create_connection(("127.0.0.1", int(entry["port"])), timeout=TIMEOUT_S) as conn:
             conn.settimeout(TIMEOUT_S)
-            conn.sendall((json.dumps({"cmd": COMMANDS[role], "config": os.path.abspath(config_path)}) + "\n")
-                         .encode("utf-8"))
+            request = {"cmd": COMMANDS[role], "config": os.path.abspath(config_path)}
+            if source:
+                request["source"] = os.path.abspath(source)
+            conn.sendall((json.dumps(request) + "\n").encode("utf-8"))
             reply = json.loads(conn.makefile("r", encoding="utf-8").readline() or "{}")
     except (OSError, ValueError):
         return None
     return reply.get("pid") if reply.get("ok") else None
 
 
-def request_reload(config_path: str) -> Optional[int]:
-    """Ask the running simulator to reload `config_path`. Its pid if it
-    agreed, None if no simulator is running (or it didn't answer)."""
-    return _request("sim", config_path)
+def request_reload(config_path: str, source: Optional[str] = None) -> Optional[int]:
+    """Ask the running simulator to reload `config_path` - a run copy of the
+    layout file `source`, when given (its Edit in Designer opens that one).
+    Its pid if it agreed, None if no simulator is running (or it didn't
+    answer)."""
+    return _request("sim", config_path, source)
 
 
 def request_open_designer(config_path: str) -> Optional[int]:

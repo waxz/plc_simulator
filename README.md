@@ -166,10 +166,19 @@ uv run python layout_editor.py test_config.json
 The Qt layout editor is where belt shapes and positions are designed:
 
 - **Component Library** dock - a folder tree with a search box: drag a
-  component onto the canvas to place it. Built in, by folder: **Belts**
-  (Linear, Curved), **Sensors** (IR, Laser Banner), **Parcel Flow** (Source,
-  Sink), **Operator Panel** (Push Button, LED). Your own components are in
-  **My Components**, in any sub-folders you like:
+  component onto the canvas to place it. Each one has a short description
+  (tooltip, and the panel under the tree); the search box matches names and
+  descriptions. Built in, by folder:
+  - **Conveyors** - **Belts** (Linear, Curved), **Rollers** (Roller
+    Conveyor, Curved Roller Conveyor, Accumulation Conveyor), **Transfers**
+    (90° Transfer, Turntable, Elevator);
+  - **Sensors** (IR, Laser Banner), **Identification** (Barcode Scanner,
+    RFID Reader, DWS), **Sorting** (Pusher / Wheel Diverter, Chute),
+    **Pallet Handling** (Pallet, Stopper), **Robots** (6-Axis Robot),
+    **Parcel Flow** (Source, Sink), **Safety** (Guard Door, Light Curtain,
+    Safety Relay), **Operator Panel** (Push Button, Emergency Stop, LED).
+
+  Your own components are in **My Components**, in any sub-folders you like:
   - **Add Selected** saves the component selected on the canvas (any kind: a
     belt of any type or shape - e.g. one made from a DXF -, a sensor, a
     button, ...) as a reusable template, with its size, rotation, speed,
@@ -204,10 +213,14 @@ The Qt layout editor is where belt shapes and positions are designed:
   Motion, Signal, Operation, Display) with units on every number. Sensors
   expose on/off delay, light-on (NC) and bit/byte packing; buttons their type,
   NC contact and key; belts the speed or VFD command format.
-- **Run in Simulator** (toolbar, `F5`) saves the layout if needed and shows
-  it in the simulator. There is one simulator window: if one is already
-  running (started from here, or `python main.py` in a terminal), it reloads
-  the saved layout in place; otherwise `main.py` starts in its own window.
+- **Run in Simulator** (toolbar, `F5`) shows the layout as it is on the
+  canvas in the simulator **without saving it**: it writes a run copy to
+  `<temp>/conveyor_sim_runs/` and runs that (`main.py <copy> --source
+  <layout>`; **Edit in Designer** in the simulator then comes back to the
+  layout file, not the copy). Save (`Ctrl+S`) when you want to keep the
+  changes. There is one simulator window: if one is already running
+  (started from here, or `python main.py` in a terminal), it reloads the run
+  copy in place; otherwise `main.py` starts in its own window.
   The running simulator and designer are noted in `sim_instance.json` /
   `designer_instance.json` next to the settings file (`sim_link.py`).
 - Dark and light themes: the toolbar button or **View > Theme**. The choice
@@ -744,12 +757,14 @@ or follows the PLC (`"plc"`), and its feedback goes to the PLC either way.
 Like the machines, each one joins the generated I/O frames when a layout has
 it (`MACHINE_FIELDS`).
 
-**Roller conveyors.** A straight conveyor with `surface: "roller"` (and
-`rollerPitch`) is a driven roller conveyor, the usual way to move pallets.
+**Roller conveyors.** A straight or curved conveyor with `surface: "roller"`
+(and `rollerPitch`) is a driven roller conveyor, the usual way to move pallets.
 It moves its load like a belt does. It is drawn as rollers in the simulator
 window and the designer, and in the 3D view as steel rollers in side frames
-that turn at the conveyor's actual speed. In the designer it is **Roller
-Conveyor** in the Belts folder, or a belt's **Surface** property.
+that turn at the conveyor's actual speed (on a curve: tapered rollers on the
+radii, between curved side frames). In the designer it is **Roller
+Conveyor** / **Curved Roller Conveyor** in Conveyors > Rollers, or a belt's
+**Surface** property.
 
 **Parcel identity.** A source numbers its parcels (`barcodeStart`), gives
 each a destination from `destinations` / `destinationWeights`, and a share

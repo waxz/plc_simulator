@@ -1,6 +1,6 @@
 """
 test_machines_editor.py - pallets, stoppers, robot arms and elevators in
-the layout editor: placed from the library's Machines folder, edited in
+the layout editor: placed from the library (Pallet Handling, Robots, Transfers), edited in
 Properties (outline follows), saved and loaded back, and wired into the
 PLC I/O (mqtt_message_binding / io_topics).
 """
@@ -13,7 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from config_parser import SimulatorConfig, load_config  # noqa: E402
-from layout_editor import ComponentLibrary, MainWindow  # noqa: E402
+from layout_editor import MainWindow  # noqa: E402
 from mqtt_data_exchange import io_topics  # noqa: E402
 from mqtt_message_binding import ComponentMessage, custom_component_mapping, known_component_ids  # noqa: E402
 
@@ -37,17 +37,18 @@ class MachinesInTheEditorTest(unittest.TestCase):
         self.window.close()
         self.window.deleteLater()
 
-    def test_the_library_has_a_machines_folder(self):
-        lib = self.window.findChild(ComponentLibrary)
-        folder = lib._folder("Machines")
-        names = [folder.child(i).text(0) for i in range(folder.childCount())]
-        self.assertEqual(names, ["Pallet", "Stopper", "Robot Arm", "Elevator"])
+    def test_the_machines_are_in_their_library_folders(self):
+        tree = self.window.library_panel.list_widget
+        self.assertEqual({name: tree.folder_of(tree._row(name)) for name in
+                          ("Pallet", "Stopper", "6-Axis Robot", "Elevator")},
+                         {"Pallet": "Pallet Handling", "Stopper": "Pallet Handling",
+                          "6-Axis Robot": "Robots", "Elevator": "Conveyors/Transfers"})
 
     def test_place_edit_save_and_load(self):
         place = self.window.view.place_template
         pallet = place("Pallet", 1.0, 0.0)
         stopper = place("Stopper", 3.0, 0.0)
-        robot = place("Robot Arm", 5.0, 2.0)
+        robot = place("6-Axis Robot", 5.0, 2.0)
         elevator = place("Elevator", 8.0, 0.0)
         self.assertEqual([i.kind for i in (pallet, stopper, robot, elevator)],
                          ["pallet", "stopper", "robot", "elevator"])

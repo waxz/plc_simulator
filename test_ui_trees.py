@@ -50,10 +50,16 @@ class EditorTreesTest(unittest.TestCase):
     def test_library_is_a_folder_tree(self):
         tree = self.window.library_panel.list_widget
         top = [tree.topLevelItem(i).text(0) for i in range(tree.topLevelItemCount())]
-        self.assertEqual(top, ["Belts", "Sensors", "Parcel Flow", "Machines", "Logistics", "Safety",
-                               "Operator Panel", "My Components"])
-        belts = tree.topLevelItem(0)
-        self.assertEqual([belts.child(i).text(0) for i in range(belts.childCount())], ["Linear Belt", "Roller Conveyor", "Curved Belt"])
+        self.assertEqual(top, ["Conveyors", "Sensors", "Identification", "Sorting", "Pallet Handling", "Robots",
+                               "Parcel Flow", "Safety", "Operator Panel", "My Components"])
+        conveyors = tree.topLevelItem(0)
+        self.assertEqual([conveyors.child(i).text(0) for i in range(conveyors.childCount())],
+                         ["Belts", "Rollers", "Transfers"])
+        belts = conveyors.child(0)
+        self.assertEqual([belts.child(i).text(0) for i in range(belts.childCount())], ["Linear Belt", "Curved Belt"])
+        rollers = conveyors.child(1)
+        self.assertEqual([rollers.child(i).text(0) for i in range(rollers.childCount())],
+                         ["Roller Conveyor", "Curved Roller Conveyor", "Accumulation Conveyor"])
         self.assertEqual(tree.folder_of(tree._row("Push Button")), "Operator Panel")
         # Components drag, folders don't.
         self.assertIsNotNone(tree.mimeData([tree._row("Sink")]))

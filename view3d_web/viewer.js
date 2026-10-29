@@ -9,7 +9,8 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import {
-  buildChute, buildConsole, buildDiverter, buildDoor, buildEye, buildPallet, buildRobot6, buildRollerConveyor,
+  buildChute, buildConsole, buildDiverter, buildDoor, buildEye, buildPallet, buildRobot6, buildRollerArc,
+  buildRollerConveyor,
   buildSafety, buildScanner, buildTransfer, buildTurntableRing, setChute, setDevice, setDoor, setRobot6, setSafety,
   setScanner, setTransfer, stepDiverter, stepDoor, stepTransfer, turnRollers,
 } from "./models.js";
@@ -173,7 +174,7 @@ function shapeOf(outline, holes) {
 function buildBelt(b) {
   if (b.roller && !b.table && !b.elevator) {
     // A roller conveyor: rollers and side frames, on stands.
-    const unit = buildRollerConveyor(b.roller, b.color);
+    const unit = (b.roller.kind === "arc" ? buildRollerArc : buildRollerConveyor)(b.roller, b.color);
     unit.group.position.z = beltTopZ(b.level);
     const step = Math.max(1, Math.round(b.outline.length / 10));
     const z = unit.group.position.z;

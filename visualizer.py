@@ -127,15 +127,16 @@ class Renderer:
         are designed there, then run here. A designer already running shows
         it instead of a second one starting (sim_link.py)."""
         import sim_link
-        if self.config_path and sim_link.request_open_designer(self.config_path) is not None:
-            print(f"[Sim] The designer is showing {self.config_path}.")
+        layout = getattr(self, "source_path", None) or self.config_path
+        if layout and sim_link.request_open_designer(layout) is not None:
+            print(f"[Sim] The designer is showing {layout}.")
             return
         starting = getattr(self, "_designer_process", None)
         if starting is not None and starting.poll() is None:
             print("[Sim] The designer is still starting.")
             return
         editor = os.path.join(os.path.dirname(os.path.abspath(__file__)), "layout_editor.py")
-        args = [sys.executable, editor] + ([self.config_path] if self.config_path else [])
+        args = [sys.executable, editor] + ([layout] if layout else [])
         try:
             self._designer_process = subprocess.Popen(args, cwd=os.path.dirname(editor))
             print(f"[Sim] Opened the designer on {self.config_path or 'a new layout'} - save there, "
@@ -567,6 +568,8 @@ class Renderer:
                     points.append(self._world_to_screen(belt.x + r * math.cos(a), belt.y + r * math.sin(a)))
             if len(points) >= 3:
                 pygame.draw.polygon(self.screen, color, points)
+            if belt.surface == "roller":
+                draw_rollers(self, belt)
         outline = self._belt_outline_points(belt)
         if outline and self.zoom * self.scale >= 12:
             self._polygon_outline(outline, hmi.shade(color, 0.55), 1)

@@ -314,9 +314,50 @@ export function buildRollerConveyor(r, color) {
   return unit;
 }
 
+// A curved roller conveyor (the group at the arc's centre and roller tops):
+// arc side frames and tapered rollers along the radii.
+export function buildRollerArc(r, color) {
+  const g = new THREE.Group();
+  g.position.set(r.x, r.y, 0);
+  const frame = mat(new THREE.Color(color).getHex(), { metalness: 0.4, roughness: 0.5 });
+  const a0 = deg(r.start), a1 = deg(r.start + r.sweep);
+  for (const rad of [r.radius - r.width / 2 - 0.03, r.radius + r.width / 2 + 0.03]) {
+    const shape = new THREE.Shape();
+    shape.absarc(0, 0, rad + 0.025, a0, a1, false);
+    shape.absarc(0, 0, rad - 0.025, a1, a0, true);
+    const rail = mesh(new THREE.ExtrudeGeometry(shape, { depth: 0.12, bevelEnabled: false, curveSegments: 48 }), frame);
+    rail.position.z = -0.13;
+    g.add(rail);
+  }
+  const n = Math.max(1, Math.floor(deg(r.sweep) * r.radius / r.pitch));
+  const inner = r.radius - r.width / 2, outer = r.radius + r.width / 2;
+  // Tapered: thicker at the outside (local +y = outward).
+  const geo = new THREE.CylinderGeometry(ROLLER_R * outer / r.radius, ROLLER_R * inner / r.radius, r.width, 14);
+  const rollers = new THREE.InstancedMesh(geo, mat(0xb8bec5, { metalness: 0.75, roughness: 0.3 }), n);
+  rollers.castShadow = rollers.receiveShadow = true;
+  const angles = [];
+  for (let i = 0; i < n; i++) angles.push(a0 + (a1 - a0) * (i + 0.5) / n);
+  const unit = { group: g, rollers, angles, radius: r.radius, spin: 0, ccw: r.ccw, arc: true };
+  g.add(rollers);
+  turnRollers(unit, 0);
+  return unit;
+}
+
 const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _p = new THREE.Vector3(), _s = new THREE.Vector3(1, 1, 1);
+const _q2 = new THREE.Quaternion(), _zAxis = new THREE.Vector3(0, 0, 1);
 const _yAxis = new THREE.Vector3(0, 1, 0);
 export function turnRollers(unit, distance) {
+  if (unit.arc) {
+    unit.spin += (unit.ccw ? 1 : -1) * distance / ROLLER_R;
+    unit.angles.forEach((a, i) => {
+      _p.set(Math.cos(a) * unit.radius, Math.sin(a) * unit.radius, -ROLLER_R);
+      _q.setFromAxisAngle(_zAxis, a - Math.PI / 2);         // the cylinder's axis (y) along the radius
+      _q2.setFromAxisAngle(_yAxis, unit.spin);
+      unit.rollers.setMatrixAt(i, _m.compose(_p, _q.multiply(_q2), _s));
+    });
+    unit.rollers.instanceMatrix.needsUpdate = true;
+    return;
+  }
   unit.angle -= distance / ROLLER_R;                   // rolling the load forward (+x)
   _q.setFromAxisAngle(_yAxis, -unit.angle);
   unit.xs.forEach((x, i) => {

@@ -61,6 +61,23 @@ def _belt_outline(belt):
     return outline, holes
 
 
+def _roller_geometry(belt) -> Optional[dict]:
+    """A roller conveyor's rollers for the viewer: straight ("line") or
+    along an arc ("arc", tapered rollers on radii); None for a belt."""
+    if belt.surface != "roller" or belt.vertexs:
+        return None
+    if belt.type == "linear":
+        return {"kind": "line", "x": belt.x, "y": belt.y, "rot": belt.rotation, "length": belt.length,
+                "width": belt.beltWidth, "pitch": belt.rollerPitch}
+    if belt.type == "curved":
+        from cad.ports import arc_angles
+        start, end = arc_angles(belt)
+        return {"kind": "arc", "x": belt.x, "y": belt.y, "radius": belt.radius, "width": belt.beltWidth,
+                "start": start, "sweep": end - start, "pitch": belt.rollerPitch,
+                "ccw": belt.directionAngle >= 0}
+    return None
+
+
 def _drawing_polylines(config: SimulatorConfig, config_path: Optional[str]) -> List[List[float]]:
     if config.background is None or not config.background.visible:
         return []
@@ -177,9 +194,7 @@ def static_scene(config: SimulatorConfig, config_path: Optional[str] = None, ver
             "table": ({"x": table_belts[belt.id].x, "y": table_belts[belt.id].y, "angle": table_belts[belt.id].angle}
                       if belt.id in table_belts else None),
             # A roller conveyor: drawn as rollers across it instead of a belt.
-            "roller": ({"x": belt.x, "y": belt.y, "rot": belt.rotation, "length": belt.length, "width": belt.beltWidth,
-                        "pitch": belt.rollerPitch}
-                       if belt.surface == "roller" and belt.type == "linear" and not belt.vertexs else None),
+            "roller": _roller_geometry(belt),
             # Straight belts get a moving surface texture along this heading.
             "dir": _r(belt.rotation + belt.directionAngle) if belt.type == "linear" and not belt.vertexs else None,
         })

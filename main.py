@@ -12,7 +12,7 @@ import view3d
 
 
 def run_pygame(config, physics_engine, mqtt, headless: bool, runner=None, config_path=None,
-               speed=1.0, render_fps: int = 30, sim_lock=None, link=None):
+               speed=1.0, render_fps: int = 30, sim_lock=None, link=None, source_path=None):
     """The window loop. Returns a layout path when the designer asked this
     simulator to reload (sim_link.py), else None."""
     print(f"Initializing visualizer (Headless: {headless})...")
@@ -23,7 +23,8 @@ def run_pygame(config, physics_engine, mqtt, headless: bool, runner=None, config
         renderer.sim_lock = sim_lock   # draw the scene while the runner thread isn't mid-step
     renderer.exchange = mqtt  # the status bar shows the PLC link
     renderer.physics = physics_engine  # Clear Parcels / Reset
-    renderer.config_path = config_path  # Edit in Designer
+    renderer.config_path = config_path
+    renderer.source_path = source_path   # Edit in Designer: the layout file (config_path may be a run copy)
     if headless:
         # There's no Play button to press without a window.
         renderer.playing = True
@@ -184,6 +185,8 @@ def build_argparser() -> argparse.ArgumentParser:
                              "Also the window's 3D View button")
     parser.add_argument("--view3d-port", type=int, default=view3d.DEFAULT_PORT,
                         help=f"Port of the 3D view on 127.0.0.1 (default {view3d.DEFAULT_PORT})")
+    parser.add_argument("--source", help="The layout file this one is a run copy of (the designer's Run in "
+                                         "Simulator): Edit in Designer opens that file")
     parser.add_argument("--render-fps", type=int, default=30,
                         help="Window frame rate (default 30); the simulation doesn't wait for it")
     return parser
@@ -203,7 +206,8 @@ def run_with_simulation_process(args, config, speed, link=None):
     print(f"[main] Physics + exchange in their own process (pid {proxy.process.pid}, speed "
           f"{'max' if speed is None else f'{speed:g}x'}); the window renders at {args.render_fps} fps.")
     try:
-        return run_pygame(config, proxy, proxy.exchange, False, config_path=args.config, speed=speed,
+        return run_pygame(config, proxy, proxy.exchange, False, config_path=args.config,
+                          source_path=getattr(args, "source", None), speed=speed,
                           render_fps=args.render_fps, link=link)
     finally:
         proxy.stop()
@@ -231,6 +235,7 @@ def main():
                 break
             print(f"[main] Reloading {reload_path} (Run in Simulator from the designer)...")
             args.config = reload_path
+            args.source = link.pending_source
             link.set_config(reload_path)
     finally:
         if link is not None:
@@ -294,6 +299,7 @@ def run_layout(args, speed, link=None):
 
     try:
         return run_pygame(config, physics_engine, mqtt, args.headless, runner=runner, config_path=args.config,
+                          source_path=getattr(args, "source", None),
                           speed=speed, render_fps=args.render_fps, sim_lock=config_lock, link=link)
     finally:
         if runner is not None:

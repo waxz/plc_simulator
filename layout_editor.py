@@ -272,6 +272,8 @@ class ComponentTemplate:
     factory: Callable[[str], object]
     removable: bool = False
     entry: Optional[LibraryEntry] = None  # the user's own templates are data (component_library.py)
+    folder: str = ""                       # a built-in's catalogue folder ("Conveyors/Rollers")
+    description: str = ""                  # what it is, for the library's tooltip / description
 
 
 class SnapGuideScene(QGraphicsScene):
@@ -1345,8 +1347,8 @@ class BeltItem(PlacedItem):
             self._paint_path(painter, option)
             return
         super().paint(painter, option, widget)
-        if self.model.surface == "roller" and not self.is_curved() and not self.is_custom_shape():
-            self._paint_rollers(painter)
+        if self.model.surface == "roller" and not self.is_custom_shape():
+            (self._paint_arc_rollers if self.is_curved() else self._paint_rollers)(painter)
         # Direction arrow, rotated locally by `directionAngle` (the belt's
         # travel direction offset from its own shape orientation - see
         # physics.py's `rotation + directionAngle`), plus a speed label.
@@ -1368,6 +1370,21 @@ class BeltItem(PlacedItem):
         painter.drawPolygon(head)
         painter.restore()
 
+
+    def _paint_arc_rollers(self, painter: QPainter):
+        """A curved roller conveyor: rollers along radii, `rollerPitch`
+        apart on the centre line (local origin = the arc's centre)."""
+        m = self.model
+        sweep = (m.endAngle - m.startAngle) % 360.0 or 360.0
+        n = max(1, int(math.radians(sweep) * m.radius / max(0.02, m.rollerPitch)))
+        r0, r1 = (m.radius - m.beltWidth / 2.0 * 0.92) * SCALE, (m.radius + m.beltWidth / 2.0 * 0.92) * SCALE
+        painter.save()
+        painter.setPen(QPen(QColor(m.color).lighter(160), 0))
+        for i in range(n):
+            a = math.radians(m.startAngle + sweep * (i + 0.5) / n)
+            c, s_ = math.cos(a), -math.sin(a)
+            painter.drawLine(QPointF(r0 * c, r0 * s_), QPointF(r1 * c, r1 * s_))
+        painter.restore()
 
     def _paint_rollers(self, painter: QPainter):
         """A roller conveyor: a line per roller across it (local x is the
@@ -2530,6 +2547,25 @@ def _make_roller_conveyor(new_id: str) -> Belt:
                 directionAngle=0.0, color="#4b5563", surface="roller")
 
 
+def _make_curved_roller(new_id: str) -> Belt:
+    return Belt(id=new_id, type="curved", shape="arc", x=0.0, y=0.0, beltWidth=1.0, rotation=0.0, radius=2.0,
+                startAngle=0.0, endAngle=90.0, speed=0.3, directionAngle=90.0, color="#4b5563", surface="roller")
+
+
+def _make_rfid(new_id: str) -> Scanner:
+    return Scanner(id=new_id, x=0.0, y=0.0, scannerType="rfid", label="RFID")
+
+
+def _make_light_curtain(new_id: str) -> Sensor:
+    return Sensor(id=new_id, x=0.0, y=0.0, width=0.1, height=1.2, rotation=0.0, label="Light curtain",
+                  color="#facc15", sensorType="laser_banner", laserCount=24, beamDistance=0.05)
+
+
+def _make_estop(new_id: str) -> ControlButton:
+    return ControlButton(id=new_id, x=0.0, y=0.0, width=0.4, height=0.4, rotation=0.0, label="E-STOP",
+                         color="#dc2626", buttonType="latching", normallyClosed=True)
+
+
 def _make_transfer(new_id: str) -> Transfer:
     return Transfer(id=new_id, x=0.0, y=0.0, label="90° transfer")
 
@@ -2775,39 +2811,62 @@ class ComponentLibrary(QTreeWidget):
     canvas to place it. Folders are not draggable."""
 
     MY_COMPONENTS = "My Components"
-    FOLDER_FOR_KIND = {"belt": "Belts", "sensor": "Sensors", "source": "Parcel Flow", "sink": "Parcel Flow",
-                       "button": "Operator Panel", "led": "Operator Panel", "pallet": "Machines",
-                       "stopper": "Machines", "robot": "Machines", "elevator": "Machines",
-                       "scanner": "Logistics", "diverter": "Logistics", "turntable": "Logistics",
-                       "transfer": "Logistics",
-                       "accumulator": "Logistics", "door": "Safety", "safety": "Safety"}
-    FOLDER_ORDER = ("Belts", "Sensors", "Parcel Flow", "Machines", "Logistics", "Safety", "Operator Panel",
-                    MY_COMPONENTS)
-    BUILT_INS = (
-        ("Linear Belt", "belt", _make_linear_belt),
-        ("Roller Conveyor", "belt", _make_roller_conveyor),
-        ("Curved Belt", "belt", _make_curved_belt),
-        ("IR Sensor", "sensor", _make_ir_sensor),
-        ("Laser Banner", "sensor", _make_banner_sensor),
-        ("Parcel Source", "source", _make_source),
-        ("Sink", "sink", _make_sink),
-        ("Push Button", "button", _make_button),
-        ("LED Indicator", "led", _make_led),
-        ("Pallet", "pallet", _make_pallet),
-        ("Stopper", "stopper", _make_stopper),
-        ("Robot Arm", "robot", _make_robot),
-        ("Elevator", "elevator", _make_elevator),
-        ("Barcode Scanner", "scanner", _make_scanner),
-        ("DWS (Dimension-Weight-Scan)", "scanner", _make_dws),
-        ("Pusher Diverter", "diverter", _make_pusher),
-        ("Wheel Diverter", "diverter", _make_wheel_diverter),
-        ("Turntable", "turntable", _make_turntable),
-        ("90° Transfer", "transfer", _make_transfer),
-        ("Accumulation Conveyor", "accumulator", _make_accumulator),
-        ("Chute", "sink", _make_chute),
-        ("Guard Door", "door", _make_door),
-        ("Safety Relay", "safety", _make_safety),
+    # The built-in catalogue: (folder, name, kind, factory, description).
+    CATALOGUE = (
+        ("Conveyors/Belts", "Linear Belt", "belt", _make_linear_belt,
+         "A straight belt conveyor for parcels and cartons."),
+        ("Conveyors/Belts", "Curved Belt", "belt", _make_curved_belt,
+         "A curved belt conveyor (radius, start and end angle)."),
+        ("Conveyors/Rollers", "Roller Conveyor", "belt", _make_roller_conveyor,
+         "A straight driven roller conveyor - for pallets, totes and cases."),
+        ("Conveyors/Rollers", "Curved Roller Conveyor", "belt", _make_curved_roller,
+         "A curved roller conveyor with tapered rollers (cases, totes; pallet lines turn on 90° transfers)."),
+        ("Conveyors/Rollers", "Accumulation Conveyor", "accumulator", _make_accumulator,
+         "Zero-pressure accumulation: list the zone conveyors in Zone belts; each zone holds one load."),
+        ("Conveyors/Transfers", "90° Transfer", "transfer", _make_transfer,
+         "Chain transfer at a corner / junction: lifts a pallet and moves it sideways, unturned."),
+        ("Conveyors/Transfers", "Turntable", "turntable", _make_turntable,
+         "Turns its platform conveyor (Platform belt) and the load on it between positions."),
+        ("Conveyors/Transfers", "Elevator", "elevator", _make_elevator,
+         "A vertical lift: carries its platform conveyor between floor levels."),
+        ("Sensors", "IR Sensor", "sensor", _make_ir_sensor, "A photo-eye: on while something blocks its zone."),
+        ("Sensors", "Laser Banner", "sensor", _make_banner_sensor,
+         "A row of light beams: one bit per beam (parcel height / position)."),
+        ("Identification", "Barcode Scanner", "scanner", _make_scanner,
+         "Reads each parcel's barcode (no-read on a bad label): code and destination to the PLC."),
+        ("Identification", "RFID Reader", "scanner", _make_rfid,
+         "Reads each parcel's tag: always reads."),
+        ("Identification", "DWS (Dimension-Weight-Scan)", "scanner", _make_dws,
+         "Scan tunnel with a scale: code, destination, weight and size."),
+        ("Sorting", "Pusher Diverter", "diverter", _make_pusher,
+         "Pushes parcels for its destination off at 90° onto a branch."),
+        ("Sorting", "Wheel Diverter", "diverter", _make_wheel_diverter,
+         "Pop-up wheels steer parcels for its destination off at an angle."),
+        ("Sorting", "Chute", "sink", _make_chute, "A sorting chute / bin with a capacity: full signal, emptying."),
+        ("Pallet Handling", "Pallet", "pallet", _make_pallet,
+         "A EUR pallet: rides the rollers, carries loads (robot or source above it)."),
+        ("Pallet Handling", "Stopper", "stopper", _make_stopper,
+         "A pop-up stop holding a pallet (or parcel) until released."),
+        ("Robots", "6-Axis Robot", "robot", _make_robot,
+         "A FANUC-style 6-axis robot picking and placing parcels (pick / place points)."),
+        ("Parcel Flow", "Parcel Source", "source", _make_source,
+         "Makes parcels: sizes, weights, destinations, no-read rate."),
+        ("Parcel Flow", "Sink", "sink", _make_sink, "Where parcels leave the layout."),
+        ("Safety", "Guard Door", "door", _make_door, "A fence door the operator opens; the PLC can lock it."),
+        ("Safety", "Light Curtain", "sensor", _make_light_curtain,
+         "A safety light curtain: list it in a safety relay's Light curtains."),
+        ("Safety", "Safety Relay", "safety", _make_safety,
+         "Stops its belts on an e-stop, open door or broken curtain until reset."),
+        ("Operator Panel", "Push Button", "button", _make_button, "A momentary push button."),
+        ("Operator Panel", "Emergency Stop", "button", _make_estop,
+         "A latching NC mushroom button - list it in a safety relay's E-stops."),
+        ("Operator Panel", "LED Indicator", "led", _make_led, "A pilot lamp the PLC switches."),
     )
+    # Name, kind, factory - as before.
+    BUILT_INS = tuple((name, kind, factory) for _f, name, kind, factory, _d in CATALOGUE)
+    FOLDER_ORDER = ("Conveyors", "Conveyors/Belts", "Conveyors/Rollers", "Conveyors/Transfers", "Sensors",
+                    "Identification", "Sorting", "Pallet Handling", "Robots", "Parcel Flow", "Safety",
+                    "Operator Panel", MY_COMPONENTS)
     FOLDER_ROLE = Qt.UserRole + 1  # folder items carry their path ("" for a built-in top folder)
 
     def __init__(self):
@@ -2820,8 +2879,9 @@ class ComponentLibrary(QTreeWidget):
         self._folders: dict[str, QTreeWidgetItem] = {}
         for name in self.FOLDER_ORDER:
             self._folder(name)
-        for name, kind, factory in self.BUILT_INS:
-            self.add_template(ComponentTemplate(name, kind, factory, removable=False))
+        for folder, name, kind, factory, description in self.CATALOGUE:
+            self.add_template(ComponentTemplate(name, kind, factory, removable=False, folder=folder,
+                                                description=description))
         self.expandAll()
 
     # -- folders -------------------------------------------------------------------
@@ -2850,7 +2910,7 @@ class ComponentLibrary(QTreeWidget):
 
     def _folder_for(self, template: ComponentTemplate) -> str:
         if not template.removable:
-            return self.FOLDER_FOR_KIND.get(template.kind, "Belts")
+            return template.folder or "Conveyors/Belts"
         sub = template.entry.folder if template.entry is not None else ""
         return f"{self.MY_COMPONENTS}/{sub}" if sub else self.MY_COMPONENTS
 
@@ -2890,8 +2950,9 @@ class ComponentLibrary(QTreeWidget):
         row = QTreeWidgetItem([template.name])
         row.setData(0, Qt.UserRole, template.name)
         row.setIcon(0, _kind_icon(template.kind))
-        row.setToolTip(0, f"{template.kind}" + ("" if template.removable else " - built in")
-                       + ". Drag onto the canvas to place one.")
+        about = template.description or template.kind
+        row.setToolTip(0, f"{about}\n({template.kind}{'' if template.removable else ', built in'} - drag onto the "
+                          f"canvas to place one)")
         row.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsDragEnabled)
         if not template.removable:
             font = row.font(0)
@@ -2979,7 +3040,9 @@ class ComponentLibrary(QTreeWidget):
                 if text and any_visible:
                     item.setExpanded(True)
                 return any_visible
-            visible = not text or text in item.text(0).lower()
+            template = self.templates.get(item.data(0, Qt.UserRole) or "")
+            about = (template.description if template is not None else "").lower()
+            visible = not text or text in item.text(0).lower() or text in about
             item.setHidden(not visible)
             return visible
         for i in range(self.topLevelItemCount()):
@@ -3019,6 +3082,15 @@ class ComponentLibraryPanel(QWidget):
     Your components are saved to `library_path` after every change and
     loaded again next time."""
 
+    def _describe(self, *_args):
+        template = self.list_widget.current_template()
+        if template is None:
+            folder = self.list_widget.folder_of(self.list_widget.currentItem())
+            self.description.setText(f"{folder}" if folder else "Drag a component onto the canvas to place it.")
+            return
+        about = template.description or ("Your component" if template.removable else template.kind)
+        self.description.setText(f"<b>{template.name}</b> - {about}")
+
     def __init__(self, library_path: Optional[str] = None, get_selection: Optional[Callable[[], list]] = None,
                  status: Optional[Callable[[str], None]] = None):
         super().__init__()
@@ -3034,6 +3106,12 @@ class ComponentLibraryPanel(QWidget):
         self.list_widget = ComponentLibrary()
         self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
         layout.addWidget(self.list_widget)
+        self.description = QLabel("Drag a component onto the canvas to place it.")
+        self.description.setWordWrap(True)
+        self.description.setObjectName("libraryDescription")
+        self.description.setStyleSheet(f"color: {hmi.hex_(hmi.TEXT_DIM)}; padding: 2px 4px;")
+        layout.addWidget(self.description)
+        self.list_widget.currentItemChanged.connect(self._describe)
 
         row1 = QHBoxLayout()
         self.add_btn = QPushButton("Add Selected")
@@ -3823,7 +3901,7 @@ def _field_specs_for(item: PlacedItem):
         specs.append(("float", "rotation", "Rotation", -360.0, 360.0, 1.0))
     if isinstance(item, BeltItem):
         specs.append(("combo", "commandFormat", "Command", ["speed", "vfd"]))
-        if item.model.type == "linear" and not item.is_custom_shape():
+        if item.model.type in ("linear", "curved") and not item.is_custom_shape():
             specs.append(("combo", "surface", "Surface", ["belt", "roller"]))
             if item.model.surface == "roller":
                 specs.append(("float", "rollerPitch", "Roller pitch", 0.03, 1.0, 0.005))
@@ -4515,7 +4593,8 @@ class ComponentManagerPanel(QWidget):
             drive = " vfd" if getattr(m, "commandFormat", "speed") == "vfd" else ""
             if m.type == "curved":
                 sweep = (m.endAngle - m.startAngle) % 360.0 or 360.0
-                return f"curved R{m.radius:g} m {sweep:.0f}°{drive}"
+                what = "curved roller" if m.surface == "roller" else "curved"
+                return f"{what} R{m.radius:g} m {sweep:.0f}°{drive}"
             if m.type == "path":
                 return f"path{' loop' if m.closed else ''}, {len(m.path or [])} anchors{drive}"
             if m.shape == "quadrilateral":
@@ -4954,30 +5033,52 @@ class MainWindow(QMainWindow):
         if getattr(self, "theme_actions", None):
             self.theme_actions[hmi.THEME].setChecked(True)
 
+    def _write_run_copy(self) -> str:
+        """The layout as it is on the canvas - saved or not - written to a
+        run copy in the temp folder (the layout file is not touched); a
+        relative DXF background path made absolute so it still resolves."""
+        import hashlib
+        import tempfile
+        config = self._build_export_config().model_copy(deep=True)
+        base_dir = os.path.dirname(os.path.abspath(self.config_path)) if self.config_path else os.getcwd()
+        if config.background is not None and not os.path.isabs(config.background.path):
+            config.background.path = os.path.normpath(os.path.join(base_dir, config.background.path))
+        name = os.path.basename(self.config_path) if self.config_path else "untitled.json"
+        key = hashlib.sha1(os.path.abspath(self.config_path or name).encode("utf-8")).hexdigest()[:8]
+        folder = os.path.join(tempfile.gettempdir(), "conveyor_sim_runs", key)
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, name)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(config.model_dump_json(indent=2))
+        self._run_file = path
+        return path
+
     def run_simulation(self) -> bool:
-        """Save the layout, then show it in the simulator: the simulator
-        already running reloads it (sim_link.py - one simulator window, not
-        one per click); otherwise a new one starts (python main.py <layout>)
-        as its own process."""
+        """Show the layout as it is on the canvas in the simulator, without
+        saving it: a run copy (_write_run_copy) goes to the simulator already
+        running, which reloads it (sim_link.py - one simulator window, not
+        one per click), or a new one starts on it (python main.py <copy>
+        --source <layout>) as its own process. Save when you want to keep
+        the changes."""
         import sim_link
-        if not self.config_path or not self.undo_stack.isClean():
-            if not self._save_config():
-                return False
-        name = os.path.basename(self.config_path)
-        if sim_link.request_reload(self.config_path) is not None:
-            self.statusBar().showMessage(f"The simulator is reloading {name} - press Start (or Space) there to "
-                                         f"run it.", 8000)
+        run_file = self._write_run_copy()
+        source = self.config_path
+        name = os.path.basename(run_file)
+        unsaved = "" if self.config_path and self.undo_stack.isClean() else " (not saved)"
+        if sim_link.request_reload(run_file, source=source) is not None:
+            self.statusBar().showMessage(f"The simulator is reloading {name}{unsaved} - press Start (or Space) "
+                                         f"there to run it.", 8000)
             return True
         if self._sim_process is not None and self._sim_process.poll() is None:
             # Started by the last click, not listening yet (still loading).
-            self.statusBar().showMessage("The simulator is still starting - it opens with the saved layout.",
+            self.statusBar().showMessage("The simulator is still starting - click Run again once it is open.",
                                          8000)
             return True
         main_py = os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py")
-        self._sim_process = subprocess.Popen([sys.executable, main_py, self.config_path],
-                                             cwd=os.path.dirname(main_py))
-        self.statusBar().showMessage(f"Simulator started for {os.path.basename(self.config_path)} - press Start "
-                                     f"(or Space) there to run it.", 8000)
+        args = [sys.executable, main_py, run_file] + (["--source", os.path.abspath(source)] if source else [])
+        self._sim_process = subprocess.Popen(args, cwd=os.path.dirname(main_py))
+        self.statusBar().showMessage(f"Simulator started for {name}{unsaved} - press Start (or Space) there to "
+                                     f"run it.", 8000)
         return True
 
     def _update_coord_label(self, world_x: float, world_y: float):
@@ -5132,6 +5233,8 @@ class MainWindow(QMainWindow):
         unsaved layout)."""
         import sim_link
         window = self
+        if sim_link.same_layout(getattr(self, "_run_file", None), path):
+            path = self.config_path or path                  # our own run copy: the layout here
         if not sim_link.same_layout(self.config_path, path):
             self._bring_to_front()
             window = self._open_path(path) or self
