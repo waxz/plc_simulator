@@ -83,7 +83,7 @@ def _add(data: dict, key: str, *models) -> None:
 
 
 def build() -> SimulatorConfig:
-    sorting = _load("logistics_demo.json")
+    sorting = _load("logistics_demo.json", committed=True)
     pallets = _shift(_load("machines_demo.json", committed=True), 0.0, PALLET_AREA_DY)
     data = _merge(pallets, sorting)          # the pallet demo's simulation settings (physicsDt, ...)
 

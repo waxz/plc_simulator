@@ -983,6 +983,9 @@ the outfeed and feeders L2 and L3 merging into it, each with its own panel.
 Both: `--autostart` runs without pressing Start; belts run at their design
 speed from the layout file (1 m/s where it is 0).
 
+How the frames are built, and how to read and write them in `plc_mock.py`
+and in a SIMATIC AX PLC (ST): [docs/plc-data-exchange-guide.md](docs/plc-data-exchange-guide.md).
+
 ### Complete logistics system (`logistics_full.json`)
 
 One layout with every kind of machine, sensor and device, run by the mock

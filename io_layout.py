@@ -116,8 +116,9 @@ def describe(mapping: Mapping) -> str:
 
 def format_layout(mapping: Mapping, title: str = "") -> str:
     """The offset table: one row per field. Padding bits fold into one row
-    per byte, and a component's run of indexed bits (a laser banner's
-    beams) into one row."""
+    per byte, a component's run of indexed bits (a laser banner's beams)
+    into one row, and a device's run of named bits into one row listing
+    them."""
     rows = [f"{title}: {describe(mapping)}" if title else describe(mapping),
             f"  {'byte.bit':<11}{'type':<8}{'PLC':<7}field"]
     fields = layout_fields(mapping)
@@ -139,8 +140,12 @@ def format_layout(mapping: Mapping, title: str = "") -> str:
                 else:
                     component, field, first_index = parse_path(f.path)
                     last_index = parse_path(last.path)[2]
-                    rows.append(f"  {span:<11}{'bit':<8}{'BOOL':<7}{component}/{field}[{first_index}..{last_index}]"
-                                f"  ({j - i + 1} bits)")
+                    if first_index is None:          # a device's named bits: list them
+                        names = ", ".join(parse_path(g.path)[1] for g in fields[i:j + 1])
+                        rows.append(f"  {span:<11}{'bit':<8}{'BOOL':<7}{component}/{{{names}}}")
+                    else:
+                        rows.append(f"  {span:<11}{'bit':<8}{'BOOL':<7}{component}/{field}[{first_index}.."
+                                    f"{last_index}]  ({j - i + 1} bits)")
                 i = j + 1
                 continue
         name = "<padding>" if f.is_padding else f.path

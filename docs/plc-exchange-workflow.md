@@ -1,5 +1,8 @@
 # Simulator ↔ SIMATIC AX exchange: evaluation and workflow
 
+For how to define the exchange, and how to extract and compose the data in
+`plc_mock.py` and in AX ST, see [plc-data-exchange-guide.md](plc-data-exchange-guide.md).
+
 This note covers how the I/O exchange between the simulator (Python) and the
 PLC program (SIMATIC AX, ST) is defined today, what goes wrong, what was
 changed on the Python side, and the recommended workflow for keeping the two
