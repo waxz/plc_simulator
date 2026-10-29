@@ -532,7 +532,7 @@ function buildWheelModule(d, g, unit, color) {
   const lamp = statusLamp();
   lamp.position.set(d.w / 2 - 0.05, -(d.h / 2 + 0.04), 0.02);
   g.add(lamp);
-  Object.assign(unit, { wheels, centres, lamp, steer: deg(Math.max(-60, Math.min(60, d.angle))) });
+  Object.assign(unit, { wheels, centres, lamp, paint, steer: deg(Math.max(-60, Math.min(60, d.angle))) });
 }
 
 export function buildDiverter(d) {
@@ -551,7 +551,10 @@ export function buildDiverter(d) {
 // Live: [active, the angle it steers at] (wheels follow a commanded direction).
 export function setDiverter(unit, [active, angle]) {
   unit.target = active ? 1 : 0;
-  if (unit.wheels && angle != null) unit.steer = deg(Math.max(-60, Math.min(60, angle)));
+  if (unit.wheels && angle != null) {
+    unit.steer = deg(Math.max(-60, Math.min(60, angle)));
+    unit.paint.rotation.z = deg(angle);                 // the arrow shows where it sends them now
+  }
 }
 
 const _wq = new THREE.Quaternion();

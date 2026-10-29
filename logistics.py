@@ -84,10 +84,10 @@ def _in_rect(x: float, y: float, cx: float, cy: float, along: float, across: flo
 def diverter_motion(d: Diverter):
     """(speed m/s, angle deg to the travel) a diverter steers parcels at:
     the layout's, or - following commands ("plc" / "manual") - the
-    commanded ones where they are set (non-zero)."""
+    commanded ones."""
     if d.control == "auto":
         return d.speed, d.divertAngle
-    return d.commandSpeed or d.speed, d.commandAngle or d.divertAngle
+    return d.commandSpeed, d.commandAngle
 
 
 class LogisticsRuntime:
@@ -123,6 +123,7 @@ class LogisticsRuntime:
             s.weight = s.measuredLength = s.measuredWidth = s.measuredHeight = 0.0
         for d in c.diverters:
             d.active = d.present = False
+            d.commandSpeed, d.commandAngle = d.speed, d.divertAngle   # until commanded otherwise
             d.presentCode = d.diverted = 0
         belts = {b.id: b for b in c.belts}
         for state in self._tables.values():                  # put the platform belts back

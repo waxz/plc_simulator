@@ -218,3 +218,44 @@ class WindowTest(unittest.TestCase):
         r.editor_ui.open_manager_panel()                        # the Components tree: a folder per kind
         folders = set(r.editor_ui.manager_folder_rows.values())
         self.assertLessEqual({"pallet", "stopper", "robot", "elevator"}, folders)
+
+
+class PickSensorTest(unittest.TestCase):
+    """A robot's pick trigger is an external IR sensor at its pick point
+    (pickSensorId), wired to the PLC."""
+
+    def layout(self, control="plc"):
+        return config(belts=[belt("feed", 1.0, 0.0, 2.0)],
+                      sensors=[Sensor(id="s_pick", x=1.8, y=0.0, width=0.1, height=1.0, rotation=0.0,
+                                      label="pick", color="#f00")],
+                      robots=[RobotArm(id="r1", x=1.8, y=1.2, pickX=1.8, pickY=0.0, placeX=2.6, placeY=1.2,
+                                       cycleTime=1.5, control=control, pickSensorId="s_pick")])
+
+    def test_the_plc_starts_the_robot_on_its_pick_sensor_and_it_is_no_jam(self):
+        from plc_logic import make_controller, part_at_pick
+        c = self.layout()
+        plc = make_controller(c, autostart=True, jam_time=1.0)
+        robot = c.robots[0]
+        robot.partAtPick = robot.ready = robot.placeReady = True   # the robot's own view does not count
+        plc.step(now=0.0)
+        self.assertFalse(part_at_pick(c, robot))
+        self.assertFalse(robot.start)
+        c.sensors[0].sensor_states = True           # the IR sensor sees the part
+        for i in range(1, 60):
+            plc.step(now=0.1 * i)
+        self.assertTrue(part_at_pick(c, robot))
+        self.assertTrue(robot.start)
+        self.assertIsNone(plc.jammed)               # waiting for the robot is not a jam
+
+    def test_auto_waits_for_the_pick_sensor_too(self):
+        c = self.layout(control="auto")
+        e = PhysicsEngine(c)
+        e.add_parcel(1.0, 0.0, 0.3, 0.3)            # rides to the end of the feed belt
+        e.run_for(6.0)
+        self.assertGreaterEqual(c.robots[0].cycles, 1)
+        c2 = self.layout(control="auto")
+        c2.sensors[0].x = 0.2                       # the sensor away from where the part waits
+        e2 = PhysicsEngine(c2)
+        e2.add_parcel(1.0, 0.0, 0.3, 0.3)
+        e2.run_for(6.0)
+        self.assertEqual(c2.robots[0].cycles, 0)

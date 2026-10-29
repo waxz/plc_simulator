@@ -297,6 +297,29 @@
       "offDelay": 0.0,
       "invert": false,
       "level": 1
+    },
+    {
+      "id": "s_pick",
+      "x": 4.775,
+      "y": -2.5,
+      "width": 0.1,
+      "height": 1.0,
+      "rotation": 0.0,
+      "isActive": false,
+      "label": "Pick sensor",
+      "color": "#ef4444",
+      "stateBinding": null,
+      "sensorType": "ir",
+      "laserCount": null,
+      "beamDistance": null,
+      "wordBinding": null,
+      "detectedWord": 0,
+      "sensor_states": null,
+      "packFormat": "bit",
+      "onDelay": 0.0,
+      "offDelay": 0.0,
+      "invert": false,
+      "level": 0
     }
   ],
   "sources": [
@@ -444,6 +467,7 @@
       "reach": 2.0,
       "cycleTime": 3.0,
       "pickRadius": 0.4,
+      "pickSensorId": "s_pick",
       "label": "Robot",
       "color": "#7c3aed",
       "level": 0,

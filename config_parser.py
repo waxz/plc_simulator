@@ -356,6 +356,11 @@ class RobotArm(BaseModel):
     reach: float = 2.5
     cycleTime: float = 3.0
     pickRadius: float = 0.4   # m: how close to the pick point a part's centre must be
+    # The IR sensor (a Sensor id) at the pick point that tells the PLC a part
+    # is there - a robot has no part detection of its own on the PLC side.
+    # The PLC program starts a cycle when it is blocked; auto mode waits
+    # for it too. None: the robot's own `partAtPick`.
+    pickSensorId: Optional[str] = None
     label: str = ""
     color: str = "#7c3aed"
     level: int = 0
@@ -494,7 +499,9 @@ class Diverter(BaseModel):
     control "auto": active while a readable parcel for `destination` is in
     the zone (a sorter's own tracking). control "plc" / "manual": active
     while `divert` is on, at `commandSpeed` m/s and `commandAngle` degrees
-    (0 = the layout's `speed` / `divertAngle`; logistics.diverter_motion).
+    (logistics.diverter_motion). Both start at the layout's `speed` /
+    `divertAngle` (the simulation's start / reset), and plc_mock.py's
+    program sends those.
     Feedback: `active`, `present` (a parcel in the zone), `presentCode`
     (UDINT, its barcode; 0 for a no-read) and `diverted` (UINT count)."""
     id: str
@@ -512,8 +519,8 @@ class Diverter(BaseModel):
     level: int = 0
     control: ControlMode = "plc"
     divert: bool = False                                     # command: run
-    commandSpeed: float = 0.0                                # command: m/s, 0 = `speed`
-    commandAngle: float = 0.0                                # command: deg, 0 = `divertAngle`
+    commandSpeed: float = Field(default=0.0, exclude=True)   # command: m/s
+    commandAngle: float = Field(default=0.0, exclude=True)   # command: deg to the travel
     active: bool = Field(default=False, exclude=True)        # feedback
     present: bool = Field(default=False, exclude=True)
     presentCode: int = Field(default=0, exclude=True)

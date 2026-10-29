@@ -77,6 +77,22 @@ def occupied(sensor) -> bool:
     return is_on(value) != bool(sensor.invert)
 
 
+def part_at_pick(config: SimulatorConfig, robot) -> bool:
+    """A part waits at the robot's pick point: its pick sensor (an IR sensor
+    wired to the PLC, `pickSensorId`) is blocked - or, without one, the
+    robot's own `partAtPick`."""
+    if robot.pickSensorId:
+        sensor = next((s for s in config.sensors if s.id == robot.pickSensorId), None)
+        return sensor is not None and occupied(sensor)
+    return bool(robot.partAtPick)
+
+
+def waiting_sensors(config: SimulatorConfig) -> Set[str]:
+    """Sensors where a part waits on purpose (a robot's pick sensor): blocked
+    for long is not a jam there."""
+    return {r.pickSensorId for r in config.robots if r.pickSensorId}
+
+
 def _pick(components, words, fallback_index: Optional[int]):
     for c in components:
         text = f"{getattr(c, 'label', '')} {c.id}".lower()
@@ -131,7 +147,8 @@ class MachineControl:
                 # Program 1 (pick and place) whenever a part and a place are ready;
                 # a fault (e.g. a point out of reach) is reset with the line's reset.
                 robot.enable, robot.program = True, 1
-                robot.start = running and robot.ready and robot.partAtPick and robot.placeReady
+                part = part_at_pick(cfg, robot)
+                robot.start = running and robot.ready and part and robot.placeReady
                 robot.faultReset = robot.fault and self.reset_requested
         self._logistics(running, dt, speeds, events)
         self.reset_requested = False
@@ -184,6 +201,7 @@ class MachineControl:
                         track.pop(next(iter(track)))
         for d in cfg.diverters:
             if d.control == "plc":
+                d.commandSpeed, d.commandAngle = d.speed, d.divertAngle     # the layout's
                 fire = running and d.presentCode != 0 and track.get(d.presentCode) == d.destination
                 if fire and not d.divert:
                     events.append(f"diverter {d.id}: {d.presentCode} -> destination {d.destination}")
@@ -353,6 +371,8 @@ class DeliveryController:
                     events.append(f"parcel at {sensor.id} (#{track.count}) - delivered {self.delivered}")
                 else:
                     events.append(f"parcel at {sensor.id} (#{track.count})")
+            elif blocked and sensor.id in waiting_sensors(self.config):
+                track.since = now   # a part waiting for the robot: not a jam
             track.occupied = blocked
             if blocked and self.jammed is None and self.running and now - track.since > self.jam_time:
                 self.jammed = sensor.id
@@ -631,8 +651,8 @@ class LineController:
                     events.append(f"parcel at {sensor.id} (#{track.count}) - delivered {self.delivered}")
                 else:
                     events.append(f"parcel at {sensor.id} (#{track.count})")
-            elif blocked and not self._moving_past(sensor):
-                track.since = now   # waiting on purpose (holding / stopped): not a jam
+            elif blocked and (not self._moving_past(sensor) or sensor.id in waiting_sensors(self.config)):
+                track.since = now   # waiting on purpose (holding / stopped / for the robot): not a jam
             track.occupied = blocked
             line = self.line_of(sensor)
             if (line is not None and blocked and line.jammed is None and line.moving

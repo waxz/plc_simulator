@@ -40,7 +40,7 @@ INSPECTOR_FIELDS = {
     LedIndicator: ("id", "label", "x", "y", "radius"),
     Pallet: ("id", "label", "x", "y", "rotation", "width", "height", "mass", "capacity", "level"),
     Stopper: ("id", "label", "x", "y", "rotation", "width", "depth", "level", "holdTime", "releaseTime"),
-    RobotArm: ("id", "label", "x", "y", "reach", "pickX", "pickY", "placeX", "placeY", "cycleTime"),
+    RobotArm: ("id", "label", "x", "y", "reach", "pickX", "pickY", "placeX", "placeY", "cycleTime", "pickSensorId"),
     Elevator: ("id", "label", "x", "y", "rotation", "width", "height", "levels", "levelHeight", "liftSpeed",
                "beltId"),
     Scanner: ("id", "label", "scannerType", "x", "y", "rotation", "width", "height", "level"),

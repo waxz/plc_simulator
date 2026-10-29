@@ -184,9 +184,27 @@ class ManualModeTest(unittest.TestCase):
         d.control = "manual"
         self.assertEqual(logistics.diverter_motion(d), (0.4, 90.0))
         d.commandSpeed = d.commandAngle = 0.0
-        self.assertEqual(logistics.diverter_motion(d), (1.0, -90.0))       # 0: the layout's
+        self.assertEqual(logistics.diverter_motion(d), (0.0, 0.0))         # what it is told, 0 too
         commands = [s.name for s in io_signals.signals(d) if s.direction == "command"]
         self.assertEqual(commands, ["divert", "commandSpeed", "commandAngle"])
+
+    def test_diverter_commands_start_at_the_layout_values_and_mean_what_they_say(self):
+        config = SimulatorConfig(belts=[belt()], useSurfaceVelocity=True,
+                                 diverters=[Diverter(id="d", x=5.0, y=0.0, divertAngle=30.0, speed=1.2,
+                                                     control="manual")])
+        engine = PhysicsEngine(config)
+        d = config.diverters[0]
+        self.assertEqual((d.commandSpeed, d.commandAngle), (1.2, 30.0))   # shown as they act
+        self.assertNotIn("commandSpeed", d.model_dump())                  # runtime, not layout
+        parcel = engine.add_parcel(4.0, 0.0, 0.3, 0.3)
+        d.divert, d.commandSpeed = True, 0.0
+        engine.run_for(1.5)
+        self.assertAlmostEqual(parcel.body.position.y, 0.0, places=2)      # speed 0: held, not pushed
+        held = parcel.body.position.x
+        d.commandSpeed, d.commandAngle = 1.0, -45.0
+        engine.run_for(0.3)
+        self.assertLess(parcel.body.position.y, -0.05)                    # -45: to the right,
+        self.assertGreater(parcel.body.position.x, held + 0.05)           # and on
 
     def test_manual_machines_follow_their_commands(self):
         config = SimulatorConfig(belts=[belt()], useSurfaceVelocity=True,

@@ -143,7 +143,7 @@ PROPERTY_GROUPS = {
     "mountHeight": "Geometry", "toolLength": "Geometry",
     "pickX": "Operation", "pickY": "Operation", "placeX": "Operation", "placeY": "Operation",
     "pickLevel": "Operation", "placeLevel": "Operation", "placeTarget": "Operation", "control": "Operation",
-    "holdTime": "Operation", "releaseTime": "Operation", "beltId": "Operation", "autoFrom": "Operation",
+    "holdTime": "Operation", "releaseTime": "Operation", "beltId": "Operation", "pickSensorId": "Operation", "autoFrom": "Operation",
     "autoTo": "Operation",
 }
 
@@ -162,7 +162,7 @@ PROPERTY_LABELS = {
     "cycleTime": "Cycle time", "actuationTime": "Actuation", "pickX": "Pick X", "pickY": "Pick Y",
     "placeX": "Place X", "placeY": "Place Y", "pickLevel": "Pick level", "placeLevel": "Place level",
     "placeTarget": "Place on", "control": "Control", "holdTime": "Hold time", "releaseTime": "Release time",
-    "beltId": "Platform belt", "autoFrom": "Auto from", "autoTo": "Auto to",
+    "beltId": "Platform belt", "pickSensorId": "Pick sensor", "autoFrom": "Auto from", "autoTo": "Auto to",
 }
 
 

@@ -86,14 +86,16 @@ def stopper_wants_up(stopper: Stopper, state: dict, h: float) -> bool:
     return False
 
 
-def robot_should_start(robot: RobotArm, state: dict) -> bool:
-    """Auto: a part waits at the pick point and the place point is ready.
+def robot_should_start(robot: RobotArm, state: dict, part_ready: Optional[bool] = None) -> bool:
+    """Auto: a part waits at the pick point (`part_ready`: its pick sensor,
+    else the robot's own partAtPick) and the place point is ready.
     PLC: `start` turned on."""
     if robot.control != "auto":                       # "plc" or "manual": the command fields
         edge = robot.start and not state.get("last_start", False)
         state["last_start"] = robot.start
         return edge
-    return robot.partAtPick and robot.placeReady
+    part = robot.partAtPick if part_ready is None else part_ready
+    return part and robot.placeReady
 
 
 def elevator_auto(elevator: Elevator, state: dict, h: float) -> Tuple[int, bool]:
@@ -473,6 +475,12 @@ class MachineRuntime:
         duration = max(0.2, robot6.joint_move_time(q_from, q_to) * 1.3) * self._scale(robot)
         return _seg("joint", phase, 0.0, 1.0, duration, tuple(q_from), tuple(q_to))
 
+    def _part_ready(self, robot) -> bool:
+        """Auto mode: a part at the pick point, as the robot's pick sensor
+        sees it (the PLC's view, plc_logic.part_at_pick), else partAtPick."""
+        from plc_logic import part_at_pick
+        return part_at_pick(self.config, robot)
+
     def _start(self, robot: RobotArm, state: dict, program: int) -> None:
         try:
             if program == 1:
@@ -517,7 +525,7 @@ class MachineRuntime:
             if state.get("api"):
                 state["segs"], state["t"], state["cycle"] = state.pop("api"), 0.0, False
                 robot.busy, robot.inPosition, robot.atHome = True, False, False
-            elif robot.ready and robot_should_start(robot, state):
+            elif robot.ready and robot_should_start(robot, state, self._part_ready(robot)):
                 self._start(robot, state, int(robot.program) if plc else 1)
             if not state["segs"]:
                 return

@@ -4081,6 +4081,7 @@ def _field_specs_for(item: PlacedItem):
                   ("float", "mountHeight", "Pedestal height", 0.0, 5.0, 0.05),
                   ("float", "toolLength", "Tool length", 0.0, 1.0, 0.01),
                   ("int", "pickLevel", "Pick level", 0, 20), ("int", "placeLevel", "Place level", 0, 20),
+                  ("text", "pickSensorId", "Pick sensor"),
                   ("combo", "placeTarget", "Place on", ["any", "pallet"]),
                   ("text", "label", "Label")]
     elif isinstance(item, ElevatorItem):
@@ -4470,7 +4471,7 @@ class PropertiesPanel(QWidget):
             if new_value is None:                    # not a list of that type: show the old one again
                 self.texts[attr].setText(_field_text(attr, old_value))
                 return
-        elif attr in ("beltId", "resetButtonId"):
+        elif attr in ("beltId", "resetButtonId", "pickSensorId"):
             new_value = new_value.strip() or None
         if attr == "key":
             new_value = new_value.strip()[:1].lower() or None  # one key, or none
