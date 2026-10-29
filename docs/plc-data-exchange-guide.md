@@ -77,6 +77,8 @@ ones behind it. Payloads can be at most 2048 bytes.
 | `LAYOUT_CHECK` | 7 | both | layout fingerprints and sizes (section 2.4) |
 | `INPUT_IMAGE` | 8 | PLC -> monitor | the input image the PLC worked on (Foxglove bridge) |
 | `JSON` | 9 | PLC -> monitor | a UTF-8 JSON object, published as is on `/plc/json/<topic>` (Foxglove bridge) |
+| `RECORD_SCHEMA` | 10 | PLC -> monitor | a record's field names and types, once per connection (`plc_records.py`) |
+| `RECORD_VALUES` | 11 | PLC -> monitor | that record's values only; the bridge publishes them as JSON on `/plc/json/<topic>` |
 
 ### 2.2 Payload packing
 

@@ -35,6 +35,8 @@ class FrameType(IntEnum):
     INPUT_IMAGE = 8     # PLC -> monitor (plc_foxglove_bridge.py): the input image the PLC works on,
                         # same layout as the simulator's IO_MAPPING input frame
     JSON = 9            # PLC -> monitor (plc_foxglove_bridge.py): a UTF-8 JSON object, published as is
+    RECORD_SCHEMA = 10  # PLC -> monitor: a record's field names and types, once per connection (plc_records.py)
+    RECORD_VALUES = 11  # PLC -> monitor: that record's values only, raw (plc_records.py)
 
 
 class ParsedFrame(NamedTuple):

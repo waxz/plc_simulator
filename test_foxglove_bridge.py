@@ -17,6 +17,7 @@ import unittest
 
 import devices
 import io_layout
+import plc_records
 from config_parser import load_config
 from foxglove_ws_probe import FoxgloveProbe
 from mqtt_data_exchange import MetricLayout1, MetricLayout1Perf, MetricLayout1Results, apply_exchange_config
@@ -157,6 +158,30 @@ class BridgeTest(unittest.TestCase):
         self.assertIn("timestamp", msg)
         self.assertEqual(got["/bridge/stats"][-1]["malformed"], 2)
         self.assertEqual(got["/bridge/stats"][-1]["nodes"]["4"]["frames"]["JSON"], 4)
+
+    def test_records_field_list_once_then_values(self):
+        fields = [("link_ok", "BOOL"), ("belt_speed", "REAL"), ("stations.0.name", "STRING"),
+                  ("stations.0.running", "BOOL"), ("stations.1.name", "STRING"), ("stations.1.running", "BOOL")]
+        values = [True, 0.5, "L1", True, "L2", False]
+        self.plc.send(plc_records.pack_values(0, fields, values), frame_type=FrameType.RECORD_VALUES, node_id=4)
+        self.plc.send(plc_records.pack_schema(0, "stations", fields), frame_type=FrameType.RECORD_SCHEMA, node_id=4)
+        self.plc.send(plc_records.pack_values(0, fields, values), frame_type=FrameType.RECORD_VALUES, node_id=4)
+        self.assertTrue(wait_until(lambda: "stations" in self.bridge.ch_json))
+        self.assertIn("/plc/json/stations", self.probe.wait_for_topics(["/plc/json/stations"], timeout=5.0))
+        self.probe.subscribe(["/plc/json/stations", "/bridge/stats"])
+        time.sleep(1.6)
+        values[1] = 0.25
+        self.plc.send(plc_records.pack_values(0, fields, values), frame_type=FrameType.RECORD_VALUES, node_id=4)
+        self.plc.send(plc_records.pack_values(0, fields[:-1], values[:-1]), frame_type=FrameType.RECORD_VALUES,
+                      node_id=4)                                                  # a field short: malformed
+        got = self.collect(2.2)
+        msg = got["/plc/json/stations"][-1]
+        self.assertEqual({k: v for k, v in msg.items() if k != "timestamp"},
+                         {"node": 4, "link_ok": True, "belt_speed": 0.25,
+                          "stations": [{"name": "L1", "running": True}, {"name": "L2", "running": False}]})
+        stats = got["/bridge/stats"][-1]
+        self.assertEqual(stats["values_without_schema"], 1)                     # the one before the schema
+        self.assertEqual(stats["malformed"], 1)
 
     def test_layout_check_is_answered(self):
         out_map, in_map = self.bridge.output_mapping, self.bridge.input_mapping

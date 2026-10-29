@@ -19,6 +19,11 @@ Frames from the PLC (frame type in the header):
   JSON             a UTF-8 JSON object, published as is   -> /plc/json/<topic>
                    (its "topic" member, default "data"): no packing on the
                    PLC side and no layout needed to read it
+  RECORD_SCHEMA    a PLC record's field names and types, once per
+                   connection; then
+  RECORD_VALUES    its values only, raw - turned into the  -> /plc/json/<topic>
+                   same JSON message (plc_records.py): the cheapest way
+                   for a PLC to show its own values
 Composed here:
   /plc/lines       per line (L1, L2, ...): state RUN / HOLD / STOP / ERROR
                    from its lamps and belts, belts moving, sensors blocked
@@ -48,6 +53,7 @@ from foxglove.messages import Log, LogLevel, Timestamp
 
 import devices
 import io_layout
+import plc_records
 from config_parser import SimulatorConfig, load_config
 from mqtt_data_exchange import METRICS_CHANNELS, apply_exchange_config, io_topics
 from mqtt_message_binding import (
@@ -259,6 +265,8 @@ class PlcFoxgloveBridge:
         self.ch_stats = foxglove.Channel("/bridge/stats", context=ctx)
         self.ch_events = LogChannel("/plc/events", context=ctx)
         self.ch_json: Dict[str, Any] = {}     # /plc/json/<topic>, made on a topic's first message
+        self.records: Dict[Tuple[Any, int, int], plc_records.Schema] = {}   # (connection, node, slot)
+        self.values_without_schema = 0
 
         self._lock = threading.Lock()
         self.last_outputs: Optional[dict] = None
@@ -326,6 +334,10 @@ class PlcFoxgloveBridge:
                 self._layout_check(frame)
             elif frame.frame_type == FrameType.JSON:
                 self._json(frame)
+            elif frame.frame_type == FrameType.RECORD_SCHEMA:
+                self._record_schema(frame)
+            elif frame.frame_type == FrameType.RECORD_VALUES:
+                self._record_values(frame)
             elif frame.frame_type in self.metrics:
                 self._metrics(frame)
         except Exception as exc:  # noqa: BLE001 - one bad frame must not stop the bridge
@@ -377,11 +389,30 @@ class PlcFoxgloveBridge:
         msg = json.loads(frame.payload.decode("utf-8"))
         if not isinstance(msg, dict):
             raise ValueError("a JSON frame holds an object")
-        topic = re.sub(r"[^A-Za-z0-9_/-]", "_", str(msg.pop("topic", "data"))).strip("/") or "data"
+        self._publish_json(str(msg.pop("topic", "data")), frame.node_id, msg)
+
+    def _publish_json(self, topic: str, node: int, msg: dict):
+        topic = re.sub(r"[^A-Za-z0-9_/-]", "_", topic).strip("/") or "data"
         channel = self.ch_json.get(topic)
         if channel is None:
             channel = self.ch_json[topic] = foxglove.Channel(f"/plc/json/{topic}", context=self.context)
-        channel.log(self._stamp({"node": frame.node_id, **msg}))
+        channel.log(self._stamp({"node": node, **msg}))
+
+    def _record_schema(self, frame: ParsedFrame):
+        schema = plc_records.parse_schema(frame.payload)
+        key = (frame.conn, frame.node_id, schema.slot)
+        if key not in self.records or self.records[key].fields != schema.fields:
+            self.event(LogLevel.Info, f"Record '{schema.topic}' from PLC node {frame.node_id}: "
+                                      f"{len(schema.fields)} fields")
+        self.records[key] = schema
+
+    def _record_values(self, frame: ParsedFrame):
+        schema = self.records.get((frame.conn, frame.node_id, plc_records.values_slot(frame.payload)))
+        if schema is None:
+            with self._lock:
+                self.values_without_schema += 1    # sent before its schema: dropped, not malformed
+            return
+        self._publish_json(schema.topic, frame.node_id, plc_records.parse_values(frame.payload, schema))
 
     def _metrics(self, frame: ParsedFrame):
         name, message = self.metrics[frame.frame_type]
@@ -411,7 +442,8 @@ class PlcFoxgloveBridge:
                 entry["last_frame_age_s"] = round(now - self.last_frame_at.get(node, now), 3)
                 entry["layout_ok"] = self.layout_ok.get(node)
             return {"frames_total": frames, "frames_per_s": round(rate, 2), "bytes_in": self.bytes_in,
-                    "malformed": self.malformed, "nodes": nodes}
+                    "malformed": self.malformed, "values_without_schema": self.values_without_schema,
+                    "nodes": nodes}
 
     def _tick(self):
         while not self._stop.wait(1.0):
