@@ -207,7 +207,8 @@ class PathToolbar(QToolBar):
         # Divide into Belts: how many, belt or roller, which way parcels go.
         self.divide_actions = [self.addWidget(QLabel(" Parts "))]
         self.parts_spin = QSpinBox(minimum=1, maximum=200, value=4)
-        self.parts_spin.setToolTip("How many belts of equal length the line / arc becomes")
+        self.parts_spin.setToolTip("How many conveyors of equal length the line / arc becomes - "
+                                   "1: the whole of it as one belt / roller conveyor")
         self.divide_actions.append(self.addWidget(self.parts_spin))
         self.divide_actions.append(self.addWidget(QLabel(" Surface ")))
         self.divide_surface_combo = QComboBox()

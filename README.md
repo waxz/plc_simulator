@@ -296,7 +296,7 @@ undo step, points snap (OSNAP) and can be typed:
 | Trim | `T` | click the piece to cut away - between the lines crossing it (other sketch lines and the background drawing); it shows red under the cursor first. Repeats until Esc |
 | Extend | `E` | click near a line's end: it grows to the next line it meets (a line straight on, an arc round its circle) |
 | Break | `K` | click a point on a line: it splits in two there (a closed shape opens) |
-| Divide into Belts | `N` | click a line or arc, of the sketch or the background drawing. That piece (one segment) becomes **Parts** conveyors of equal length, each with its own drive, joined end to end: linear along a line, curved along an arc. **Surface** chooses belts or roller conveyors, **Direction** forward (as drawn) or reverse, and **Width** sets the width. The cuts and the flow show under the cursor first. Repeats until Esc |
+| Divide into Belts | `N` | click a line or arc, of the sketch or the background drawing. That piece (one segment) becomes **Parts** conveyors of equal length, each with its own drive, joined end to end: linear along a line, curved along an arc. Parts 1 makes the whole line or arc into one conveyor. **Surface** chooses belts or roller conveyors, **Direction** forward (as drawn) or reverse, and **Width** sets the width. The cuts and the flow show under the cursor first. Repeats until Esc |
 | Offset | `Shift+O` | set **Distance** on the tool bar, click a line, then the side: a parallel copy (mitred corners, concentric arcs) |
 | Fillet | `F` | set **Corner R**, click two lines on the sides to keep: they are joined with a tangent arc (R 0 = sharp corner) |
 | Join / Explode | `J` / `X` | the selected lines joined end to end into one / split into single segments |

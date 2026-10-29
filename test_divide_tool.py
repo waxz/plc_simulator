@@ -58,6 +58,17 @@ class GeometryTest(unittest.TestCase):
         back = divided_belts(counter(), seg, 3, 0.8, reverse=True)
         self.assertAlmostEqual(belt_ports(back[0]).inlet.y, 2.0, places=6)          # from the arc's end
 
+    def test_an_arc_whole_or_in_parts_belts_or_rollers(self):
+        seg = cpath.bulge_to_segment((3.0, 0.0), (0.0, 3.0), math.tan(math.pi / 8))    # quarter circle
+        for surface in ("belt", "roller"):
+            (whole,) = divided_belts(counter(), seg, 1, 1.0, surface=surface)
+            self.assertEqual((whole.type, whole.surface), ("curved", surface))
+            self.assertAlmostEqual(whole.radius, 3.0, places=9)
+            self.assertAlmostEqual(whole.endAngle - whole.startAngle, 90.0, places=6)
+            parts = divided_belts(counter(), seg, 5, 1.0, surface=surface)
+            self.assertEqual([(b.type, b.surface) for b in parts], [("curved", surface)] * 5)
+            self.assertAlmostEqual(sum(b.endAngle - b.startAngle for b in parts), 90.0, places=6)
+
     def test_too_tight_for_the_width(self):
         seg = cpath.bulge_to_segment((0.4, 0.0), (0.0, 0.4), math.tan(math.pi / 8))
         with self.assertRaises(ValueError):
@@ -134,6 +145,12 @@ class EditorTest(unittest.TestCase):
         for text in ("4,0", "0,4", "2.8284,2.8284"):                  # a quarter circle about the origin
             self.cad.sketch_arc_tool.typed_input(text)
         self.cad.divide_tool.start()
+        self.assertEqual(self.bar.parts_spin.minimum(), 1)                       # 1: the whole arc
+        self.bar.parts_spin.setValue(1)
+        self.click(4 * math.cos(math.radians(60)), 4 * math.sin(math.radians(60)))
+        (whole,) = self.belts()
+        self.assertAlmostEqual(whole.endAngle - whole.startAngle, 90.0, delta=0.01)   # typed 2.8284
+        self.window.undo_stack.undo()
         self.bar.parts_spin.setValue(2)
         self.bar.divide_direction_combo.setCurrentIndex(self.bar.divide_direction_combo.findData("reverse"))
         self.click(4 * math.cos(math.radians(20)), 4 * math.sin(math.radians(20)))
