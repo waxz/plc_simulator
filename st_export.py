@@ -33,8 +33,11 @@ Writes, in the namespace `--namespace` (default Simulator.Io):
                      layout fingerprint (the CRC io_layout / LAYOUT_CHECK use)
   SimIoVectorsTest.st   an AxUnit test per frame: sample values serialize to
                      exactly the bytes the Python packer produces, and back
-  io_contract.json   (--contract) the same contract as data: every field's
-                     byte, bit, type, path and member name
+  io_contract.json   (--contract) the same contract as data: every frame's
+                     STRUCT members and every field's byte, bit, type, path
+                     and member expression - what a generator outside this
+                     repo (the AX project's tools/generate_st_serde.py
+                     --sim-contract) builds its ST from
 
 Every file starts with the contract's fingerprint; --check regenerates in
 memory and reports any file that differs (or is missing).
@@ -212,10 +215,11 @@ def contract(config: SimulatorConfig, source: str = "") -> dict:
                        for name, fields in device_structs(config).items()},
            "frames": []}
     for name, frame_type, mapping in frames(config):
-        _members, access = members(mapping, config, FRAME_DIRECTIONS.get(name))
+        mem, access = members(mapping, config, FRAME_DIRECTIONS.get(name))
         out["frames"].append({
             "name": name, "frameType": frame_type, "size": io_layout.layout_size(mapping),
             "fingerprint": io_layout.layout_fingerprint(mapping),
+            "members": [{"name": m.name, "type": m.st_type, "length": m.length} for m in mem],
             "fields": [{"byte": f.byte, "bit": f.bit, "type": f.byte_type.value, "path": f.path, "member": member}
                        for f, member in access]})
     text = json.dumps(out, sort_keys=True)

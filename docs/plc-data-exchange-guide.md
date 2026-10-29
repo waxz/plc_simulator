@@ -496,14 +496,13 @@ current command image.
 
 **Buffer sizes.** Every buffer must hold the largest frame plus 14 bytes of
 framing. For `logistics_full.json` that is 165 + 14 bytes in and
-247 + 14 bytes out. The AX library's defaults are 256 bytes:
+247 + 14 bytes out. In the AX project these are 1024 bytes:
 
 - `MagicFrameCodec.MAX_PACKED_LENGTH`;
 - `TcpClient.MAX_SEND_LENGTH` and `MAX_RECEIVE_LENGTH`.
 
-Raise them, to 512 for example, and size `outBuffer` to at least
-`SIM_OUTPUT_SIZE`. Otherwise the codec drops the frame (`DroppedPackCount`
-rises) and the simulator sees nothing.
+Size `outBuffer` to at least `SIM_OUTPUT_SIZE` too. A frame that does not fit
+is dropped (`DroppedPackCount` rises) and the simulator sees nothing.
 
 ### 5.4 Layout check
 

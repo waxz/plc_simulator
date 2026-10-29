@@ -38,7 +38,6 @@ from mqtt_message_binding import (ByteType, ComponentMessage, _compact_int, _int
                                   _read_bit, _write_bit, custom_component_mapping, find_component_by_id,
                                   parse_path)
 
-AX_BUFFER = 256          # MagicFrameCodec.MAX_PACKED_LENGTH, TcpClient.MAX_SEND/RECEIVE_LENGTH (AX defaults)
 FRAMING = 14             # header 10 + trailer 4
 FMT = {ByteType.BYTE: "B", ByteType.UINT16: "H", ByteType.UINT32: "I", ByteType.UINT64: "Q", ByteType.FLOAT: "f"}
 ROW = 16                 # bytes per row in the grid
@@ -145,11 +144,6 @@ def check(config, endian: str, load_receiver) -> List[Tuple[str, bool, str]]:
                 mismatch.append(f"{expr}: {got} != {want}")
         results.append((f"{name}: PLC serializer bytes (SimIoSerde) decode in the simulator", not mismatch,
                         "; ".join(mismatch[:4]) or f"{len(access)} members agree"))
-        framed = size + FRAMING
-        results.append((f"{name}: fits the AX buffers ({AX_BUFFER} bytes)", framed <= AX_BUFFER,
-                        f"{framed} bytes framed" + ("" if framed <= AX_BUFFER else
-                                                    f" - raise MagicFrameCodec.MAX_PACKED_LENGTH and "
-                                                    f"TcpClient.MAX_SEND/RECEIVE_LENGTH to >= {framed}")))
     return results
 
 

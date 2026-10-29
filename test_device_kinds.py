@@ -167,10 +167,7 @@ class FullSystemTest(unittest.TestCase):
         sys.path.insert(0, os.path.join(HERE, "tools"))
         import frame_map
         results = frame_map.check(load_config(FULL), "LE", lambda: load_config(FULL))
-        layout_checks = [(name, ok, detail) for name, ok, detail in results if "AX buffers" not in name]
-        self.assertTrue(all(ok for _n, ok, _d in layout_checks), layout_checks)
-        buffers = {name.split(":")[0]: ok for name, ok, _d in results if "AX buffers" in name}
-        self.assertEqual(buffers, {"input": True, "output": False})          # 261 bytes > 256: flagged
+        self.assertTrue(all(ok for _n, ok, _d in results), results)
         out = os.path.join(tempfile.mkdtemp(), "map.html")
         self.assertEqual(frame_map.main([FULL, "--out", out]), 0)
         with open(out, encoding="utf-8") as f:
