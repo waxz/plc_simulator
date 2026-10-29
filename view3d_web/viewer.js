@@ -486,13 +486,29 @@ async function loadScene() {
   }
 }
 
+// The live stream holds a connection open for as long as it runs, and a
+// browser allows only six to one server: with six 3D tabs open, a seventh
+// would never load. So only a tab on screen streams; a hidden one lets go
+// and picks up again when it is shown.
+let events = null;
 function connect() {
+  if (events || document.hidden) return;
   const link = document.getElementById("link");
-  const events = new EventSource("events");
+  events = new EventSource("events");
   events.onopen = () => link.classList.add("on");
   events.onerror = () => link.classList.remove("on");     // EventSource reconnects by itself
   events.onmessage = (e) => applyState(JSON.parse(e.data));
 }
+
+function disconnect() {
+  if (!events) return;
+  events.close();
+  events = null;
+  document.getElementById("link").classList.remove("on");
+}
+
+document.addEventListener("visibilitychange", () => (document.hidden ? disconnect() : connect()));
+window.addEventListener("pagehide", disconnect);
 
 function showError(text) {
   const el = document.getElementById("error");

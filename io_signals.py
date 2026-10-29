@@ -22,6 +22,7 @@ SensorControl) says where its commands come from: the PLC exchange
   read(config, ids)           -> {id: {"control": ..., "values": {name: value}}}
   apply(config, id, name, v)  -> None, or why not (a text)
   control_options(component)  -> ["auto", "plc", "manual"], ... or []
+  at_rest(config)             -> the simulator's start: PLC commands at rest
 """
 import typing
 from dataclasses import dataclass
@@ -177,3 +178,24 @@ def apply(config, component_id: str, name: str, value: Any) -> Optional[str]:
         return f"{value!r} is not a {signal.plc_type}"
     setattr(component, name, new)
     return None
+
+
+def at_rest(config) -> None:
+    """Every command the PLC gives ("plc" components) at rest: belts and
+    rollers stopped (speed 0, run off), every command bit off. The simulator
+    starts this way, so nothing moves until the PLC - plc_mock.py or a real
+    one - sends its first frame; the layout's own values (a belt's design
+    speed) are what the PLC program reads from the layout file."""
+    lists = ["belts", "leds", *_MACHINE_LISTS]
+    for name in lists:
+        for component in getattr(config, name, []):
+            if getattr(component, "control", None) != "plc":
+                continue
+            if isinstance(component, cp.Belt):
+                component.speed = 0.0
+            for signal in signals(component):
+                if signal.direction == "command" and signal.byte_type == ByteType.BIT and not signal.indexed:
+                    setattr(component, signal.name, False)
+
+
+_MACHINE_LISTS = sorted(set(_MACHINE_KIND.values()))

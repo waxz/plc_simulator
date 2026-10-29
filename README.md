@@ -495,6 +495,20 @@ python main.py test_config.json
 python main.py test_config.json --headless
 ```
 
+**Nothing moves without a PLC.** The simulator is the plant. It starts with
+every command the PLC gives at rest: belts and rollers stopped, machines
+idle, lamps off. They move when a PLC commands them: the mock PLC
+(`plc_mock.py`, see [Mock PLC client](#mock-plc-client)) or a real one over
+the same exchange. Parcels still appear at their sources. To drive one
+component without a PLC, set its source to `manual` in the inspector (PLC
+I/O).
+
+```bash
+# The simulator with the TCP exchange, then the mock PLC (--autostart: Start at once)
+python main.py machines_demo.json --exchange-config tcp_exchange_config.json
+python plc_mock.py machines_demo.json --exchange-config tcp_exchange_config.json --autostart
+```
+
 ![Simulator window](docs/simulator.png)
 ![Simulator window, light theme](docs/simulator_light.png)
 
@@ -655,11 +669,13 @@ until it has reset and Start is pressed.
 library's **Pallet Handling**, **Robots** and **Conveyors > Transfers**
 folders. Each stopper, robot arm and elevator has a `control` setting:
 
-- `"auto"` (the default): a small built-in controller runs it, so a layout
-  works without a PLC.
-- `"plc"`: it follows its command fields from the PLC.
+- `"plc"` (the default): it follows its command fields from the PLC
+  (`plc_mock.py`'s program, `plc_logic.py`, or a real PLC). Without one, it
+  does nothing.
 - `"manual"`: it follows command fields you set by hand in the simulator
   window's inspector (PLC I/O); PLC frames leave them alone.
+- `"auto"`: a small built-in controller runs it, for a layout that should
+  work without any PLC.
 
 Its feedback fields go to the PLC either way.
 
@@ -893,7 +909,9 @@ robots, lifting arms) only report a z; the viewer draws what it gets.
   (`--view3d-port`). If another simulator already has that port, it takes a
   free one and prints the address (the 3D View button opens the right one).
   A page left open from an earlier run reloads the new layout once a new
-  simulator serves it. `--view3d serve` serves without opening a browser,
+  simulator serves it. Only a tab on screen streams the live state: a
+  browser allows six connections to one server, so hidden 3D tabs let go
+  of theirs, and a new tab still loads however many are open. `--view3d serve` serves without opening a browser,
   for `--headless` or a browser elsewhere through a tunnel. It uses no extra
   Python packages.
 - three.js 0.160 comes from the jsDelivr CDN. On a PC without internet, unpack

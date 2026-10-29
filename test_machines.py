@@ -98,7 +98,7 @@ class RobotTest(unittest.TestCase):
     def test_auto_robot_moves_a_part_onto_a_pallet(self):
         c = config(pallets=[Pallet(id="pal_1", x=3.0, y=1.0)],
                    robots=[RobotArm(id="r1", x=2.0, y=0.0, pickX=1.0, pickY=1.0, placeX=3.0, placeY=1.0,
-                                    cycleTime=1.5)])
+                                    cycleTime=1.5, control="auto")])
         e = PhysicsEngine(c)
         part = e.add_parcel(1.0, 1.0, 0.3, 0.3)
         robot = c.robots[0]
@@ -134,7 +134,7 @@ class ElevatorTest(unittest.TestCase):
         c = config(belts=[belt("in", 2, 0, 4), belt("lift", 4.7, 0, 1.4), belt("up", 7.4, 0, 4, level=1),
                           belt("under", 7.4, 0, 4, speed=0.0)],
                    elevators=[Elevator(id="el_1", x=4.7, y=0.0, width=1.4, height=1.0, beltId="lift",
-                                       levelHeight=1.0, liftSpeed=1.0)],
+                                       levelHeight=1.0, liftSpeed=1.0, control="auto")],
                    sensors=[Sensor(id="s_low", x=7.0, y=0.0, width=0.1, height=1.0, rotation=0.0, label="low",
                                    color="#f00"),
                             Sensor(id="s_up", x=7.0, y=0.0, width=0.1, height=1.0, rotation=0.0, label="up",

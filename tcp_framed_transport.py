@@ -1,5 +1,6 @@
 import socket
 import struct
+import sys
 import threading
 import time
 from collections import deque
@@ -441,8 +442,18 @@ class TcpFramedServer:
     def _accept_loop(self) -> None:
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
-                server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                server.bind((self.host, self.port))
+                if sys.platform == "win32":
+                    # One server per port. SO_REUSEADDR on Windows lets a second
+                    # simulator bind a port the first still serves, and the PLC's
+                    # frames then reach either of them.
+                    server.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                else:
+                    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                try:
+                    server.bind((self.host, self.port))
+                except OSError as exc:
+                    print(f"[TCP] Port {self.port} is in use - another simulator? No PLC exchange here ({exc}).")
+                    return
                 server.listen(self.max_clients)
                 server.settimeout(0.5)
                 self._server_socket = server

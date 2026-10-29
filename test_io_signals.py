@@ -177,7 +177,7 @@ class ManualModeTest(unittest.TestCase):
         self.assertFalse(io_signals.read(config, ["forced"])["forced"]["values"]["sensor_states"])
 
     def test_a_diverter_runs_at_its_commanded_speed_and_direction(self):
-        d = Diverter(id="d", x=5.0, y=0.0, divertAngle=-90.0, speed=1.0)
+        d = Diverter(id="d", x=5.0, y=0.0, divertAngle=-90.0, speed=1.0, control="auto")
         self.assertEqual(logistics.diverter_motion(d), (1.0, -90.0))
         d.commandSpeed, d.commandAngle = 0.4, 90.0
         self.assertEqual(logistics.diverter_motion(d), (1.0, -90.0))       # auto: the layout's
@@ -201,6 +201,34 @@ class ManualModeTest(unittest.TestCase):
         engine.run_for(1.0)
         self.assertTrue(config.diverters[0].active)
         self.assertFalse(config.stoppers[0].isUp)
+
+
+class AtRestTest(unittest.TestCase):
+    """The simulator starts with the PLC's commands at rest: nothing moves
+    until the PLC (plc_mock.py or a real one) commands it."""
+
+    def test_plc_driven_components_start_at_rest(self):
+        config = load_config(DEMO)
+        config.belts[1].control = "manual"
+        manual_speed = config.belts[1].speed
+        io_signals.at_rest(config)
+        self.assertEqual([b.speed for b in config.belts[2:]], [0.0] * len(config.belts[2:]))
+        self.assertEqual(config.belts[1].speed, manual_speed)         # set by hand: left alone
+        self.assertEqual([d.control for d in config.diverters], ["plc"] * len(config.diverters))
+        self.assertFalse(any(a.release for a in config.accumulators))
+        self.assertTrue(all(b.directionAngle == load_config(DEMO).belts[i].directionAngle
+                            for i, b in enumerate(config.belts)))      # the flow direction stays
+        engine = PhysicsEngine(config)
+        engine.add_parcel(config.belts[0].x, config.belts[0].y, 0.3, 0.3)
+        engine.run_for(2.0)
+        self.assertEqual({round(b.actualSpeed, 3) for b in config.belts if b.control == "plc"}, {0.0})
+
+    def test_the_simulator_starts_that_way(self):
+        import inspect
+        import main
+        import sim_process
+        self.assertIn("io_signals.at_rest(config)", inspect.getsource(main.run_layout))
+        self.assertIn("io_signals.at_rest(config)", inspect.getsource(sim_process.simulation_main))
 
 
 class SimulatorInspectorTest(unittest.TestCase):
@@ -235,14 +263,14 @@ class SimulatorInspectorTest(unittest.TestCase):
     def source_button(self, option):
         return next(b for b, o in self.ui.io_source_buttons.items() if o == option)
 
-    def test_live_readouts_in_auto(self):
+    def test_live_readouts_until_manual(self):
         d = self.inspect("div_2")
         self.assertEqual(set(self.ui.io_source_buttons.values()), {"auto", "plc", "manual"})
-        self.assertTrue(self.source_button("auto").is_selected)
+        self.assertTrue(self.source_button("plc").is_selected)
         self.assertEqual(list(self.ui.io_rows), ["divert", "commandSpeed", "commandAngle", "active", "present",
                                                  "presentCode", "diverted"])
         widget = self.ui.io_rows["divert"][1]
-        self.assertIsInstance(widget, pygame_gui.elements.UILabel)       # not set by hand in auto
+        self.assertIsInstance(widget, pygame_gui.elements.UILabel)       # from the PLC: shown, not set here
         d.diverted = 5
         self.ui.update_live()
         self.assertEqual(self.ui.io_rows["diverted"][1].text, "5")
@@ -268,8 +296,8 @@ class SimulatorInspectorTest(unittest.TestCase):
         self.engine.run_for(0.1)
         self.assertTrue(d.active)
         self.assertEqual(logistics.diverter_motion(d)[1], 45.0)
-        self.press(self.source_button("auto"))                            # back: readouts again
-        self.assertEqual(d.control, "auto")
+        self.press(self.source_button("plc"))                             # back: readouts again
+        self.assertEqual(d.control, "plc")
         self.assertIsInstance(self.ui.io_rows["divert"][1], pygame_gui.elements.UILabel)
 
     def test_typing_a_value_is_not_a_shortcut(self):
@@ -305,7 +333,7 @@ class WindowApplyTest(unittest.TestCase):
         from visualizer import Renderer
         config = load_config(DEMO)
         renderer = Renderer(config, headless=True)
-        self.assertFalse(renderer.set_io("div_1", "divert", True))      # auto: not by hand
+        self.assertFalse(renderer.set_io("div_1", "divert", True))      # from the PLC: not by hand
         self.assertTrue(renderer.set_io("div_1", "control", "manual"))
         self.assertTrue(renderer.set_io("div_1", "divert", True))
         self.assertTrue(config.diverters[0].divert)
@@ -373,7 +401,7 @@ class DesignerPanelTest(unittest.TestCase):
         combo.setCurrentText("manual")                                  # a layout setting, undoable
         self.assertEqual(self.window.scene.selectedItems()[0].model.control, "manual")
         self.window.undo_stack.undo()
-        self.assertEqual(combo.currentText(), "auto")
+        self.assertEqual(combo.currentText(), "plc")                    # the default: the PLC drives it
         self.select("dws_1")                                            # a scanner: feedback only
         self.assertNotIn("control", self.panel.combos)
         self.assertEqual(self.group_rows(IO_FEEDBACK)[:2], ["noRead", "present"])

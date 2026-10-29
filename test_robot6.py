@@ -17,7 +17,8 @@ from physics import PhysicsEngine
 
 
 def layout(**robot):
-    args = dict(id="r1", x=0.0, y=0.0, pickX=1.2, pickY=0.0, placeX=0.0, placeY=1.2, cycleTime=1.5)
+    args = dict(id="r1", x=0.0, y=0.0, pickX=1.2, pickY=0.0, placeX=0.0, placeY=1.2, cycleTime=1.5,
+                control="auto")
     args.update(robot)
     return SimulatorConfig(robots=[RobotArm(**args)])
 

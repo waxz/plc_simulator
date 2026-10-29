@@ -5,6 +5,7 @@ import pygame
 from config_parser import load_config
 from visualizer import FRAME_LOCKED_MAX_SPEED, Renderer
 from physics import PhysicsEngine
+import io_signals
 from mqtt_data_exchange import MQTTSyncEngine, apply_exchange_config
 from metrics_store import MetricsStore
 from sim_runner import SimulationRunner
@@ -257,7 +258,9 @@ def run_layout(args, speed, link=None):
     if args.exchange_config:
         apply_exchange_config(config, args.exchange_config)
         print(f"Loaded exchange settings from {args.exchange_config}.")
-    print(f"Loaded {len(config.belts)} belts, {len(config.sensors)} sensors.")
+    io_signals.at_rest(config)      # nothing moves until the PLC (plc_mock.py or a real one) commands it
+    print(f"Loaded {len(config.belts)} belts, {len(config.sensors)} sensors. Belts and machines wait for the "
+          f"PLC's commands (plc_mock.py or a real PLC).")
 
     if args.sim_process and not args.headless:
         return run_with_simulation_process(args, config, speed, link)

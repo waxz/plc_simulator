@@ -77,7 +77,7 @@ class ScannerTest(unittest.TestCase):
 
 class DiverterTest(unittest.TestCase):
     def layout(self, **diverter):
-        args = dict(id="d", x=5.0, y=0.0, divertAngle=-90.0, destination=2)
+        args = dict(id="d", x=5.0, y=0.0, divertAngle=-90.0, destination=2, control="auto")
         args.update(diverter)
         c = line(diverters=[Diverter(**args)], sinks=[Sink(id="side", x=5.0, y=-3.5, width=1.5, height=1.0,
                                                           label="side")])
@@ -180,7 +180,7 @@ class TurntableTest(unittest.TestCase):
         c = SimulatorConfig(belts=[belt("in", 1.0, 0.0, 2.0), belt("tt", 2.75, 0.0, 1.5),
                                    belt("out", 2.75, 2.25, 3.0, rotation=90.0)],
                             turntables=[Turntable(id="t", x=2.75, y=0.0, radius=0.85, beltId="tt",
-                                                  turnSpeed=180.0)],
+                                                  turnSpeed=180.0, control="auto")],
                             sinks=[Sink(id="end", x=2.75, y=4.2, width=1.2, height=1.0, label="e")],
                             useSurfaceVelocity=True)
         e = PhysicsEngine(c)
@@ -245,15 +245,23 @@ class TransferTest(unittest.TestCase):
         self.assertIn("t/centered", outputs)
 
     def test_the_demo_pallet_loop_runs_on_rollers_and_transfers(self):
+        """Under the PLC program (plc_logic, what plc_mock.py runs): its
+        machines follow the PLC, so nothing moves without one."""
+        from plc_logic import make_controller
         random.seed(3)
         c = load_config("machines_demo.json")
         self.assertFalse([b for b in c.belts if b.type != "linear"])     # no curves
         self.assertEqual({b.surface for b in c.belts if b.id.startswith("loop_")}, {"roller"})
         e = PhysicsEngine(c)
-        e.run_for(60.0)
+        plc = make_controller(c, autostart=True)
+        while e.sim_time < 60.0:
+            plc.step(now=e.sim_time)
+            e.run_for(0.05)
         self.assertTrue(all(t.transferred >= 2 for t in c.transfers))
+        # Carried across, not turned (a turn would be 90 degrees; the PLC's scan
+        # leaves a fraction of a degree of play).
         for p in e.machines.pallets:
-            self.assertAlmostEqual(math.sin(p.body.angle - math.radians(p.model.rotation)), 0.0, places=4)
+            self.assertAlmostEqual(math.sin(p.body.angle - math.radians(p.model.rotation)), 0.0, delta=0.01)
         self.assertGreater(c.robots[0].cycles, 1)
 
 
@@ -321,8 +329,11 @@ class ExchangeTest(unittest.TestCase):
 
 class DemoTest(unittest.TestCase):
     def test_the_sorting_line_sorts_by_destination(self):
+        """The equipment's own controllers (control "auto"), no PLC."""
         random.seed(3)
         c = load_config("logistics_demo.json")
+        for device in (*c.diverters, *c.turntables, *c.accumulators):
+            device.control = "auto"
         e = PhysicsEngine(c)
         e.run_for(120.0)
         for chute in ("chute_1", "chute_2", "chute_3"):

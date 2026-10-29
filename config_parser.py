@@ -254,11 +254,12 @@ class LedIndicator(BaseModel):
     mode: int = Field(default=0, exclude=True)
 
 # ---------------------------------------------------------------------------
-# Machines (machines.py runs them in the simulation). Each one either runs
-# itself (control "auto": a small built-in controller, so a layout works
-# without a PLC), follows the PLC's command fields (control "plc") or the
-# ones set by hand (control "manual", see CommandSource) - its feedback
-# fields go to the PLC either way.
+# Machines (machines.py runs them in the simulation). Each one follows the
+# PLC's command fields (control "plc", the default: nothing moves without a
+# PLC - plc_mock.py's program, plc_logic.py, or a real one), the ones set by
+# hand (control "manual", see CommandSource), or runs itself (control
+# "auto": a small built-in controller, for a layout without a PLC) - its
+# feedback fields go to the PLC either way.
 # ---------------------------------------------------------------------------
 
 ControlMode = Literal["auto", "plc", "manual"]
@@ -305,7 +306,7 @@ class Stopper(BaseModel):
     label: str = ""
     color: str = "#dc2626"
     level: int = 0
-    control: ControlMode = "auto"
+    control: ControlMode = "plc"
     actuationTime: float = 0.15
     holdTime: float = 2.0
     releaseTime: float = 1.0
@@ -361,7 +362,7 @@ class RobotArm(BaseModel):
     pickLevel: int = 0
     placeLevel: int = 0
     placeTarget: Literal["any", "pallet"] = "any"
-    control: ControlMode = "auto"
+    control: ControlMode = "plc"
     mountHeight: float = 0.3  # m: pedestal under the arm
     toolLength: float = 0.18  # m: flange to the gripper pads (TCP)
     # Commands (PLC -> robot)
@@ -431,7 +432,7 @@ class Elevator(BaseModel):
     liftSpeed: float = 0.5
     label: str = ""
     color: str = "#0891b2"
-    control: ControlMode = "auto"
+    control: ControlMode = "plc"
     autoFrom: int = 0
     autoTo: int = 1
     targetLevel: int = 0                                   # command
@@ -444,8 +445,9 @@ class Elevator(BaseModel):
 
 # ---------------------------------------------------------------------------
 # Logistics equipment (logistics.py runs them): identification, sorting,
-# accumulation and safety. Like the machines above, each works by itself
-# (control "auto") or follows the PLC (control "plc").
+# accumulation and safety. Like the machines above, each follows the PLC
+# (control "plc", the default), commands set by hand ("manual") or works by
+# itself ("auto").
 # ---------------------------------------------------------------------------
 
 class Scanner(BaseModel):
@@ -508,7 +510,7 @@ class Diverter(BaseModel):
     label: str = ""
     color: str = "#f97316"
     level: int = 0
-    control: ControlMode = "auto"
+    control: ControlMode = "plc"
     divert: bool = False                                     # command: run
     commandSpeed: float = 0.0                                # command: m/s, 0 = `speed`
     commandAngle: float = 0.0                                # command: deg, 0 = `divertAngle`
@@ -539,7 +541,7 @@ class Turntable(BaseModel):
     label: str = ""
     color: str = "#64748b"
     level: int = 0
-    control: ControlMode = "auto"
+    control: ControlMode = "plc"
     autoFrom: int = 0
     autoTo: int = 1
     targetIndex: int = 0                                     # command
@@ -577,7 +579,7 @@ class Transfer(BaseModel):
     label: str = ""
     color: str = "#a3a3a3"
     level: int = 0
-    control: ControlMode = "auto"
+    control: ControlMode = "plc"
     transfer: bool = False                                   # command
     present: bool = Field(default=False, exclude=True)       # feedback
     centered: bool = Field(default=False, exclude=True)
@@ -603,7 +605,7 @@ class Accumulator(BaseModel):
     mode: Literal["singulation", "train"] = "singulation"
     label: str = ""
     color: str = "#22c55e"
-    control: ControlMode = "auto"
+    control: ControlMode = "plc"
     release: bool = True                                     # command
     zones: int = Field(default=0, exclude=True)              # feedback
     full: bool = Field(default=False, exclude=True)

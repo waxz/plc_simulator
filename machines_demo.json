@@ -409,7 +409,7 @@
       "label": "Feed stop",
       "color": "#dc2626",
       "level": 0,
-      "control": "auto",
+      "control": "plc",
       "actuationTime": 0.15,
       "holdTime": 60.0,
       "releaseTime": 1.0,
@@ -425,7 +425,7 @@
       "label": "Load stop",
       "color": "#dc2626",
       "level": 0,
-      "control": "auto",
+      "control": "plc",
       "actuationTime": 0.15,
       "holdTime": 6.0,
       "releaseTime": 1.5,
@@ -450,7 +450,7 @@
       "pickLevel": 0,
       "placeLevel": 0,
       "placeTarget": "pallet",
-      "control": "auto",
+      "control": "plc",
       "start": false
     }
   ],
@@ -468,7 +468,7 @@
       "liftSpeed": 0.6,
       "label": "Lift",
       "color": "#0891b2",
-      "control": "auto",
+      "control": "plc",
       "autoFrom": 0,
       "autoTo": 1,
       "targetLevel": 0

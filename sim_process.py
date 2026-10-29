@@ -143,6 +143,7 @@ def simulation_main(conn, settings: dict) -> None:
     config = load_config(settings["config"])
     if settings.get("exchange_config"):
         apply_exchange_config(config, settings["exchange_config"])
+    io_signals.at_rest(config)              # as main.run_layout: nothing moves before the PLC says so
     lock = threading.Lock()
     physics = PhysicsEngine(config, lock=lock)
     metrics_store = MetricsStore()
