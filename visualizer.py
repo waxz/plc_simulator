@@ -622,7 +622,8 @@ class Renderer:
     def _draw_flow(self, belt: Belt):
         """Chevrons pointing the way parcels go - only while the belt moves,
         so a glance tells running from stopped."""
-        speed = belt.actualSpeed if belt.drive is not None else devices.commanded_speed(belt)
+        speed = (belt.actualSpeed if belt.drive is not None or belt.commandFormat == "frequency"
+                 else devices.commanded_speed(belt))
         if abs(speed) < 0.01 or self._scale_val(belt.beltWidth) < 8:
             return
         size = max(3, min(9, self._scale_val(belt.beltWidth) // 4))

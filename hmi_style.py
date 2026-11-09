@@ -123,7 +123,7 @@ def apply_saved_theme() -> str:
 
 # -- property panels: one grouping for both windows -------------------------------
 
-PROPERTY_GROUP_ORDER = ("Identity", "Position", "Geometry", "Motion", "Signal", "Operation", "Display")
+PROPERTY_GROUP_ORDER = ("Identity", "Position", "Geometry", "Motion", "Drive", "Signal", "Operation", "Display")
 PROPERTY_GROUPS = {
     "id": "Identity", "label": "Identity", "sensorType": "Identity", "commandFormat": "Identity",
     "x": "Position", "y": "Position", "rotation": "Position",
@@ -145,6 +145,10 @@ PROPERTY_GROUPS = {
     "pickLevel": "Operation", "placeLevel": "Operation", "placeTarget": "Operation", "control": "Operation",
     "holdTime": "Operation", "releaseTime": "Operation", "beltId": "Operation", "pickSensorId": "Operation", "autoFrom": "Operation",
     "autoTo": "Operation",
+    # A belt's drive train (DriveConfig, edited as "drive.<field>").
+    "drive.motorRatedSpeed": "Drive", "drive.motorRatedFrequency": "Drive", "drive.gearRatio": "Drive",
+    "drive.transmissionRatio": "Drive", "drive.drumDiameter": "Drive", "drive.maxFrequency": "Drive",
+    "drive.rampUpTime": "Drive", "drive.rampDownTime": "Drive", "drive.encoderCountsPerRev": "Drive",
 }
 
 
@@ -163,6 +167,10 @@ PROPERTY_LABELS = {
     "placeX": "Place X", "placeY": "Place Y", "pickLevel": "Pick level", "placeLevel": "Place level",
     "placeTarget": "Place on", "control": "Control", "holdTime": "Hold time", "releaseTime": "Release time",
     "beltId": "Platform belt", "pickSensorId": "Pick sensor", "autoFrom": "Auto from", "autoTo": "Auto to",
+    "drive.motorRatedSpeed": "Motor speed", "drive.motorRatedFrequency": "Rated frequency",
+    "drive.gearRatio": "Gear ratio", "drive.transmissionRatio": "Chain ratio", "drive.drumDiameter": "Drum / roller dia.",
+    "drive.maxFrequency": "Max frequency", "drive.rampUpTime": "Ramp up", "drive.rampDownTime": "Ramp down",
+    "drive.encoderCountsPerRev": "Encoder counts/rev",
 }
 
 
@@ -175,6 +183,8 @@ PROPERTY_UNITS = {
     "placeX": " m", "placeY": " m", "mass": " kg", "liftSpeed": " m/s", "cycleTime": " s", "actuationTime": " s",
     "speedOverride": " %", "mountHeight": " m", "toolLength": " m",
     "holdTime": " s", "releaseTime": " s",
+    "drive.motorRatedSpeed": " rpm", "drive.motorRatedFrequency": " Hz", "drive.drumDiameter": " m",
+    "drive.maxFrequency": " Hz", "drive.rampUpTime": " s", "drive.rampDownTime": " s",
 }
 
 

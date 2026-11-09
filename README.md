@@ -648,6 +648,21 @@ See [drive_traction_plan.md](drive_traction_plan.md) for the design.
   "overloadTime", "atSpeedTolerance", "runningThreshold"}` turns it into
   `actualSpeed` (ramp + first-order lag), a UINT32 `encoderCount` that wraps
   and status bits. A belt without `drive` changes speed instantly, as before.
+- **Drive train** (`drivetrain.py`). A belt or roller conveyor can be driven
+  like a real one: a frequency inverter, a motor, a gearbox, an optional chain,
+  and the drive drum or the rollers. Its `drive` then also holds
+  `motorRatedSpeed` (rpm, default 1450) at `motorRatedFrequency` (Hz, 50),
+  `gearRatio`, `transmissionRatio` (chain after the gearbox, 1), `drumDiameter`
+  (m, the drum or a roller), `maxFrequency` (Hz, 50), `rampUpTime` /
+  `rampDownTime` (s from 0 to the rated frequency) and `encoderCountsPerRev`
+  (an encoder on the motor shaft). The surface speed follows from the motor:
+  `v = f · n_rated / f_rated / (gearRatio · transmissionRatio) / 60 · π · drumDiameter`,
+  e.g. 1450 rpm / 20 = 72.5 rpm at a 100 mm drum = 0.38 m/s at 50 Hz. The
+  inverter never exceeds `maxFrequency`. With `commandFormat: "frequency"` the
+  PLC commands the inverter in Hz; a belt without `gearRatio` / `drumDiameter`
+  gets them derived from its design speed (`speed`, reached at the rated
+  frequency). In the designer, choose Command "frequency" to edit the train
+  (group Drive).
 - **Traction** (`traction.py`). With `"tractionModel": "friction"`, parcels are
   dragged by friction capped at `Belt.friction` × m × g (`floorFriction` off belts),
   so starts, stops, slip and pushing come from physics. The default `"kinematic"`
@@ -671,11 +686,12 @@ How the simulated devices behave (`devices.py`, `drive.py`, `physics.py`):
 | Laser banner (`"laser_banner"`) | `laserCount`, `beamDistance`, the same timing / `invert` per beam | one bit per beam (beam *i* = bit *i*), each beam a segment across the sensor; `blockedBeams` (runtime) is how many are blocked - a parcel's size across the belt. |
 | Push button | `buttonType` "momentary" / "latching", `normallyClosed`, `key` | Click (or hold its `key` in the simulator window) to press. Momentary: pressed while held; latching (selector, E-stop): toggles per press. An NC contact (STOP / E-stop) reads 1 until pressed. |
 | LED | `packFormat` "bit" / "byte" | "bit": the PLC switches `isOn`. "byte": the PLC sends a mode - 0 off, 1 on, 2 blink 1 Hz, 3 blink 4 Hz. |
-| Belt motor, command | `commandFormat` "speed" / "vfd" | "speed": `speed` (signed, negative = reverse) + `directionAngle` REALs. "vfd": `run` + `reverse` BOOLs and `speed` (REAL, magnitude), like a frequency converter. |
-| Belt motor, feedback | `drive` (above) | `running`, `atSpeed`, `reversing`, `fault`, `actualSpeed`, `encoderCount`. **Overload**: parcels on the belt heavier than `maxLoad` kg for `overloadTime` s trip the drive - it coasts to a stop and resets when the run command is removed. A faulted belt has a red outline in the simulator window. |
+| Belt motor, command | `commandFormat` "speed" / "vfd" / "frequency" | "speed": `speed` (signed, negative = reverse) + `directionAngle` REALs. "vfd": `run` + `reverse` BOOLs and `speed` (REAL, magnitude, m/s). "frequency": `run` + `reverse` BOOLs and `frequency` (REAL, Hz) to the inverter; the surface speed follows from the drive train (above), and `speed` is the design speed the PLC converts to Hz. |
+| Belt motor, feedback | `drive` (above) | `running`, `atSpeed`, `reversing`, `fault`, `actualSpeed`, `encoderCount`; a "frequency" belt also `outputFrequency` (Hz) and `motorSpeed` (rpm). **Overload**: parcels on the belt heavier than `maxLoad` kg for `overloadTime` s trip the drive - it coasts to a stop and resets when the run command is removed. A faulted belt has a red outline in the simulator window. |
 
 `plc_mock.py`'s program (`plc_logic.py`) understands all of these: NC buttons,
-light-on sensors, vfd belts, and a drive fault in the feedback stops the line
+light-on sensors, vfd belts, belts commanded in Hz (it converts each belt's
+design speed with the belt's drive train), and a drive fault in the feedback stops the line
 until it has reset and Start is pressed.
 
 ### Machines: pallets, stoppers, robot arms, elevators

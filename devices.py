@@ -18,9 +18,11 @@ LEDs (LedIndicator)
 Motors (Belt)
   commanded_speed(): the setpoint the drive ramps to. commandFormat "speed":
   `speed` (signed). "vfd": `speed` magnitude, only while `run`, negative
-  when `reverse`; 0 while the drive is faulted. drive.py turns it into the
-  actual speed and the feedback (actualSpeed, encoderCount, running,
-  atSpeed, reversing, fault).
+  when `reverse`. "frequency": `frequency` (Hz) through the drive train
+  (drivetrain.py), only while `run`, negative when `reverse`. 0 while the
+  drive is faulted. drive.py turns it into the actual speed and the
+  feedback (actualSpeed, encoderCount, running, atSpeed, reversing, fault;
+  outputFrequency and motorSpeed with a drive train).
 
 Sensors (Sensor)
   condition(): the sensor's output stage on top of the raw beam geometry
@@ -29,6 +31,7 @@ Sensors (Sensor)
 """
 from typing import List, Sequence
 
+import drivetrain
 from config_parser import Belt, ControlButton, LedIndicator, Sensor
 
 BLINK_HZ = {2: 1.0, 3: 4.0}
@@ -93,6 +96,11 @@ def commanded_speed(belt: Belt) -> float:
     """The signed speed setpoint the drive follows (m/s)."""
     if belt.fault:
         return 0.0
+    if belt.commandFormat == "frequency":
+        if not belt.run:
+            return 0.0
+        magnitude = drivetrain.train_of(belt).speed_for_frequency(abs(float(belt.frequency or 0.0)))
+        return -magnitude if belt.reverse else magnitude
     if belt.commandFormat == "vfd":
         if not belt.run:
             return 0.0

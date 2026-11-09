@@ -23,10 +23,11 @@ from math_utils import get_belt_polygon, point_in_arc, point_in_polygon
 
 def belt_surface_speed(belt: Belt) -> float:
     """Signed surface speed physics should use: the drive's actual speed when
-    the belt has a drive model, else the commanded speed (ideal drive) -
-    devices.commanded_speed: the signed speed, or the vfd run/reverse/speed
-    command; 0 while faulted."""
-    if belt.drive is not None:
+    the belt has a drive model or is commanded in Hz (its speed comes from
+    the drive train, limited by the inverter), else the commanded speed
+    (ideal drive) - devices.commanded_speed: the signed speed, or the vfd
+    run/reverse/speed command; 0 while faulted."""
+    if belt.drive is not None or belt.commandFormat == "frequency":
         return belt.actualSpeed
     held = belt.__pydantic_private__          # a safety circuit / accumulation zone holding it (fast path)
     if held["_safety_stop"] or held["_zone_hold"]:

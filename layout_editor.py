@@ -93,7 +93,8 @@ from config_parser import (
     Belt, ControlButton, Elevator, LedIndicator, Pallet, RobotArm, Sensor, SimulatorConfig, Sink, Source, Stopper,
     load_config,
 )
-from config_parser import Accumulator, Diverter, GuardDoor, SafetyCircuit, Scanner, Transfer, Turntable
+from config_parser import Accumulator, Diverter, DriveConfig, GuardDoor, SafetyCircuit, Scanner, Transfer, Turntable
+import drivetrain
 import equipment_geometry as geo
 import hmi_style as hmi
 import io_signals
@@ -4019,7 +4020,9 @@ def _field_specs_for(item: PlacedItem):
         # instead of showing a control that can't do anything.
         specs.append(("float", "rotation", "Rotation", -360.0, 360.0, 1.0))
     if isinstance(item, BeltItem):
-        specs.append(("combo", "commandFormat", "Command", ["speed", "vfd"]))
+        specs.append(("combo", "commandFormat", "Command", ["speed", "vfd", "frequency"]))
+        if item.model.commandFormat == "frequency":
+            specs += _DRIVE_TRAIN_SPECS
         if item.model.type in ("linear", "curved") and not item.is_custom_shape():
             specs.append(("combo", "surface", "Surface", ["belt", "roller"]))
             if item.model.surface == "roller":
@@ -4175,6 +4178,58 @@ def _parse_list(attr: str, text: str):
 
 # Units shown in the property grid's number boxes.
 _FIELD_UNITS = hmi.PROPERTY_UNITS
+
+# A belt's drive train (DriveConfig), shown for a belt commanded in Hz. The
+# rows edit "drive.<field>": the belt gets a DriveConfig on the first edit.
+_DRIVE_TRAIN_SPECS = [
+    ("float", "drive.motorRatedSpeed", "Motor speed", 100.0, 10000.0, 10.0),
+    ("float", "drive.motorRatedFrequency", "Rated frequency", 1.0, 400.0, 1.0),
+    ("float", "drive.gearRatio", "Gear ratio", 1.0, 1000.0, 0.5),
+    ("float", "drive.transmissionRatio", "Chain ratio", 0.1, 100.0, 0.1),
+    ("float", "drive.drumDiameter", "Drum / roller dia.", 0.01, 2.0, 0.005),
+    ("float", "drive.maxFrequency", "Max frequency", 1.0, 400.0, 1.0),
+    ("float", "drive.rampUpTime", "Ramp up", 0.0, 60.0, 0.1),
+    ("float", "drive.rampDownTime", "Ramp down", 0.0, 60.0, 0.1),
+    ("int", "drive.encoderCountsPerRev", "Encoder counts/rev", 0, 1000000),
+]
+# Drive fields where 0 in the grid means "not set" (None in the model).
+_DRIVE_ZERO_IS_NONE = {"rampUpTime", "rampDownTime", "encoderCountsPerRev"}
+
+
+def _model_value(model, attr: str):
+    """A field's stored value; "drive.<field>" reads the belt's DriveConfig
+    (its default while the belt has none)."""
+    if not attr.startswith("drive."):
+        return getattr(model, attr)
+    name = attr[len("drive."):]
+    if model.drive is None:
+        return DriveConfig.model_fields[name].default
+    return getattr(model.drive, name)
+
+
+def _shown_value(model, attr: str):
+    """The value the grid shows: as stored, except a drive train value left
+    unset, which shows what the simulation derives (drivetrain.train_of)."""
+    value = _model_value(model, attr)
+    if value is None and attr in ("drive.gearRatio", "drive.drumDiameter"):
+        train = drivetrain.train_of(model)
+        if train is not None:
+            return train.gear_ratio if attr == "drive.gearRatio" else train.drum_diameter
+    if value is None and attr[len("drive."):] in _DRIVE_ZERO_IS_NONE:
+        return 0
+    return value
+
+
+def _set_model_value(model, attr: str, value) -> None:
+    if not attr.startswith("drive."):
+        setattr(model, attr, value)
+        return
+    name = attr[len("drive."):]
+    if model.drive is None:
+        model.drive = DriveConfig()
+    if name in _DRIVE_ZERO_IS_NONE and value == 0:
+        value = None
+    setattr(model.drive, name, value)
 
 # The property grid's PLC I/O sections (PropertiesPanel._build_io).
 IO_GROUP = "PLC I/O"
@@ -4392,7 +4447,7 @@ class PropertiesPanel(QWidget):
             self.id_edit.blockSignals(False)
 
         for attr, widget in self.spins.items():
-            value = getattr(item.model, attr)
+            value = _shown_value(item.model, attr)
             if value is None:
                 value = self._OPTIONAL_FIELD_DEFAULTS.get(attr, 0)
             widget.setValue(value)
@@ -4425,7 +4480,7 @@ class PropertiesPanel(QWidget):
         value until the next selection change."""
         if item is not self.current:
             return
-        value = getattr(item.model, attr, None)
+        value = _shown_value(item.model, attr) if attr.startswith("drive.") else getattr(item.model, attr, None)
         for widgets, setter in (
             (self.spins, lambda w, v: w.setValue(v if v is not None else self._OPTIONAL_FIELD_DEFAULTS.get(attr, 0))),
             (self.texts, lambda w, v: w.setText(_field_text(attr, v))),
@@ -4443,7 +4498,7 @@ class PropertiesPanel(QWidget):
         item = self.current
         if not item:
             return
-        old_value = getattr(item.model, attr)
+        old_value = _model_value(item.model, attr)
         if old_value == value:
             return
         self._push_property_change(item, attr, old_value, value, self._do_apply_field)
@@ -4455,7 +4510,7 @@ class PropertiesPanel(QWidget):
         field actually affects - not all of setPos/setRotation/set_size on
         every keystroke, which used to re-trigger the drag-snap logic (and
         its guide-line overlay) even for unrelated edits like `speed`."""
-        setattr(item.model, attr, value)
+        _set_model_value(item.model, attr, value)
         if attr in ("x", "y"):
             item.setPos(to_scene_pos(item.model.x, item.model.y))
         elif attr == "rotation":
@@ -4546,7 +4601,7 @@ class PropertiesPanel(QWidget):
             item.refresh_shape()                # e.g. a diverter's type changes what it draws
         item.update()
         if item is self.current:
-            if attr in ("sensorType", "surface"):
+            if attr in ("sensorType", "surface", "commandFormat"):
                 # Adding/removing laserCount/beamDistance rows here (mid-
                 # signal, inside this very combo box's own currentTextChanged
                 # handler) would delete a widget while it's still emitting -

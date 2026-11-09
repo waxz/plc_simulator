@@ -46,7 +46,7 @@ KIND_FOR_MODEL = {cls: kind for kind, cls in MODEL_FOR_KIND.items()}
 
 # Runtime state that must not travel with a template.
 _RUNTIME_FIELDS = {"id", "isActive", "sensor_states", "detectedWord", "isOn", "actualSpeed", "encoderCount",
-                   "risingEdges"}
+                   "outputFrequency", "motorSpeed", "risingEdges"}
 
 
 @dataclass

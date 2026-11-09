@@ -240,10 +240,12 @@ def paddng_component(config: SimulatorConfig, sensor_id: Optional[Union[str, Lis
            - a belt (motor), by `direction`:
                "in"  (PLC -> simulator, the command): commandFormat "vfd":
                      run + reverse bits (in step 1) and speed REAL;
+                     "frequency": run + reverse bits and frequency REAL (Hz);
                      "speed": speed + directionAngle REALs
                "out" (simulator -> PLC, the feedback): running, atSpeed,
                      reversing, fault bits (in step 1), then actualSpeed
-                     REAL + encoderCount DWORD
+                     REAL + encoderCount DWORD; a "frequency" belt adds
+                     outputFrequency (Hz) and motorSpeed (rpm) REALs
 
     Padding entries are named padding_<n>/bit, numbered through the mapping.
     """
@@ -420,17 +422,25 @@ def machine_fields(machine, direction: str) -> Tuple[List[Tuple[ByteType, str]],
 BELT_COMMAND_FIELDS: List[Tuple[ByteType, str]] = [(ByteType.FLOAT, "speed"), (ByteType.FLOAT, "directionAngle")]
 VFD_COMMAND_BITS: List[Tuple[ByteType, str]] = [(ByteType.BIT, "run"), (ByteType.BIT, "reverse")]
 VFD_COMMAND_FIELDS: List[Tuple[ByteType, str]] = [(ByteType.FLOAT, "speed")]
+FREQUENCY_COMMAND_FIELDS: List[Tuple[ByteType, str]] = [(ByteType.FLOAT, "frequency")]
 BELT_STATUS_BITS: List[Tuple[ByteType, str]] = [
     (ByteType.BIT, "running"), (ByteType.BIT, "atSpeed"), (ByteType.BIT, "reversing"), (ByteType.BIT, "fault")]
 BELT_FEEDBACK_FIELDS: List[Tuple[ByteType, str]] = [(ByteType.FLOAT, "actualSpeed"), (ByteType.UINT32, "encoderCount")]
+# A belt commanded in Hz also reports what an inverter does: its output
+# frequency (Hz) and the motor speed (rpm).
+FREQUENCY_FEEDBACK_FIELDS: List[Tuple[ByteType, str]] = BELT_FEEDBACK_FIELDS + [
+    (ByteType.FLOAT, "outputFrequency"), (ByteType.FLOAT, "motorSpeed")]
 
 
 def belt_fields(belt, direction: str) -> Tuple[List[Tuple[ByteType, str]], List[Tuple[ByteType, str]]]:
     """(bits, values) a belt contributes to a frame: its command ("in") or
     its feedback ("out") - see paddng_component()."""
+    command_format = getattr(belt, "commandFormat", "speed")
     if direction == "out":
-        return BELT_STATUS_BITS, BELT_FEEDBACK_FIELDS
-    if getattr(belt, "commandFormat", "speed") == "vfd":
+        return BELT_STATUS_BITS, (FREQUENCY_FEEDBACK_FIELDS if command_format == "frequency" else BELT_FEEDBACK_FIELDS)
+    if command_format == "frequency":
+        return VFD_COMMAND_BITS, FREQUENCY_COMMAND_FIELDS
+    if command_format == "vfd":
         return VFD_COMMAND_BITS, VFD_COMMAND_FIELDS
     return [], BELT_COMMAND_FIELDS
 

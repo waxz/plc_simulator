@@ -100,6 +100,8 @@ def device_type(component, direction: Optional[str]) -> Optional[str]:
     if kind is not None:
         return f"{kind.st_name}_{side}"
     if isinstance(component, Belt):
+        if component.commandFormat == "frequency":
+            return f"BeltFreq_{side}"
         if side == "Command" and component.commandFormat == "vfd":
             return "BeltVfd_Command"
         return f"BeltDrive_{side}"

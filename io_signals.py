@@ -183,7 +183,8 @@ def apply(config, component_id: str, name: str, value: Any) -> Optional[str]:
 
 def at_rest(config) -> None:
     """Every command the PLC gives ("plc" components) at rest: belts and
-    rollers stopped (speed 0, run off), every command bit off. The simulator
+    rollers stopped (speed 0, or frequency 0 for a belt commanded in Hz; run
+    off), every command bit off. The simulator
     starts this way, so nothing moves until the PLC - plc_mock.py or a real
     one - sends its first frame; the layout's own values (a belt's design
     speed) are what the PLC program reads from the layout file."""
@@ -193,7 +194,10 @@ def at_rest(config) -> None:
             if getattr(component, "control", None) != "plc":
                 continue
             if isinstance(component, cp.Belt):
-                component.speed = 0.0
+                if component.commandFormat == "frequency":
+                    component.frequency = 0.0   # its `speed` is the design speed the drive train derives from
+                else:
+                    component.speed = 0.0
             for signal in signals(component):
                 if signal.direction == "command" and signal.byte_type == ByteType.BIT and not signal.indexed:
                     setattr(component, signal.name, False)

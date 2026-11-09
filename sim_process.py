@@ -31,8 +31,8 @@ from device_kinds import DEVICE_KINDS
 from physics import ParcelView
 
 # Runtime fields copied from the simulation to the window's mirror.
-BELT_FIELDS = ("speed", "run", "reverse", "actualSpeed", "running", "fault", "atSpeed", "encoderCount", "load",
-               "level", "directionAngle", "reversing")
+BELT_FIELDS = ("speed", "run", "reverse", "frequency", "actualSpeed", "running", "fault", "atSpeed", "encoderCount",
+               "outputFrequency", "motorSpeed", "load", "level", "directionAngle", "reversing")
 # Machines' runtime fields, per config list: every PLC signal of each device
 # kind plus what the window draws (device_kinds.py), and the pallets' loads.
 MACHINE_FIELDS = {"pallets": ("loadCount",),

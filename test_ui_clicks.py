@@ -115,6 +115,34 @@ class EditorClicksTest(unittest.TestCase):
         QTest.keyClick(width, Qt.Key_Return)
         self.assertAlmostEqual(self.item("button_1_1_2").model.width, 0.9)
 
+    def test_a_belt_commanded_in_hz_shows_its_drive_train(self):
+        import drivetrain
+        self.click_on_canvas("belt_1_1_1")
+        panel = self.window.properties_panel
+        self.assertNotIn("drive.gearRatio", panel.spins)
+        panel.combos["commandFormat"].setCurrentText("frequency")
+        QTest.qWait(50)                                  # the rows are rebuilt on the next tick
+        panel = self.window.properties_panel
+        belt = self.item("belt_1_1_1").model
+        self.assertEqual(belt.commandFormat, "frequency")
+        groups = [panel.tree.topLevelItem(i).text(0) for i in range(panel.tree.topLevelItemCount())]
+        self.assertIn("Drive", groups)
+        self.assertEqual(panel.spins["drive.motorRatedSpeed"].suffix(), " rpm")
+        self.assertEqual(panel.spins["drive.maxFrequency"].suffix(), " Hz")
+        # not set yet: the grid shows the gear ratio the simulation derives
+        self.assertAlmostEqual(panel.spins["drive.gearRatio"].value(), drivetrain.train_of(belt).gear_ratio, places=3)
+        self.assertIsNone(belt.drive.gearRatio if belt.drive is not None else None)
+
+        panel.spins["drive.gearRatio"].setValue(20.0)
+        self.assertEqual(belt.drive.gearRatio, 20.0)
+        self.assertAlmostEqual(drivetrain.train_of(belt).gear_ratio, 20.0)
+        self.window.undo_stack.undo()
+        self.assertIsNone(belt.drive.gearRatio)
+
+        panel.combos["commandFormat"].setCurrentText("speed")
+        QTest.qWait(50)
+        self.assertNotIn("drive.gearRatio", self.window.properties_panel.spins)
+
     def test_sensor_signal_settings_are_editable(self):
         self.click_on_canvas("sensor_1_1_1")
         panel = self.window.properties_panel

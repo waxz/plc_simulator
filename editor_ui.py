@@ -374,7 +374,11 @@ class EditorUI:
         """Readouts that change while the simulation runs: {name: text}."""
         if isinstance(item, Belt):
             drive = "FAULT" if item.fault else ("running" if item.running else "stopped")
-            return {"Drive": drive, "Actual speed": f"{item.actualSpeed:.2f} m/s"}
+            values = {"Drive": drive, "Actual speed": f"{item.actualSpeed:.2f} m/s"}
+            if item.commandFormat == "frequency":
+                values["Output frequency"] = f"{item.outputFrequency:.1f} Hz"
+                values["Motor speed"] = f"{item.motorSpeed:.0f} rpm"
+            return values
         if isinstance(item, Sensor):
             # The conditioned output (delays, NC) as the PLC gets it: True/False
             # or a "0"/"1" string, one character per beam.

@@ -182,8 +182,27 @@ Each component's fields depend on its kind:
 | Lamp (LED) | - | `isOn` BOOL (`packFormat` byte: `mode` BYTE - 0 off, 1 on, 2/3 blink) |
 | Belt / roller conveyor, `commandFormat` "speed" | - | `speed` REAL (m/s, signed), `directionAngle` REAL |
 | Belt / roller conveyor, `commandFormat` "vfd" | - | `run` BOOL, `reverse` BOOL, `speed` REAL |
-| Belt feedback (`beltFeedback` on; own frame) | `running`, `atSpeed`, `reversing`, `fault` BOOL; `actualSpeed` REAL, `encoderCount` UDINT | - |
+| Belt / roller conveyor, `commandFormat` "frequency" | - | `run` BOOL, `reverse` BOOL, `frequency` REAL (Hz to the inverter) |
+| Belt feedback (`beltFeedback` on; own frame) | `running`, `atSpeed`, `reversing`, `fault` BOOL; `actualSpeed` REAL, `encoderCount` UDINT; a "frequency" belt also `outputFrequency` REAL (Hz), `motorSpeed` REAL (rpm) | - |
 | Machines and logistics devices | see 3.3 | see 3.3 |
+
+A belt commanded in Hz is driven through its drive train (`drivetrain.py`):
+the PLC converts the surface speed it wants into the inverter frequency with
+the drive's nameplate data, as on a real line. With the train in the layout's
+`drive` settings:
+
+```
+// m/s per Hz: motor rpm per Hz, through the gearbox and the chain, at the drum
+speedPerHz := motorRatedSpeed / motorRatedFrequency / (gearRatio * transmissionRatio) / 60.0 * 3.14159265 * drumDiameter;
+cmd.run := running;
+cmd.reverse := speed < 0.0;
+cmd.frequency := ABS(speed) / speedPerHz;     // the inverter caps it at maxFrequency
+```
+
+A "frequency" belt without `gearRatio` and `drumDiameter` runs its design
+speed (`speed` in the layout, else 1 m/s) at the rated frequency, so then
+`cmd.frequency := ABS(speed) / designSpeed * motorRatedFrequency`. The
+feedback's `outputFrequency` and `motorSpeed` are what the inverter reports.
 
 Ids are the component ids of the layout (`div_1`, `infeed`, ...). In the
 generated ST each component is a STRUCT member with its id as the name, so

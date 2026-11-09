@@ -23,7 +23,9 @@ Behaviour, once per scan (step()):
   Belts: running, no jam, no drive fault -> each belt's design speed (its
     speed in the layout file, 1 m/s where that is 0; negative = reverse),
     else stopped. commandFormat "speed": `speed` (signed); "vfd": `run`,
-    `reverse` and `speed` (magnitude).
+    `reverse` and `speed` (magnitude); "frequency": `run`, `reverse` and
+    `frequency`, the Hz that give the design speed through the belt's drive
+    train (drivetrain.py).
   Drive faults (Belt.fault in the motor feedback, BELT_FEEDBACK frame):
     stop the line; it can be started again once every fault has cleared
     (a drive resets when its run command is removed).
@@ -52,6 +54,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Set
 
 import devices
+import drivetrain
 import logistics
 import machines
 from config_parser import SimulatorConfig
@@ -110,9 +113,18 @@ def _design_speed(belt) -> float:
     speed = float(belt.speed or 0.0)
     if abs(speed) < 1e-9:
         speed = DEFAULT_SPEED
-    if belt.commandFormat == "vfd" and belt.reverse:
+    if belt.commandFormat in ("vfd", "frequency") and belt.reverse:
         speed = -abs(speed)
     return speed
+
+
+def _command_frequency(belt, run: bool, nominal: float) -> None:
+    """Command a belt that takes Hz (commandFormat "frequency") as a PLC does
+    with the drive's nameplate data: run / reverse, and the inverter
+    frequency that gives `nominal` m/s at the drum (drivetrain.py)."""
+    belt.run = run
+    belt.reverse = nominal < 0
+    belt.frequency = drivetrain.train_of(belt).frequency_for_speed(abs(nominal))
 
 
 CHUTE_SWAP_S = 5.0     # a full chute without an empty time: emptied this long after it fills
@@ -155,7 +167,9 @@ def _run_platform_belt(control: "MachineControl", belt_id: Optional[str], run: b
     if belt is None:
         return
     nominal = scan.speeds.get(belt.id, DEFAULT_SPEED)
-    if belt.commandFormat == "vfd":
+    if belt.commandFormat == "frequency":
+        _command_frequency(belt, run, nominal)
+    elif belt.commandFormat == "vfd":
         belt.run, belt.speed = run, abs(nominal)
     else:
         belt.speed = nominal if run else 0.0
@@ -450,7 +464,9 @@ class DeliveryController:
         run = self.running and self.jammed is None and not self.faulted
         for belt in self.config.belts:
             nominal = self.speeds.get(belt.id, DEFAULT_SPEED)
-            if belt.commandFormat == "vfd":
+            if belt.commandFormat == "frequency":
+                _command_frequency(belt, run, nominal)
+            elif belt.commandFormat == "vfd":
                 belt.run = run
                 belt.reverse = nominal < 0
                 belt.speed = abs(nominal)
@@ -763,7 +779,9 @@ class LineController:
         for line in self.lines.values():
             for belt in line.belts:
                 nominal = self.speeds.get(belt.id, DEFAULT_SPEED)
-                if belt.commandFormat == "vfd":
+                if belt.commandFormat == "frequency":
+                    _command_frequency(belt, line.moving, nominal)
+                elif belt.commandFormat == "vfd":
                     belt.run = line.moving
                     belt.reverse = nominal < 0
                     belt.speed = abs(nominal)

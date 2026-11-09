@@ -21,6 +21,26 @@ class DriveConfig(BaseModel):
     # (m/s) while running; running when |actual| > runningThreshold (m/s).
     atSpeedTolerance: float = 0.05
     runningThreshold: float = 0.01
+    # The drive train (drivetrain.py): inverter -> motor -> gearbox ->
+    # chain / belt transmission -> drive drum or rollers. With gearRatio and
+    # drumDiameter set, the surface speed follows from the motor speed:
+    # v = f * motorRatedSpeed / motorRatedFrequency / (gearRatio *
+    # transmissionRatio) / 60 * pi * drumDiameter. A belt commanded in Hz
+    # (commandFormat "frequency") always has a train: missing values are
+    # derived from its design speed (see drivetrain.train_of).
+    motorRatedSpeed: float = 1450.0       # rpm at motorRatedFrequency (4-pole motor, rated slip)
+    motorRatedFrequency: float = 50.0     # Hz
+    gearRatio: Optional[float] = None     # gearbox i = motor rpm / output shaft rpm
+    transmissionRatio: float = 1.0        # chain / belt after the gearbox (1 = drum on the gearbox shaft)
+    drumDiameter: Optional[float] = None  # m, the drive drum (belt) or a roller (roller conveyor)
+    maxFrequency: float = 50.0            # Hz, the inverter's output limit: limits the surface speed
+    # The inverter's ramps, in seconds from 0 to motorRatedFrequency (as a
+    # VFD sets them): with a train they replace accel / decel.
+    rampUpTime: Optional[float] = None
+    rampDownTime: Optional[float] = None
+    # An encoder on the motor shaft, counts per revolution; None = a
+    # measuring wheel on the surface, countsPerM.
+    encoderCountsPerRev: Optional[int] = None
 
 
 class PathNode(BaseModel):
@@ -86,10 +106,17 @@ class Belt(BaseModel):
     #   "vfd"   - like a frequency converter: `run` and `reverse` command
     #             bits plus `speed` as the magnitude; on the wire: run BOOL,
     #             reverse BOOL (with the other bits), speed REAL
-    commandFormat: Literal["speed", "vfd"] = "speed"
+    #   "frequency" - a real frequency inverter: `run`, `reverse` and
+    #             `frequency` (Hz); the surface speed follows from the drive
+    #             train (drivetrain.py, DriveConfig). `speed` is then the
+    #             design speed the PLC converts to Hz. On the wire: run BOOL,
+    #             reverse BOOL, frequency REAL; feedback adds outputFrequency
+    #             (Hz) and motorSpeed (rpm)
+    commandFormat: Literal["speed", "vfd", "frequency"] = "speed"
     control: CommandSource = "plc"
     run: bool = False
     reverse: bool = False
+    frequency: float = 0.0          # Hz, the "frequency" command (magnitude; `reverse` sets the sign)
     # `speed` is the commanded setpoint (written by the PLC). The drive model
     # turns it into `actualSpeed`, which is what physics uses.
     drive: Optional[DriveConfig] = None
@@ -112,6 +139,8 @@ class Belt(BaseModel):
     atSpeed: bool = Field(default=False, exclude=True)
     reversing: bool = Field(default=False, exclude=True)
     fault: bool = Field(default=False, exclude=True)
+    outputFrequency: float = Field(default=0.0, exclude=True)  # Hz, the inverter's ramped output (signed)
+    motorSpeed: float = Field(default=0.0, exclude=True)       # rpm, from the surface speed through the train
     load: float = Field(default=0.0, exclude=True)       # kg of parcels on the belt
     _overload_s: float = PrivateAttr(default=0.0)
     _drive_ref: float = PrivateAttr(default=0.0)
