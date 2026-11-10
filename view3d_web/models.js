@@ -438,7 +438,25 @@ export function setScanner(unit, [present, code, noRead]) {
 //           rubber wheels that lift and steer to the divert angle, its drive
 //           box and gear motor under the belt
 const DIV = { plateT: 0.04, plateFraction: 0.8, reach: 0.85, bodyW: 0.22, bodyGap: 0.08, bodyExtra: 0.12,
-              rodFraction: 0.3, pitchX: 0.15, pitchY: 0.12, wheelR: 0.035, wheelT: 0.022, inset: 0.9 };
+              rodFraction: 0.3, pitchX: 0.15, pitchY: 0.12, wheelR: 0.04, wheelT: 0.024, inset: 0.9,
+              wheelLift: 0.025 };
+const WHEEL = 0xd97706, WHEEL_DARK = 0x7c3a06;      // polyurethane wheels: two-tone tread, so they are seen to roll
+
+// A wheel (axle along y), its tread in alternating colours around it.
+function wheelGeometry() {
+  const geo = new THREE.CylinderGeometry(DIV.wheelR, DIV.wheelR, DIV.wheelT, 12).toNonIndexed();
+  const pos = geo.attributes.position, colors = [];
+  const a = new THREE.Color(WHEEL), b = new THREE.Color(WHEEL_DARK);
+  for (let i = 0; i < pos.count; i += 3) {                    // per triangle: its sector around the axle
+    let x = 0, z = 0;
+    for (let k = 0; k < 3; k++) { x += pos.getX(i + k); z += pos.getZ(i + k); }
+    const sector = Math.floor(((Math.atan2(z, x) + Math.PI) / (2 * Math.PI)) * 6) % 2;
+    const c = sector ? a : b;
+    for (let k = 0; k < 3; k++) colors.push(c.r, c.g, c.b);
+  }
+  geo.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+  return geo;
+}
 const ALU = 0xc3cad2, RUBBER = 0x1d2025;
 
 function statusLamp() {
@@ -515,14 +533,20 @@ function buildWheelModule(d, g, unit, color) {
   paint.position.z = 0.0075;
   paint.rotation.z = deg(d.angle);
   g.add(paint);
-  // Rows of rubber wheels (axles along local y: they roll along x until steered).
+  // Rows of wheels (axles along local y: they roll along x until steered),
+  // each in a slot of the deck that turns with it - the steer angle is seen
+  // from above even with the wheels down.
   const nx = Math.max(2, Math.round(d.w * DIV.inset / DIV.pitchX)), ny = Math.max(2, Math.round(d.h * DIV.inset / DIV.pitchY));
   const w = d.w * DIV.inset, h = d.h * DIV.inset, centres = [];
   for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) centres.push([(i + 0.5) / nx * w - w / 2, (j + 0.5) / ny * h - h / 2]);
-  const wheels = new THREE.InstancedMesh(new THREE.CylinderGeometry(DIV.wheelR, DIV.wheelR, DIV.wheelT, 16),
-                                         mat(RUBBER, { roughness: 0.85 }), centres.length);
+  const wheels = new THREE.InstancedMesh(wheelGeometry(),
+                                         new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7 }),
+                                         centres.length);
   wheels.castShadow = wheels.receiveShadow = true;
   g.add(wheels);
+  const slots = new THREE.InstancedMesh(new THREE.BoxGeometry(2 * DIV.wheelR + 0.014, DIV.wheelT + 0.012, 0.002),
+                                        new THREE.MeshBasicMaterial({ color: 0x15181c }), centres.length);
+  g.add(slots);
   // Drive box and gear motor under the belt, a status lamp at the side.
   g.add(cuboid(d.w * 0.8, d.h * 0.8, 0.1, mat(DARK), 0, 0, -0.24));
   const motor = cylX(0.055, 0.22, mat(color, { metalness: 0.3, roughness: 0.45 }), 20);
@@ -532,7 +556,8 @@ function buildWheelModule(d, g, unit, color) {
   const lamp = statusLamp();
   lamp.position.set(d.w / 2 - 0.05, -(d.h / 2 + 0.04), 0.02);
   g.add(lamp);
-  Object.assign(unit, { wheels, centres, lamp, paint, steer: deg(Math.max(-60, Math.min(60, d.angle))) });
+  Object.assign(unit, { wheels, slots, centres, lamp, paint, roll: 0, speed: 0,
+                        steer: deg(Math.max(-60, Math.min(60, d.angle))) });
 }
 
 export function buildDiverter(d) {
@@ -549,9 +574,11 @@ export function buildDiverter(d) {
 }
 
 // Live: [active, the angle it is told to steer at (divertAngle + commandAngle),
-// where its wheels point now] - the wheels swivel in the simulation.
-export function setDiverter(unit, [active, angle, wheel]) {
+// where its wheels point now, parcels diverted, the commanded speed] - the
+// wheels swivel in the simulation and roll at the speed while up.
+export function setDiverter(unit, [active, angle, wheel, _count, speed]) {
   unit.target = active ? 1 : 0;
+  unit.speed = speed || 0;
   if (unit.wheels && angle != null) {
     unit.paint.rotation.z = deg(angle);                 // the arrow shows where it sends them
     unit.live = wheel != null;
@@ -567,15 +594,24 @@ export function stepDiverter(unit, dt) {
     unit.paddle.position.y = -unit.side * unit.travel * unit.stroke;
     return;
   }
-  // Wheels: tops just showing through the deck, lifted 12 mm and steered when active.
-  const z = 0.009 - DIV.wheelR + 0.012 * unit.stroke;
-  _wq.setFromAxisAngle(_zAxis, unit.live ? unit.steer : unit.steer * unit.stroke);
+  // Wheels: down (tops at the deck) until active, then lifted through it,
+  // steered (about z) to where they point and rolling (about their axle) at
+  // the divert speed, so they carry the parcels that way.
+  const z = 0.008 - DIV.wheelR + DIV.wheelLift * unit.stroke;
+  const steer = unit.live ? unit.steer : unit.steer * unit.stroke;
+  unit.roll = (unit.roll + (unit.speed / DIV.wheelR) * dt * unit.stroke) % (2 * Math.PI);
+  _wq.setFromAxisAngle(_zAxis, steer).multiply(_spin.setFromAxisAngle(_yAxis, unit.roll));
+  _sq.setFromAxisAngle(_zAxis, steer);
   unit.centres.forEach(([x, y], i) => {
     _p.set(x, y, z);
     unit.wheels.setMatrixAt(i, _m.compose(_p, _wq, _s));
+    _p.set(x, y, 0.0078);
+    unit.slots.setMatrixAt(i, _m.compose(_p, _sq, _s));
   });
   unit.wheels.instanceMatrix.needsUpdate = true;
+  unit.slots.instanceMatrix.needsUpdate = true;
 }
+const _spin = new THREE.Quaternion(), _sq = new THREE.Quaternion();
 
 export function buildTurntableRing(t) {
   const g = new THREE.Group();
