@@ -86,7 +86,7 @@ from PySide6.QtWidgets import (
     QFormLayout, QDoubleSpinBox, QSpinBox, QComboBox, QPushButton, QColorDialog,
     QLineEdit, QLabel, QVBoxLayout, QHBoxLayout, QDialog, QStackedWidget, QToolBar,
     QFileDialog, QCheckBox, QMessageBox, QStyle, QInputDialog, QTreeWidget, QTreeWidgetItem, QMenu,
-    QAbstractItemView, QHeaderView,
+    QAbstractItemView, QHeaderView, QGraphicsRectItem,
 )
 
 from config_parser import (
@@ -5962,8 +5962,9 @@ class MainWindow(QMainWindow):
         self._io_refresh.start()
 
     def _select_component(self, component_id: str):
-        """Select a component on the canvas and bring it into view (a control
-        panel's device selects its panel)."""
+        """Select a component on the canvas, zoom to it and flash a ring
+        around it (a control panel's device selects its panel) - what
+        clicking a PLC tag does."""
         item = next((i for i in self.items_list if i.model.id == component_id), None)
         if item is None:
             child = next((c for c in (*self.config.buttons, *self.config.leds) if c.id == component_id), None)
@@ -5973,7 +5974,32 @@ class MainWindow(QMainWindow):
             return
         self.scene.clearSelection()
         item.setSelected(True)
-        self.view.centerOn(item)
+        self._zoom_to_selection()
+        self._flash(item)
+
+    def _flash(self, item, ms: int = 1500):
+        """A ring around `item` for a moment: where it is after a jump."""
+        old = getattr(self, "_flash_ring", None)
+        if old is not None and old.scene() is not None:
+            self.scene.removeItem(old)
+        rect = item.sceneBoundingRect()
+        pad = max(rect.width(), rect.height()) * 0.15 + 0.3 * SCALE
+        ring = QGraphicsRectItem(rect.adjusted(-pad, -pad, pad, pad))
+        pen = QPen(hmi.qcolor(hmi.ACCENT), 3)
+        pen.setCosmetic(True)
+        pen.setStyle(Qt.DashLine)
+        ring.setPen(pen)
+        ring.setBrush(Qt.NoBrush)
+        ring.setZValue(10_000)
+        self.scene.addItem(ring)
+        self._flash_ring = ring
+
+        def remove(r=ring):
+            if r.scene() is not None:
+                r.scene().removeItem(r)
+            if getattr(self, "_flash_ring", None) is r:
+                self._flash_ring = None
+        QTimer.singleShot(ms, remove)
 
     def _show_properties(self):
         dock = self.properties_panel.parentWidget()
@@ -6016,7 +6042,13 @@ class MainWindow(QMainWindow):
         for it in items[1:]:
             rect = rect.united(it.sceneBoundingRect())
         margin = max(rect.width(), rect.height()) * 0.25 or 50.0
-        self.view.fitInView(rect.adjusted(-margin, -margin, margin, margin), Qt.KeepAspectRatio)
+        rect = rect.adjusted(-margin, -margin, margin, margin)
+        least = 8.0 * SCALE                 # at least 8 m across: a small sensor is shown with its belt
+        if rect.width() < least or rect.height() < least:
+            c = rect.center()
+            rect = QRectF(c.x() - max(rect.width(), least) / 2, c.y() - max(rect.height(), least) / 2,
+                          max(rect.width(), least), max(rect.height(), least))
+        self.view.fitInView(rect, Qt.KeepAspectRatio)
 
     def _frame_all_items(self):
         rect = self.scene.itemsBoundingRect()

@@ -290,6 +290,17 @@ class EditorClicksTest(unittest.TestCase):
         visible = next(r for r in range(table.table.rowCount()) if not table.table.isRowHidden(r))
         table._double_clicked(visible, 5)                                      # the Component column
         self.assertEqual([i.model.id for i in self.window.scene.selectedItems()], ["led_1_1_1"])
+        table.filter.setText("")
+        self.window._frame_all_items()
+        whole = self.window.view.transform().m11()
+        sensor_row = next(r for r in range(table.table.rowCount())
+                          if table.table.item(r, 5).text() == "sensor_1_1_1")
+        table.table.setCurrentCell(sensor_row, 3)                              # a click on the tag
+        self.assertEqual([i.model.id for i in self.window.scene.selectedItems()], ["sensor_1_1_1"])
+        self.assertGreater(self.window.view.transform().m11(), whole)          # zoomed in to it
+        ring = self.window._flash_ring
+        self.assertIsNotNone(ring)
+        self.assertTrue(ring.sceneBoundingRect().contains(self.item("sensor_1_1_1").sceneBoundingRect()))
         self.assertTrue(table.edit_tag("led_1_1_1/isOn", name="L1_Auto_Lamp"))  # an undoable layout edit
         self.assertFalse(self.window.undo_stack.isClean())
         self.window.undo_stack.undo()

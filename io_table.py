@@ -336,9 +336,10 @@ def _tag_icon(area: str) -> QIcon:
 
 class IoTablePanel(QWidget):
     """The PLC tags dock: tag tables on the left, the tags on the right -
-    Name, Tag table and Comment edited in place (double-click / F2), a
-    right-click moves tags to another table or shows the component; filter,
-    sortable columns, CSV and TIA Portal (.xlsx) export."""
+    clicking a tag selects, zooms to and flashes its component on the
+    canvas; Name, Tag table and Comment edited in place (double-click /
+    F2); a right-click moves tags to another table; filter, sortable
+    columns, CSV and TIA Portal (.xlsx) export."""
 
     def __init__(self, get_config: Callable, on_select: Optional[Callable[[str], None]] = None,
                  undo_stack=None, status: Optional[Callable[[str], None]] = None):
@@ -395,6 +396,9 @@ class IoTablePanel(QWidget):
         header.setStretchLastSection(True)
         self.table.itemChanged.connect(self._item_changed)
         self.table.cellDoubleClicked.connect(self._double_clicked)
+        # Clicking a tag (or moving to it with the arrow keys) shows its
+        # component on the canvas: selected, zoomed to, flashed.
+        self.table.currentCellChanged.connect(self._current_changed)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._context_menu)
         split.addWidget(self.table)
@@ -586,6 +590,13 @@ class IoTablePanel(QWidget):
         if ok and name.strip():
             self.move_to_table(keys, name.strip())
             self.show_table(name.strip())
+
+    def _current_changed(self, row: int, _column: int, previous_row: int, _previous_column: int):
+        if self._filling or row < 0 or row == previous_row:
+            return
+        cell = self.table.item(row, COMPONENT)
+        if cell is not None and self.on_select is not None:
+            self.on_select(cell.text())
 
     def _double_clicked(self, row: int, column: int):
         if column in EDITABLE:
