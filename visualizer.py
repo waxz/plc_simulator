@@ -714,10 +714,26 @@ class Renderer:
             self._queue_label(text, (center[0] + w // 2 + 4, center[1]), self.PRIORITY_DEVICE, hmi.TEXT_DIM,
                               align="left")
 
+    def draw_control_panel(self, panel):
+        """An operator panel's enclosure (control_panel.py); its buttons,
+        lamps and buzzers are ordinary buttons / LEDs drawn on top."""
+        corners = [self._world_to_screen(x, y)
+                   for x, y in get_rect_vertices(panel.x, panel.y, panel.width, panel.height, panel.rotation)]
+        colour = self._hex_to_rgb(panel.color)
+        pygame.draw.polygon(self.screen, colour, corners)
+        pygame.draw.polygon(self.screen, hmi.shade(colour, 0.55), corners, 1)
+        bottom = max(y for _x, y in corners)
+        cx = sum(x for x, _y in corners) // 4
+        self._queue_label(panel.label or panel.id, (cx, bottom + 2), self.PRIORITY_DEVICE, hmi.TEXT_DIM,
+                          align="below")
+
     def draw_led(self, led: LedIndicator):
         cx, cy = self._world_to_screen(led.x, led.y)
         radius = max(3, self._scale_val(led.radius))
         base = self._hex_to_rgb(led.color)
+        if getattr(led, "indicator", "lamp") == "buzzer":
+            self._draw_buzzer(led, cx, cy, radius, base)
+            return
         if led.isOn:
             glow = self._surface_cache.get(("glow", radius, base))
             if glow is None:
@@ -730,6 +746,25 @@ class Renderer:
         if led.isOn and radius >= 5:
             pygame.draw.circle(self.screen, hmi.shade(base, 1.5), (cx - radius // 3, cy - radius // 3),
                                max(1, radius // 4))
+        if led.label:
+            self._queue_label(led.label, (cx + radius + 6, cy), self.PRIORITY_DEVICE,
+                              hmi.TEXT if led.isOn else hmi.TEXT_DIM, align="left")
+
+    def _draw_buzzer(self, led: LedIndicator, cx: int, cy: int, radius: int, base):
+        """A horn: a dark body with its grille; while sounding, rings
+        spreading from it (two per second)."""
+        pygame.draw.circle(self.screen, (52, 57, 64), (cx, cy), radius + max(1, radius // 4))
+        pygame.draw.circle(self.screen, base if led.isOn else hmi.shade(base, 0.3), (cx, cy), radius)
+        for k in (0.35, 0.65):
+            pygame.draw.circle(self.screen, (30, 33, 38), (cx, cy), max(1, int(radius * k)), 1)
+        if led.isOn:
+            phase = (pygame.time.get_ticks() % 500) / 500.0
+            for ring in (phase, (phase + 0.5) % 1.0):
+                r = int(radius * (1.2 + ring * 1.3))
+                alpha = int(200 * (1.0 - ring))
+                surf = pygame.Surface((r * 2 + 4, r * 2 + 4), pygame.SRCALPHA)
+                pygame.draw.circle(surf, (*base, alpha), (r + 2, r + 2), r, 2)
+                self.screen.blit(surf, (cx - r - 2, cy - r - 2))
         if led.label:
             self._queue_label(led.label, (cx + radius + 6, cy), self.PRIORITY_DEVICE,
                               hmi.TEXT if led.isOn else hmi.TEXT_DIM, align="left")
@@ -1050,6 +1085,8 @@ class Renderer:
             self.draw_source(source)
         for sensor in self.config.sensors:
             self.draw_sensor(sensor, physics_engine)
+        for panel in self.config.controlPanels:
+            self.draw_control_panel(panel)      # the enclosure; its buttons and lamps follow
         for button in self.config.buttons:
             self.draw_button(button)
         for led in self.config.leds:

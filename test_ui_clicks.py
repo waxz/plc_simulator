@@ -22,7 +22,7 @@ os.environ["CONVEYOR_SIM_SETTINGS"] = os.path.join(_SETTINGS_DIR, "settings.json
 import ezdxf  # noqa: E402
 import pygame  # noqa: E402
 import pygame_gui  # noqa: E402
-from PySide6.QtCore import QPoint, Qt  # noqa: E402
+from PySide6.QtCore import QPoint, QPointF, Qt  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication, QMenu, QToolBar  # noqa: E402
 
@@ -156,6 +156,88 @@ class EditorClicksTest(unittest.TestCase):
         panel.combos["commandFormat"].setCurrentText(hmi.combo_label("commandFormat", "speed"))
         QTest.qWait(50)
         self.assertNotIn("drive.gearRatio", self.window.properties_panel.spins)
+
+    def test_tool_bars_are_one_compact_row(self):
+        top = [b for b in self.window.findChildren(QToolBar)
+               if self.window.toolBarArea(b) == Qt.TopToolBarArea and b.isVisible()]
+        self.assertEqual(len({b.geometry().y() for b in top}), 1)            # one row
+        self.assertIn("sketchToolbar", [b.objectName() for b in top])
+        for bar in top:
+            self.assertEqual(bar.iconSize().width(), 18, bar.objectName())
+
+    def test_right_click_menus(self):
+        from PySide6.QtGui import QContextMenuEvent
+        from layout_editor import from_scene_pos
+        shown = []
+        self.window.view.on_context_menu = lambda pos, scene_pos, item: shown.append((scene_pos, item))
+        view = self.window.view
+
+        def right_click(view_pos):
+            _app.sendEvent(view.viewport(), QContextMenuEvent(QContextMenuEvent.Mouse, view_pos,
+                                                              view.viewport().mapToGlobal(view_pos)))
+
+        belt = on_belt = None
+        for candidate in (i for i in self.window.items_list if i.kind == "belt"):     # one nothing covers
+            view.centerOn(candidate)
+            _app.processEvents()
+            point = view.mapFromScene(candidate.sceneBoundingRect().center())
+            if view.placed_item_at(point) is candidate:
+                belt, on_belt = candidate, point
+                break
+        self.assertIsNotNone(belt)
+        right_click(on_belt)
+        self.assertIs(shown[-1][1], belt)
+        self.assertTrue(belt.isSelected())                                     # right-click selects it
+        menu = self.window.build_canvas_menu(shown[-1][0], belt)
+        texts = [a.text() for a in menu.actions()]
+        for text in ("Properties", "Copy", "Delete", "Rotate 90° Left", "Belts", "Add to Library"):
+            self.assertIn(text, texts)
+        old = belt.model.rotation
+        self.window._rotate_selected(90.0)
+        self.assertAlmostEqual(belt.model.rotation, (old + 90.0 + 180.0) % 360.0 - 180.0)
+        self.window.undo_stack.undo()
+        self.assertAlmostEqual(belt.model.rotation, old)
+
+        # empty canvas: insert a library component right where it was clicked
+        empty = self.window.build_canvas_menu(QPointF(-5000.0, -5000.0), None)
+        insert = next(a for a in empty.actions() if a.text() == "Insert Here").menu()
+        sensors = next(a for a in insert.actions() if a.text() == "Sensors").menu()
+        before = len(self.window.items_list)
+        next(a for a in sensors.actions() if a.text() == "IR Sensor").trigger()
+        self.assertEqual(len(self.window.items_list), before + 1)
+        new = self.window.items_list[-1]
+        self.assertEqual((new.model.x, new.model.y), from_scene_pos(QPointF(-5000.0, -5000.0)))
+
+        # a tool that used the right button (end / cancel) gets no menu
+        count = len(shown)
+        view._right_press_used = True
+        right_click(on_belt)
+        self.assertEqual(len(shown), count)
+
+    def test_a_control_panel_holds_its_buttons_lamps_and_buzzer(self):
+        import json
+        item = self.window.view.place_template("Control Panel", 30.0, 30.0)
+        self.window.scene.clearSelection()
+        item.setSelected(True)
+        _app.processEvents()
+        panel = self.window.properties_panel
+        groups = [panel.tree.topLevelItem(i).text(0) for i in range(panel.tree.topLevelItemCount())]
+        self.assertIn("Devices", groups)
+        self.assertEqual(list(panel.io_rows)[:3], [f"{item.model.id}_start", f"{item.model.id}_stop",
+                                                   f"{item.model.id}_reset"])
+        defaults = [e.name for e in item.model.elements]
+        panel.elements_editor._add("buzzer")
+        self.assertEqual(item.model.elements[-1].name, "buzzer1")
+        panel.elements_editor.table.item(0, 1).setText("bad name")             # not a PLC identifier
+        self.assertEqual(item.model.elements[0].name, "start")
+        self.window.undo_stack.undo()
+        self.assertEqual([e.name for e in item.model.elements], defaults)
+        QTest.mouseClick(self.toolbar_button(self.window.save_action), Qt.LeftButton)
+        saved = json.load(open(self.layout, encoding="utf-8"))
+        self.assertEqual([p["id"] for p in saved["controlPanels"]], [item.model.id])
+        self.assertFalse(any(b.get("panel") for b in saved["buttons"]))           # elements only in the panel
+        reloaded = load_config(self.layout)
+        self.assertIn(f"{item.model.id}_horn", [l.id for l in reloaded.leds])
 
     def test_sensor_signal_settings_are_editable(self):
         self.click_on_canvas("sensor_1_1_1")

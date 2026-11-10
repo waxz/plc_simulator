@@ -128,7 +128,8 @@ def apply_saved_theme() -> str:
 # automation layers): where it stands, its mechanics, its drive (motor and
 # inverter), how it moves, its signals, what it does, how it looks - and
 # last, its PLC I/O (the editor's own section).
-PROPERTY_GROUP_ORDER = ("Identity", "Layout", "Mechanics", "Drive", "Motion", "Signal", "Operation", "Display")
+PROPERTY_GROUP_ORDER = ("Identity", "Layout", "Mechanics", "Devices", "Drive", "Motion", "Signal", "Operation",
+                        "Display")
 PROPERTY_GROUPS = {
     # What it is.
     "id": "Identity", "label": "Identity", "sensorType": "Identity",
@@ -142,6 +143,8 @@ PROPERTY_GROUPS = {
     "drive.gearRatio": "Mechanics", "drive.transmissionRatio": "Mechanics", "drive.drumDiameter": "Mechanics",
     "mass": "Mechanics", "capacity": "Mechanics", "levels": "Mechanics", "levelHeight": "Mechanics",
     "reach": "Mechanics", "pickRadius": "Mechanics", "mountHeight": "Mechanics", "toolLength": "Mechanics",
+    # The devices built into it: a control panel's buttons, lamps and buzzers.
+    "elements": "Devices",
     # The drive: how it is commanded, the motor, the inverter, the encoder.
     "commandFormat": "Drive", "drive.motorPreset": "Drive", "drive.motorRatedSpeed": "Drive",
     "drive.motorRatedFrequency": "Drive", "drive.maxFrequency": "Drive", "drive.rampUpTime": "Drive",
@@ -288,9 +291,10 @@ def qt_stylesheet() -> str:
     QMenu {{ background: {pd}; border: 1px solid {b}; padding: 4px 0; }}
     QMenu::item {{ padding: 4px 24px 4px 18px; }}
     QMenu::separator {{ height: 1px; background: {b}; margin: 4px 8px; }}
-    QToolBar {{ background: {pd}; border: none; border-bottom: 1px solid {b}; spacing: 4px; padding: 2px 6px; }}
+    QToolBar {{ background: {pd}; border: none; border-bottom: 1px solid {b}; spacing: 1px; padding: 1px 4px; }}
+    QToolBar::separator {{ background: {b}; width: 1px; height: 1px; margin: 4px 3px; }}
     QToolButton {{ color: {t}; background: transparent; border: 1px solid transparent; border-radius: 3px;
-                   padding: 3px 8px; }}
+                   padding: 2px; }}
     QToolButton:hover {{ border-color: {b}; background: {p}; }}
     QToolButton:checked {{ background: {a}; color: white; }}
     QToolButton:disabled, QLabel:disabled {{ color: {f}; }}

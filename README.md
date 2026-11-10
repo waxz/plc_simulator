@@ -176,7 +176,8 @@ The Qt layout editor is where belt shapes and positions are designed:
     RFID Reader, DWS), **Sorting** (Pusher / Wheel Diverter, Chute),
     **Pallet Handling** (Pallet, Stopper), **Robots** (6-Axis Robot),
     **Parcel Flow** (Source, Sink), **Safety** (Guard Door, Light Curtain,
-    Safety Relay), **Operator Panel** (Push Button, Emergency Stop, LED).
+    Safety Relay), **Operator Panel** (Push Button, Emergency Stop, LED,
+    Control Panel).
 
   Your own components are in **My Components**, in any sub-folders you like:
   - **Add Selected** saves the component selected on the canvas (any kind: a
@@ -208,9 +209,27 @@ The Qt layout editor is where belt shapes and positions are designed:
   sub-menus), **View > Show Ports** and **View > Panels** (show / hide
   every dock and toolbar).
 - Undo/redo, copy/paste, rubber-band multi-select.
+- **Right-click** on the canvas for quick commands, as in a CAD tool. On a
+  component (it gets selected): Properties, Cut, Copy, Duplicate Here,
+  Delete, Rotate 90° left / right, the belt connections, Select All of that
+  kind, Zoom to Selection, Add to Library. On the empty canvas: Repeat the
+  last tool, Paste Here, Undo / Redo, **Insert Here** (any library component,
+  placed where you clicked), the Sketch tools, Select All, Zoom to Fit, Pan,
+  Measure, Show Ports, Check Layout, Run in Simulator. While a tool runs,
+  the right button ends or cancels it instead.
+- **Control Panel** (library, Operator Panel): an operator panel whose push
+  buttons, pilot lamps and buzzers are its properties - the **Devices**
+  table (type, name, legend, colour, NC contact, key; + Button / + Lamp /
+  + Buzzer, Remove, reorder; every edit one undo step). Each element is an
+  ordinary button or lamp on the panel's face, id `<panel>_<name>`, so it
+  reaches the PLC like any other (its signals are listed under PLC I/O); the
+  layout file keeps only the panel with its elements. In the simulator you
+  press its buttons, its lamps light and a buzzer shows rings while it sounds.
 - The Properties dock is a property grid: a header with the kind, id and a
-  one-line summary, then foldable sections (Identity, Position, Geometry,
-  Motion, Signal, Operation, Display) with units on every number. Sensors
+  one-line summary, then foldable sections by equipment layer (Identity,
+  Layout, Mechanics, Devices, Drive, Motion, Signal, Operation, Display -
+  see [docs/designer-equipment-model.md](docs/designer-equipment-model.md))
+  with units on every number. Sensors
   expose on/off delay, light-on (NC) and bit/byte packing; buttons their type,
   NC contact and key; belts the speed or VFD command format.
 - **PLC I/O** sections at the end of the property grid list the selected
@@ -267,12 +286,14 @@ Tool bars - every command one click away, as an icon button; hover it for
 its name and shortcut (the same actions as the menus). The icons are drawn
 in code (`toolbar_icons.py`) and follow the dark / light theme:
 
-- **Row 1**: **File** - Open, Save, Undo, Redo, Import DXF, Export DXF;
+One compact row (18 px icons, as a CAD tool's tool bars), left to right:
+
+- **File** - Open, Save, Undo, Redo, Import DXF, Export DXF;
   **Background** - Place (move the drawing by its anchor, `Shift+B`),
   Settings, Crop (export the cropped DXF), Remove; **View** - Pan,
   Measure, Clear Measurements, Fit (zoom to the whole layout, `Z`), Ports
-  (show belt inlets / outlets); **Run** in the simulator (`F5`) and the theme.
-- **Row 2**: **Sketch** - Line, Arc, Arc Center, Rectangle, Circle,
+  (show belt inlets / outlets); **Run** in the simulator (`F5`) and the theme;
+  **Sketch** - Line, Arc, Arc Center, Rectangle, Circle,
   Polygon, Clear; **Belts** - Belt from Sketch, Roller from Sketch,
   Divide, Belt Path, Curved Belt, Outline Belt;
   **Connections** - Connect, Fillet Belts, Disconnect, Solve, Check

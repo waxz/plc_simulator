@@ -41,6 +41,7 @@ built, in both the designer and the simulator window's inspector
 | Identity | what it is | id, label, sensor type |
 | Layout | where it stands, its footprint | x, y, rotation, level, length, width |
 | Mechanics | the mechanical design | belt or roller surface, roller pitch, drum / roller diameter, chain ratio, gear ratio; lift levels; robot reach |
+| Devices | the devices built into it | a control panel's push buttons, lamps and buzzers |
 | Drive | how it is driven | drive type (setpoint m/s, VFD, inverter in Hz), motor preset, motor nameplate, max frequency, ramps, encoder, and the computed result |
 | Motion | how it moves | design speed, direction, lift speed, cycle times |
 | Signal | what a sensor reports | delays, light-on / dark-on, beams, packing |
@@ -58,6 +59,16 @@ while you type, for example
 `50 Hz → motor 1450 rpm → 72.5 rpm at the drum → 0.380 m/s; design 0.3 m/s = 39.5 Hz`,
 and turns into a warning when the design speed needs more than the inverter's
 maximum frequency. Values left unset show what the simulation derives.
+
+### Composed equipment: the control panel
+
+A control panel is equipment made of devices, as an Emulate3D component
+with aspects or a Visual Components component with behaviours: one
+enclosure whose push buttons, lamps and buzzers are its properties (the
+Devices table), not components placed one by one. Each device becomes an
+ordinary button or lamp (`<panel>_<name>`, control_panel.py), so the PLC
+exchange, the generated ST and the simulator need nothing new; the layout
+file keeps only the panel with its devices.
 
 ## 3. Next steps
 

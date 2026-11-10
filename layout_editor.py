@@ -72,7 +72,7 @@ import os
 import subprocess
 import sys
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as dataclass_replace
 from typing import Callable, List, Optional
 
 from PySide6.QtCore import Qt, QPointF, QMimeData, QRectF, QSize, QTimer
@@ -94,6 +94,8 @@ from config_parser import (
     load_config,
 )
 from config_parser import Accumulator, Diverter, DriveConfig, GuardDoor, SafetyCircuit, Scanner, Transfer, Turntable
+from config_parser import ControlPanel, PanelElement
+import control_panel
 import drivetrain
 import equipment_geometry as geo
 import hmi_style as hmi
@@ -2649,6 +2651,82 @@ def _make_rfid(new_id: str) -> Scanner:
     return Scanner(id=new_id, x=0.0, y=0.0, scannerType="rfid", label="RFID")
 
 
+class ControlPanelItem(PlacedItem):
+    """An operator control panel: the enclosure with its push buttons,
+    lamps and buzzer drawn on the face, where the simulator places them
+    (control_panel.py). They are the panel's `elements`, edited in its
+    properties - not separate components."""
+
+    kind = "panel"
+
+    def __init__(self, model: ControlPanel):
+        super().__init__(model, self._local_points_for_model(model))
+        self.setBrush(QBrush(QColor(model.color)))
+        self.setPen(QPen(QColor(model.color).darker(170), 0))
+
+    @staticmethod
+    def _local_points_for_model(model: ControlPanel) -> list[QPointF]:
+        hw, hh = model.width * SCALE / 2.0, model.height * SCALE / 2.0
+        return [QPointF(-hw, -hh), QPointF(hw, -hh), QPointF(hw, hh), QPointF(-hw, hh)]
+
+    def set_size(self, width: float, height: float):
+        self.model.width = width
+        self.model.height = height
+        self.prepareGeometryChange()
+        self.setPolygon(QPolygonF(self._local_points_for_model(self.model)))
+
+    def refresh_shape(self):
+        self.setBrush(QBrush(QColor(self.model.color)))
+        self.setPen(QPen(QColor(self.model.color).darker(170), 0))
+        self.update()
+
+    def paint(self, painter: QPainter, option, widget=None):
+        super().paint(painter, option, widget)
+        painter.save()
+        font = QFont(painter.font())
+        for element, (lx, ly, cell) in zip(self.model.elements, control_panel._cells(self.model)):
+            centre = QPointF(lx * SCALE, -ly * SCALE)
+            size = cell * SCALE
+            colour = QColor(element.color)
+            if element.kind == "button":
+                half = size * 0.55 / 2.0
+                painter.setPen(QPen(colour.darker(220), max(1.0, size * 0.04)))
+                painter.setBrush(QBrush(colour))
+                painter.drawRoundedRect(QRectF(centre.x() - half, centre.y() - half, 2 * half, 2 * half),
+                                        half * 0.3, half * 0.3)
+                if element.normallyClosed:          # an NC contact: a ring on the cap
+                    painter.setPen(QPen(hmi.qcolor(hmi.TEXT), max(1.0, size * 0.03)))
+                    painter.setBrush(Qt.NoBrush)
+                    painter.drawEllipse(centre, half * 0.55, half * 0.55)
+            else:
+                r = size * 0.25
+                painter.setPen(QPen(colour.darker(250), max(1.0, size * 0.04)))
+                painter.setBrush(QBrush(colour.darker(160)))
+                painter.drawEllipse(centre, r, r)
+                if element.kind == "buzzer":        # a horn: the grille and the sound arcs
+                    painter.setPen(QPen(hmi.qcolor(hmi.TEXT), max(1.0, size * 0.025)))
+                    for k in (0.35, 0.65):
+                        painter.drawEllipse(centre, r * k, r * k)
+            font.setPointSizeF(max(1.0, size * 0.12))
+            painter.setFont(font)
+            painter.setPen(hmi.qcolor(hmi.TEXT))
+            text = element.label or element.name.upper()
+            painter.drawText(QRectF(centre.x() - size / 2.0, centre.y() + size * 0.3, size, size * 0.2),
+                             Qt.AlignHCenter | Qt.AlignTop, text)
+        painter.restore()
+
+    def _tag_spec(self):
+        return (_device_label(self.model), QPointF(0, self.model.height * SCALE / 2.0), "below", hmi.TEXT_DIM)
+
+    def _tag_room(self, scale: float) -> float:
+        return 1e9 if self.model.width * SCALE * scale >= 20 else 0.0
+
+
+def _make_control_panel(new_id: str) -> ControlPanel:
+    return ControlPanel(id=new_id, x=0.0, y=0.0, width=1.6, height=0.8, label="Operator panel",
+                        elements=control_panel.default_elements())
+
+
 def _make_light_curtain(new_id: str) -> Sensor:
     return Sensor(id=new_id, x=0.0, y=0.0, width=0.1, height=1.2, rotation=0.0, label="Light curtain",
                   color="#facc15", sensorType="laser_banner", laserCount=24, beamDistance=0.05)
@@ -2794,6 +2872,7 @@ ITEM_CLASS_FOR_KIND = {
     "accumulator": AccumulatorItem,
     "door": GuardDoorItem,
     "safety": SafetyItem,
+    "panel": ControlPanelItem,
 }
 
 # Reverse lookup: a copied/pasted model's own pydantic class tells us its
@@ -2816,6 +2895,7 @@ KIND_FOR_MODEL_CLASS = {
     Accumulator: "accumulator",
     GuardDoor: "door",
     SafetyCircuit: "safety",
+    ControlPanel: "panel",
 }
 
 # Which SimulatorConfig list attribute holds each kind's models -
@@ -2842,6 +2922,7 @@ CONFIG_LIST_ATTR_FOR_KIND = {
     "accumulator": "accumulators",
     "door": "doors",
     "safety": "safety",
+    "panel": "controlPanels",
 }
 
 
@@ -2869,15 +2950,19 @@ def build_items_from_config(config, scene: QGraphicsScene, items_list: list):
         scene.addItem(item)
         items_list.append(item)
     for model in config.buttons:
+        if model.panel:
+            continue                # a control panel's element: drawn by its panel
         item = ButtonItem(model)
         scene.addItem(item)
         items_list.append(item)
     for model in config.leds:
+        if model.panel:
+            continue
         item = LedItem(model)
         scene.addItem(item)
         items_list.append(item)
     for kind in ("elevator", "turntable", "transfer", "pallet", "stopper", "robot", "scanner", "diverter", "accumulator",
-                 "door", "safety"):
+                 "door", "safety", "panel"):
         for model in getattr(config, CONFIG_LIST_ATTR_FOR_KIND[kind]):
             item = ITEM_CLASS_FOR_KIND[kind](model)
             scene.addItem(item)
@@ -2954,6 +3039,8 @@ class ComponentLibrary(QTreeWidget):
         ("Operator Panel", "Emergency Stop", "button", _make_estop,
          "A latching NC mushroom button - list it in a safety relay's E-stops."),
         ("Operator Panel", "LED Indicator", "led", _make_led, "A pilot lamp the PLC switches."),
+        ("Operator Panel", "Control Panel", "panel", _make_control_panel,
+         "An operator panel: its push buttons, lamps and buzzer are its properties (Panel elements)."),
     )
     # Name, kind, factory - as before.
     BUILT_INS = tuple((name, kind, factory) for _f, name, kind, factory, _d in CATALOGUE)
@@ -3562,6 +3649,10 @@ class CanvasView(QGraphicsView):
         self.config = config
         self.on_items_changed = on_items_changed
         self.get_template: Optional[Callable[[str], Optional[ComponentTemplate]]] = None
+        # The right-click menu (MainWindow._canvas_context_menu): called with
+        # (global pos, scene pos, the component under the cursor or None).
+        self.on_context_menu = None
+        self._right_press_used = False      # a tool / the measure mode took this right-click
         self.on_mouse_moved: Optional[Callable[[float, float], None]] = None
         self._clipboard_models = []  # one or more deepcopy'd models - a group copy/paste
         self._last_mouse_scene_pos: Optional[QPointF] = None
@@ -3821,7 +3912,9 @@ class CanvasView(QGraphicsView):
             self.setCursor(Qt.ClosedHandCursor)
             event.accept()
             return
+        self._right_press_used = False
         if self.tool is not None and self.tool.mouse_press(event):
+            self._right_press_used = event.button() == Qt.RightButton
             event.accept()
             return
         if self._measure_mode and event.button() == Qt.LeftButton:
@@ -3833,9 +3926,36 @@ class CanvasView(QGraphicsView):
             # stays on the canvas, it's just no longer waiting for a second
             # click to complete a measurement.
             self._measure_pending = None
+            self._right_press_used = True
             event.accept()
             return
         super().mousePressEvent(event)
+
+    def contextMenuEvent(self, event):
+        """Right-click: a menu of quick commands for what is under the
+        cursor (a component, or the empty canvas) - unless a running tool or
+        the measure mode used the right button (end / cancel), as in a CAD
+        tool."""
+        used, self._right_press_used = self._right_press_used, False
+        if used or self.tool is not None or self._measure_mode or self.on_context_menu is None:
+            event.accept()
+            return
+        item = self.placed_item_at(event.pos())
+        if item is not None and not item.isSelected():
+            self.scene().clearSelection()
+            item.setSelected(True)
+        self.on_context_menu(event.globalPos(), self.mapToScene(event.pos()), item)
+        event.accept()
+
+    def placed_item_at(self, view_pos) -> Optional["PlacedItem"]:
+        """The topmost component at a view position (a click on one of its
+        child graphics counts), or None."""
+        for graphic in self.items(view_pos):
+            while graphic is not None and not isinstance(graphic, PlacedItem):
+                graphic = graphic.parentItem()
+            if graphic is not None:
+                return graphic
+        return None
 
     def _snap_tolerance_scene_units(self) -> float:
         scale = self.transform().m11()
@@ -4153,7 +4273,142 @@ def _field_specs_for(item: PlacedItem):
         specs += [("text", "stopButtonIds", "E-stops"), ("text", "doorIds", "Guard doors"),
                   ("text", "curtainIds", "Light curtains"), ("text", "beltIds", "Belts stopped"),
                   ("text", "resetButtonId", "Reset button"), ("text", "label", "Label")]
+    elif isinstance(item, ControlPanelItem):
+        specs += [("float", "width", "Width", 0.2, 10.0, 0.05), ("float", "height", "Height", 0.2, 10.0, 0.05),
+                  ("text", "label", "Label"), ("elements", "elements", "Elements")]
     return specs
+
+
+class PanelElementsEditor(QWidget):
+    """A control panel's push buttons, lamps and buzzers as a table: type,
+    name (the PLC identifier: the component is <panel id>_<name>), legend,
+    colour, NC contact, keyboard key - with buttons to add, remove and
+    reorder. Every change calls `on_change(elements)` with the whole new
+    list; the panel applies it as one undoable edit."""
+
+    COLUMNS = ("Type", "Name", "Legend", "Colour", "NC", "Key")
+    KINDS = ("button", "lamp", "buzzer")
+    DEFAULT_COLOURS = {"button": "#2563eb", "lamp": "#22c55e", "buzzer": "#f59e0b"}
+
+    def __init__(self, on_change):
+        super().__init__()
+        from PySide6.QtWidgets import QHeaderView, QTableWidget
+        self.on_change = on_change
+        self._elements = []
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(4, 2, 4, 4)
+        layout.setSpacing(3)
+        self.table = QTableWidget(0, len(self.COLUMNS))
+        self.table.setHorizontalHeaderLabels(self.COLUMNS)
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.itemChanged.connect(self._edited)
+        layout.addWidget(self.table)
+        row = QHBoxLayout()
+        row.setSpacing(3)
+        for text, slot in (("+ Button", lambda: self._add("button")), ("+ Lamp", lambda: self._add("lamp")),
+                           ("+ Buzzer", lambda: self._add("buzzer")), ("Remove", self._remove),
+                           ("\u2191", lambda: self._move(-1)), ("\u2193", lambda: self._move(1))):
+            button = QPushButton(text)
+            button.clicked.connect(slot)
+            row.addWidget(button)
+        layout.addLayout(row)
+
+    def set_elements(self, elements):
+        """Show these elements (no on_change)."""
+        from PySide6.QtWidgets import QTableWidgetItem
+        self._elements = [e.model_copy() for e in elements]
+        self.table.blockSignals(True)
+        self.table.setRowCount(len(self._elements))
+        for r, e in enumerate(self._elements):
+            kind = QComboBox()
+            kind.addItems(self.KINDS)
+            kind.setCurrentText(e.kind)
+            kind.currentTextChanged.connect(lambda text, row=r: self._set(row, "kind", text))
+            self.table.setCellWidget(r, 0, kind)
+            for c, value in ((1, e.name), (2, e.label), (3, e.color), (5, e.key or "")):
+                cell = QTableWidgetItem(value)
+                if c == 3:
+                    cell.setBackground(QBrush(QColor(e.color)))
+                self.table.setItem(r, c, cell)
+            nc = QTableWidgetItem()
+            if e.kind == "button":
+                nc.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
+                nc.setCheckState(Qt.Checked if e.normallyClosed else Qt.Unchecked)
+            else:
+                nc.setFlags(Qt.NoItemFlags)       # lamps and buzzers have no contact
+            self.table.setItem(r, 4, nc)
+        self.table.blockSignals(False)
+        self.table.setFixedHeight(self.table.horizontalHeader().height() + 4
+                                  + sum(self.table.rowHeight(r) for r in range(self.table.rowCount())))
+
+    def _changed(self, elements):
+        try:
+            elements = [PanelElement.model_validate(e.model_dump()) for e in elements]
+            ControlPanel(id="check", x=0.0, y=0.0, elements=elements)      # unique names
+        except ValueError as exc:
+            self.set_elements(self._elements)    # rejected: show what is stored again
+            errors = getattr(exc, "errors", None)
+            reason = errors()[0]["msg"] if callable(errors) and errors() else str(exc)
+            self.setToolTip(reason)
+            self.reason = reason
+            return
+        self.reason = ""
+        self.setToolTip("")
+        self.on_change(elements)
+
+    def _set(self, row: int, field: str, value):
+        elements = [e.model_copy() for e in self._elements]
+        setattr(elements[row], field, value)
+        if field == "kind":
+            elements[row].color = self.DEFAULT_COLOURS[value]
+        self._changed(elements)
+
+    def _edited(self, cell):
+        row, column = cell.row(), cell.column()
+        field = {1: "name", 2: "label", 3: "color", 4: "normallyClosed", 5: "key"}.get(column)
+        if field is None or row >= len(self._elements):
+            return
+        if field == "normallyClosed":
+            value = cell.checkState() == Qt.Checked
+        elif field == "key":
+            value = cell.text().strip()[:1].lower() or None
+        else:
+            value = cell.text().strip()
+        if field == "color" and not QColor(value).isValid():
+            self.set_elements(self._elements)
+            return
+        self._set(row, field, value)
+
+    def _add(self, kind: str):
+        names = {e.name for e in self._elements}
+        index = 1
+        while f"{kind}{index}" in names:
+            index += 1
+        new = PanelElement(kind=kind, name=f"{kind}{index}", label=f"{kind.upper()} {index}",
+                           color=self.DEFAULT_COLOURS[kind])
+        self._changed([e.model_copy() for e in self._elements] + [new])
+
+    def _remove(self):
+        rows = sorted({i.row() for i in self.table.selectedIndexes()}, reverse=True)
+        if not rows:
+            return
+        elements = [e.model_copy() for e in self._elements]
+        for r in rows:
+            del elements[r]
+        self._changed(elements)
+
+    def _move(self, step: int):
+        rows = sorted({i.row() for i in self.table.selectedIndexes()})
+        if len(rows) != 1 or not 0 <= rows[0] + step < len(self._elements):
+            return
+        r = rows[0]
+        elements = [e.model_copy() for e in self._elements]
+        elements[r], elements[r + step] = elements[r + step], elements[r]
+        self._changed(elements)
+        self.table.selectRow(r + step)
 
 
 # Properties holding lists, edited as comma-separated text: (item type).
@@ -4343,6 +4598,7 @@ class PropertiesPanel(QWidget):
         self.io_rows = {}
         self.motor_preset = None
         self.drive_summary = None
+        self.elements_editor = None
 
     def _update_header(self):
         item = self.current
@@ -4420,6 +4676,9 @@ class PropertiesPanel(QWidget):
                 widget.addItems([name for name, _rpm, _hz in drivetrain.MOTOR_PRESETS] + [drivetrain.CUSTOM_MOTOR])
                 widget.currentTextChanged.connect(self._apply_motor_preset)
                 self.motor_preset = widget
+            elif field_kind == "elements":
+                widget = PanelElementsEditor(lambda elements: self._apply_elements(elements))
+                self.elements_editor = widget
             elif field_kind == "summary":
                 widget = QLabel()
                 widget.setWordWrap(True)
@@ -4435,8 +4694,8 @@ class PropertiesPanel(QWidget):
             widget.setToolTip(attr)
             if field_kind in ("float", "int") and attr[len("drive."):] in _DRIVE_ZERO_IS_NONE:
                 widget.setSpecialValueText("not set")      # 0 = None: the drive's accel / surface encoder
-            # The result has several lines: the whole width, no label.
-            self._add_row(hmi.property_group(attr), label, widget, span=field_kind == "summary")
+            # The result and the element table: the whole width, no label.
+            self._add_row(hmi.property_group(attr), label, widget, span=field_kind in ("summary", "elements"))
         if hasattr(item.model, "color"):
             self.color_btn = QPushButton("-")
             self.color_btn.clicked.connect(self._pick_color)
@@ -4486,6 +4745,31 @@ class PropertiesPanel(QWidget):
             widget.blockSignals(False)
         self._update_color_swatch()
         self._refresh_drive_rows()
+        if getattr(self, "elements_editor", None) is not None:
+            self.elements_editor.set_elements(item.model.elements)
+
+    def _apply_elements(self, elements):
+        """The panel's new element list (the table's edit), one undo step."""
+        item = self.current
+        if item is None:
+            return
+        old = [e.model_copy() for e in item.model.elements]
+        self._push_property_change(item, "elements", old, [e.model_copy() for e in elements],
+                                   self._do_apply_elements, text="Edit Panel Elements")
+
+    def _do_apply_elements(self, item, attr: str, value):
+        item.model.elements = [e.model_copy() for e in value]
+        item.update()
+        if item is self.current and getattr(self, "elements_editor", None) is not None:
+            self.elements_editor.set_elements(item.model.elements)
+            self._rebuild_io_later()
+        if self.on_model_changed:
+            self.on_model_changed()
+
+    def _rebuild_io_later(self):
+        # The element list changed: so did the PLC I/O rows (next tick, not
+        # inside the table's own signal).
+        QTimer.singleShot(0, self._rebuild_and_reload)
 
     def _refresh_drive_rows(self):
         """The motor preset matching the nameplate, and the drive train's
@@ -4579,7 +4863,7 @@ class PropertiesPanel(QWidget):
             item.sync_from_model()
         elif isinstance(item, BeltItem) and not item.is_curved() and attr in ("length", "beltWidth"):
             item.set_size(item.model.length, item.model.beltWidth)
-        elif attr in ("width", "height") and isinstance(item, (SensorItem, SinkItem, ButtonItem)):
+        elif attr in ("width", "height") and isinstance(item, (SensorItem, SinkItem, ButtonItem, ControlPanelItem)):
             item.set_size(item.model.width, item.model.height)
         elif attr in ("maxWidth", "maxHeight") and isinstance(item, SourceItem):
             item.set_size(item.model.maxWidth, item.model.maxHeight)
@@ -4685,7 +4969,12 @@ class PropertiesPanel(QWidget):
         values, and setting the commands by hand in "manual", are in the
         simulator window's inspector."""
         model = self.current.model
-        signals = io_signals.signals(model)
+        if isinstance(model, ControlPanel):
+            # Its elements are the buttons / lamps on the wire: one signal each, by component id.
+            buttons, lamps = control_panel.children(model)
+            signals = [dataclass_replace(s, name=child.id) for child in (*buttons, *lamps) for s in io_signals.signals(child)]
+        else:
+            signals = io_signals.signals(model)
         if not signals:
             return
         options = io_signals.control_options(model)
@@ -4917,6 +5206,9 @@ class ComponentManagerPanel(QWidget):
             return f"{m.width:g} m"
         if kind == "safety":
             return f"{len(m.stopButtonIds)} e-stops, {len(m.doorIds)} doors, {len(m.curtainIds)} curtains"
+        if kind == "panel":
+            counts = [sum(1 for e in m.elements if e.kind == k) for k in ("button", "lamp", "buzzer")]
+            return f"{counts[0]} buttons, {counts[1]} lamps, {counts[2]} buzzer{'s' if counts[2] != 1 else ''}"
         return ""
 
     def refresh(self):
@@ -5156,6 +5448,8 @@ class MainWindow(QMainWindow):
         # placements too (the manager's own duplicate/delete buttons already
         # call refresh() themselves directly).
         self.view.on_items_changed = manager_panel.refresh
+        self.view.on_context_menu = self._canvas_context_menu
+        self._last_command = None           # the last tool started from a tool bar (Repeat)
 
         properties_panel = PropertiesPanel(self.scene, self.items_list, on_model_changed=manager_panel.refresh)
         self.properties_panel = properties_panel
@@ -5472,7 +5766,141 @@ class MainWindow(QMainWindow):
         for bar in self.findChildren(QToolBar):
             if bar is not cad.draw_toolbar:
                 bar.setToolButtonStyle(Qt.ToolButtonIconOnly)
-                bar.setIconSize(QSize(22, 22))
+                bar.setIconSize(QSize(18, 18))      # compact, as a CAD tool's tool bars
+        self._remember_commands(cad.sketch_toolbar.actions() + cad.modify_toolbar.actions())
+
+    # -- right-click menu ------------------------------------------------------------
+
+    def _remember_commands(self, actions):
+        """Tool bar commands the right-click menu can repeat (Repeat <last>)."""
+        for action in actions:
+            if not action.isSeparator() and action.text():
+                action.triggered.connect(lambda _checked=False, a=action: setattr(self, "_last_command", a))
+
+    def _canvas_context_menu(self, global_pos, scene_pos, item):
+        self.build_canvas_menu(scene_pos, item).exec(global_pos)
+
+    def build_canvas_menu(self, scene_pos, item):
+        """Quick commands on a right-click: for the component(s) under the
+        cursor, or - on the empty canvas - repeat, paste, insert a library
+        component right there, sketch tools, view and checks."""
+        from PySide6.QtWidgets import QMenu
+        menu = QMenu(self)
+        x, y = from_scene_pos(scene_pos)
+        selected = [i for i in self.scene.selectedItems() if isinstance(i, PlacedItem)]
+
+        def submenu(parent, title):
+            # Owned by its parent menu (addMenu(title) leaves it to Python's garbage collector).
+            sub = QMenu(title, parent)
+            parent.addMenu(sub)
+            return sub
+
+        def add(text, slot, enabled=True, shortcut=None):
+            action = menu.addAction(text, slot)
+            action.setEnabled(enabled)
+            if shortcut:
+                action.setShortcut(QKeySequence(shortcut))
+                action.setShortcutVisibleInContextMenu(True)
+            return action
+
+        if item is not None:
+            count = len(selected)
+            menu.addSection(f"{item.model.id} ({item.kind})" if count <= 1 else f"{count} components")
+            add("Properties", self._show_properties)
+            menu.addSeparator()
+            add("Cut", self._cut_selected, shortcut="Ctrl+X")
+            add("Copy", self.view._copy_selected, shortcut="Ctrl+C")
+            add("Duplicate Here", self._duplicate_selected)
+            add("Delete", self.view._delete_selected, shortcut="Del")
+            menu.addSeparator()
+            rotatable = [i for i in selected if hasattr(i.model, "rotation")]
+            add("Rotate 90\u00b0 Left", lambda: self._rotate_selected(90.0), enabled=bool(rotatable))
+            add("Rotate 90\u00b0 Right", lambda: self._rotate_selected(-90.0), enabled=bool(rotatable))
+            if any(i.kind == "belt" for i in selected):
+                belts = submenu(menu, "Belts")
+                for action in (self.cad.connect_action, self.cad.fillet_belts_action, self.cad.disconnect_action):
+                    belts.addAction(action)
+            menu.addSeparator()
+            add(f"Select All {item.kind.capitalize()}s", lambda: self._select_kind(item.kind))
+            add("Zoom to Selection", self._zoom_to_selection)
+            add("Add to Library", self.library_panel.add_selected)
+        else:
+            if self._last_command is not None:
+                add(f"Repeat {self._last_command.iconText() or self._last_command.text()}",
+                    self._last_command.trigger, shortcut="Enter")
+            add("Paste Here", self.view._paste_clipboard,
+                enabled=bool(self.view._clipboard_models or self.view._clipboard_sketch), shortcut="Ctrl+V")
+            menu.addAction(self.undo_action)
+            menu.addAction(self.redo_action)
+            menu.addSeparator()
+            insert = submenu(menu, "Insert Here")
+            folders = {}
+            for folder, name, _kind, _factory, description in ComponentLibrary.CATALOGUE:
+                top = folder.split("/")[0]
+                if top not in folders:
+                    folders[top] = submenu(insert, top)
+                sub = folders[top]
+                action = sub.addAction(name, lambda n=name: self.view.place_template(n, x, y))
+                action.setToolTip(description)
+            sketch = submenu(menu, "Sketch")
+            for action in self.cad.sketch_toolbar.actions():
+                if action.isSeparator():
+                    sketch.addSeparator()
+                elif action.text():
+                    sketch.addAction(action)
+            menu.addSeparator()
+            add("Select All", lambda: [i.setSelected(True) for i in self.items_list], shortcut="Ctrl+A")
+            menu.addAction(self.zoom_fit_action)
+            menu.addAction(self.pan_action)
+            menu.addAction(self.measure_action)
+            menu.addAction(self.cad.show_ports_action)
+            menu.addSeparator()
+            menu.addAction(self.cad.check_action)
+            menu.addAction(self.run_sim_action)
+        return menu
+
+    def _show_properties(self):
+        dock = self.properties_panel.parentWidget()
+        if dock is not None:
+            dock.show()
+            dock.raise_()
+
+    def _cut_selected(self):
+        if self.view._copy_selected():
+            self.view._delete_selected()
+
+    def _duplicate_selected(self):
+        """A copy of the selection at the cursor (copy + paste there), one undo step each."""
+        if self.view._copy_selected():
+            self.view._paste_clipboard()
+
+    def _rotate_selected(self, degrees: float):
+        """Turn every selected component by `degrees` about its own origin, one undo step."""
+        items = [i for i in self.scene.selectedItems() if isinstance(i, PlacedItem) and hasattr(i.model, "rotation")]
+        if not items:
+            return
+        panel = self.properties_panel
+        self.undo_stack.beginMacro(f"Rotate {len(items)} Component{'s' if len(items) > 1 else ''}")
+        for it in items:
+            old = it.model.rotation
+            new = (old + degrees + 180.0) % 360.0 - 180.0
+            apply = lambda target, value: panel._do_apply_field(target, "rotation", value)
+            self.undo_stack.push(PropertyEditCommand(it, apply, old, new, "Rotate"))
+        self.undo_stack.endMacro()
+
+    def _select_kind(self, kind: str):
+        for it in self.items_list:
+            it.setSelected(it.kind == kind)
+
+    def _zoom_to_selection(self):
+        items = [i for i in self.scene.selectedItems() if isinstance(i, PlacedItem)]
+        if not items:
+            return
+        rect = items[0].sceneBoundingRect()
+        for it in items[1:]:
+            rect = rect.united(it.sceneBoundingRect())
+        margin = max(rect.width(), rect.height()) * 0.25 or 50.0
+        self.view.fitInView(rect.adjusted(-margin, -margin, margin, margin), Qt.KeepAspectRatio)
 
     def _frame_all_items(self):
         rect = self.scene.itemsBoundingRect()

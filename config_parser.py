@@ -1,6 +1,8 @@
 import json
 from typing import Annotated, List, Optional, Literal, Dict, Any, Tuple, Union
-from pydantic import BaseModel, BeforeValidator, Field, PrivateAttr
+import re
+
+from pydantic import BaseModel, BeforeValidator, Field, PrivateAttr, field_validator, model_serializer, model_validator
 
 
 class DriveConfig(BaseModel):
@@ -271,6 +273,10 @@ class ControlButton(BaseModel):
     # Keyboard key that presses it in the simulator window (e.g. "1", "q").
     key: Optional[str] = None
     pressed: bool = Field(default=False, exclude=True)  # runtime: the operator's action
+    # The control panel this button is an element of (control_panel.py),
+    # None for a button placed on its own. A panel's buttons are derived
+    # from its elements and not saved separately.
+    panel: Optional[str] = None
 
 class LedIndicator(BaseModel):
     id: str
@@ -287,6 +293,55 @@ class LedIndicator(BaseModel):
     packFormat: PackFormat = "bit"
     control: CommandSource = "plc"
     mode: int = Field(default=0, exclude=True)
+    # What it is: a pilot lamp, or a buzzer / horn (an output the PLC
+    # switches the same way; the simulator shows it sounding).
+    indicator: Literal["lamp", "buzzer"] = "lamp"
+    panel: Optional[str] = None     # the control panel it belongs to, as ControlButton.panel
+
+
+class PanelElement(BaseModel):
+    """One device on a control panel: a push button, a pilot lamp or a
+    buzzer. It becomes a ControlButton / LedIndicator with the id
+    `<panel id>_<name>` (control_panel.py)."""
+    kind: Literal["button", "lamp", "buzzer"] = "button"
+    name: str                           # unique on the panel, a valid identifier (start, stop, run, ...)
+    label: str = ""                     # the legend plate (the name in capitals when empty)
+    color: str = "#22c55e"
+    buttonType: Literal["momentary", "latching"] = "momentary"   # buttons
+    normallyClosed: bool = False                                  # buttons: NC contact (STOP, E-STOP)
+    key: Optional[str] = None                                     # buttons: keyboard key in the simulator
+    packFormat: PackFormat = "bit"      # lamps: "byte" for blink modes
+
+    @field_validator("name")
+    @classmethod
+    def _identifier(cls, name: str) -> str:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name or ""):
+            raise ValueError(f"panel element name {name!r}: letters, digits and _ (a PLC identifier)")
+        return name
+
+
+class ControlPanel(BaseModel):
+    """An operator control panel: an enclosure whose push buttons, lamps and
+    buzzer are its `elements`, laid out on its face (control_panel.py)."""
+    id: str
+    x: float
+    y: float
+    width: float = 1.2
+    height: float = 0.6
+    rotation: float = 0.0
+    label: str = ""
+    color: str = "#475569"
+    control: CommandSource = "plc"      # its lamps and buzzer: from the PLC or set by hand
+    elements: List[PanelElement] = Field(default_factory=list)
+
+    @field_validator("elements")
+    @classmethod
+    def _unique_names(cls, elements: List[PanelElement]) -> List[PanelElement]:
+        names = [e.name for e in elements]
+        duplicates = sorted({n for n in names if names.count(n) > 1})
+        if duplicates:
+            raise ValueError(f"panel elements named twice: {', '.join(duplicates)}")
+        return elements
 
 # ---------------------------------------------------------------------------
 # Machines (machines.py runs them in the simulation). Each one follows the
@@ -798,6 +853,7 @@ class SimulatorConfig(BaseModel):
     transfers: List[Transfer] = Field(default_factory=list)
     doors: List[GuardDoor] = Field(default_factory=list)
     safety: List[SafetyCircuit] = Field(default_factory=list)
+    controlPanels: List[ControlPanel] = Field(default_factory=list)
     mqttSettings: MqttSettings = Field(default_factory=MqttSettings)
     connections: List[BeltConnection] = Field(default_factory=list)
     sketch: List[SketchEntity] = Field(default_factory=list)
@@ -818,6 +874,26 @@ class SimulatorConfig(BaseModel):
     maxStepsPerAdvance: int = 50
     # Runtime: simulated time in ns, mappable as clock/simNanoseconds. Never saved.
     simTimeNs: int = Field(default=0, exclude=True)
+
+    @model_validator(mode="after")
+    def _expand_control_panels(self):
+        """A control panel's buttons and lamps are derived from its elements:
+        built here, whenever a layout is loaded (control_panel.py)."""
+        if self.controlPanels or any(b.panel for b in self.buttons) or any(l.panel for l in self.leds):
+            import control_panel
+            control_panel.refresh(self)
+        return self
+
+    @model_serializer(mode="wrap")
+    def _without_panel_children(self, handler):
+        """Saved without the derived panel buttons / lamps: the panel's
+        elements are the source; loading builds them again."""
+        data = handler(self)
+        if isinstance(data, dict):
+            for key, models in (("buttons", self.buttons), ("leds", self.leds)):
+                if key in data and len(data[key]) == len(models):
+                    data[key] = [d for d, m in zip(data[key], models) if not m.panel]
+        return data
 
 def load_config(file_path: str) -> SimulatorConfig:
     with open(file_path, "r", encoding="utf-8") as f:

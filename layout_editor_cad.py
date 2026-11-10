@@ -809,10 +809,10 @@ class CadController:
             key = action.shortcut().toString()
             action.setToolTip(f"{action.text()} ({key})" if key else action.text())
 
-        # Sketch, belts and connections on one top-level tool bar row.
+        # Sketch, belts and connections: on the same top row as File / View
+        # (compact icons, one row for the whole tool set, as in a CAD tool).
         bar = QToolBar("Sketch", w)
         bar.setObjectName("sketchToolbar")
-        w.addToolBarBreak(Qt.TopToolBarArea)     # its own row: never folded into an overflow menu
         w.addToolBar(Qt.TopToolBarArea, bar)
         for i, group in enumerate((sketch_actions, belt_actions, layout_actions)):
             if i:
