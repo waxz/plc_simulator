@@ -20,6 +20,10 @@ Behaviour, once per scan (step()):
     stays blocked longer than `jam_time` is a jam: every belt stops until
     Start/Reset is pressed with the sensor clear.
   Sensors with `invert` (light-on output) read 0 when blocked.
+  Laser banners (lasers shining down, a bit per beam): the PLC measures each
+    parcel passing under one (BannerProfile) - its width from the blocked
+    beams, its length from how far the belt moved while any beam was
+    blocked - and logs "banner_1: parcel 0.42 m long x 0.36 m wide".
   Belts: running, no jam, no drive fault -> each belt's design speed (its
     speed in the layout file, 1 m/s where that is 0; negative = reverse),
     else stopped. commandFormat "speed": `speed` (signed); "vfd": `run`,
@@ -325,6 +329,86 @@ class SensorTrack:
     count: int = 0
 
 
+def beam_bits(sensor) -> List[bool]:
+    """A laser banner's beams as received, True = blocked (a light-on /
+    invert output reads 0 for a blocked beam)."""
+    value = sensor.sensor_states
+    if isinstance(value, int) and not isinstance(value, bool):     # off the wire: bit i = beam i
+        count = int(sensor.laserCount or 16)
+        return [bool(value >> i & 1) != bool(sensor.invert) for i in range(count)]
+    if not isinstance(value, str) or not value.strip() or not set(value.strip()) <= {"0", "1"}:
+        return [occupied(sensor)]
+    return [(c == "1") != bool(sensor.invert) for c in value.strip()]          # in the simulation: "0110..."
+
+
+def belt_at(config: SimulatorConfig, x: float, y: float):
+    """The straight belt under (x, y), or None."""
+    for belt in config.belts:
+        if belt.type != "linear" or belt.vertexs:
+            continue
+        a = math.radians(belt.rotation)
+        u = (x - belt.x) * math.cos(a) + (y - belt.y) * math.sin(a)
+        v = -(x - belt.x) * math.sin(a) + (y - belt.y) * math.cos(a)
+        if abs(u) <= belt.length / 2 and abs(v) <= belt.beltWidth / 2:
+            return belt
+    return None
+
+
+@dataclass
+class BannerProfile:
+    """A PLC measuring parcels with a laser banner (lasers shining down, one
+    every `pitch` across the belt): while a parcel is under it, the widest
+    span of blocked beams is its width and the distance the belt moves (its
+    commanded speed x the scan time) its length. `measured` is the last
+    parcel's (length, width), m."""
+    pitch: float
+    belt: Optional[str]                    # the belt under the banner: its speed is the parcel's
+    first: int = -1
+    last: int = -1
+    length: float = 0.0
+    measured: Optional[tuple] = None
+    count: int = 0
+
+    def step(self, bits: List[bool], speed: float, dt: float) -> Optional[tuple]:
+        """One scan; (length, width) when a parcel has just passed."""
+        blocked = [i for i, b in enumerate(bits) if b]
+        if blocked:
+            self.first = blocked[0] if self.first < 0 else min(self.first, blocked[0])
+            self.last = max(self.last, blocked[-1])
+            self.length += abs(speed) * dt
+            return None
+        if self.first < 0:
+            return None
+        # n blocked beams: the parcel spans between n - 1 and n + 1 pitches; n is the estimate
+        width = (self.last - self.first + 1) * self.pitch
+        self.measured = (round(self.length, 3), round(width, 3))
+        self.count += 1
+        self.first, self.last, self.length = -1, -1, 0.0
+        return self.measured
+
+
+def banner_profiles(config: SimulatorConfig) -> Dict[str, BannerProfile]:
+    profiles = {}
+    for sensor in config.sensors:
+        if sensor.sensorType == "laser_banner":
+            belt = belt_at(config, sensor.x, sensor.y)
+            profiles[sensor.id] = BannerProfile(float(sensor.beamDistance or 0.05), belt.id if belt else None)
+    return profiles
+
+
+def measure_banners(profiles: Dict[str, BannerProfile], config: SimulatorConfig, dt: float,
+                    speed_of: Callable[[Optional[str]], float], events: List[str]) -> None:
+    """One scan of every banner's profile measurement; a parcel that has
+    passed is logged with its size."""
+    for sensor in config.sensors:
+        profile = profiles.get(sensor.id)
+        if profile is None:
+            continue
+        size = profile.step(beam_bits(sensor), speed_of(profile.belt), dt)
+        if size is not None:
+            events.append(f"{sensor.id}: parcel {size[0]:.2f} m long x {size[1]:.2f} m wide")
+
+
 @dataclass
 class DeliveryController:
     config: SimulatorConfig
@@ -358,6 +442,8 @@ class DeliveryController:
         self.delivery_sensor = self._sensor_nearest_a_sink()
         self._pressed = {b.id: False for b in buttons}
         self.sensors = {s.id: SensorTrack() for s in cfg.sensors}
+        self.banners = banner_profiles(cfg)
+        self._scan_at: Optional[float] = None
         self.running = self.autostart
         self.machines = MachineControl(cfg)
         self._write_outputs()
@@ -386,6 +472,11 @@ class DeliveryController:
         events: List[str] = []
         self._buttons(events)
         self._sensors(now, events)
+        dt = 0.0 if self._scan_at is None else max(0.0, now - self._scan_at)
+        self._scan_at = now
+        moving = self.running and self.jammed is None and not self.faulted
+        measure_banners(self.banners, self.config, dt,
+                        lambda belt: self.speeds.get(belt, 0.0) if moving and belt else 0.0, events)
         self._drive_faults(events)
         self._write_outputs()
         self.machines.step(now, self.running and self.jammed is None and not self.faulted, self.speeds, events)
@@ -599,6 +690,8 @@ class LineController:
         self.speeds = {b.id: _design_speed(b) for b in config.belts}
         self.machines = MachineControl(config)
         self.sensors = {s.id: SensorTrack() for s in config.sensors}
+        self.banners = banner_profiles(config)
+        self._scan_at: Optional[float] = None
         self.delivery_sensor = self._delivery_sensor()
         self._pressed = {b.id: False for b in config.buttons}
         for line in self.lines.values():
@@ -657,6 +750,14 @@ class LineController:
         # Sensors and drives first, so a Reset pressed in the scan a jam
         # clears sees the sensor clear.
         self._sensors(now, events)
+        dt = 0.0 if self._scan_at is None else max(0.0, now - self._scan_at)
+        self._scan_at = now
+        belts = {b.id: b for b in self.config.belts}
+
+        def speed_of(belt_id):
+            line = self.line_of(belts[belt_id]) if belt_id in belts else None
+            return self.speeds.get(belt_id, 0.0) if line is not None and line.moving else 0.0
+        measure_banners(self.banners, self.config, dt, speed_of, events)
         self._drive_faults(events)
         self._buttons(events)
         self._merges(events)

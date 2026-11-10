@@ -178,6 +178,10 @@ class Sensor(BaseModel):
     label: str
     color: str
     stateBinding: Optional[str] = None
+    # "laser_banner": a head above the belt shining `laserCount` lasers
+    # straight down, one every `beamDistance` m along its long side (across
+    # the belt; `rotation` = the travel): a bit per beam, set while a parcel
+    # is under it - the parcel's width, and over time its length / shape.
     sensorType: Literal["ir", "laser_banner"] = "ir"
     laserCount: Optional[int] = None
     beamDistance: Optional[float] = None

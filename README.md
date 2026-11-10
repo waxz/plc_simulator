@@ -151,10 +151,17 @@ because of how Pygame and Konva handle rotation:
 - **Sensors**: Have `width` and `height`. At `rotation = 0`, if a sensor is
   defined as `width = 0.1` and `height = 1.0`, it acts as a tall, vertical
   bounding box aligned along the Y-axis.
-- **Sensor Beams (Laser Banners)**: Laser beams are always distributed along the
-  local Y-axis of the sensor. In World space, when `rotation = 0`, the local
-  Y-axis points UP `(0, 1)`. When rotated by `angle`, the local Y direction
-  becomes `(-sin(angle), cos(angle))` due to the CCW rotation matrix.
+- **Sensor Beams (Laser Banners)**: a laser banner is a head above the belt
+  shining its lasers straight down, one every `beamDistance` along the
+  sensor's local Y-axis (its long side, across the belt; `rotation` is the
+  travel). A beam is blocked while a parcel is under its point, so the
+  blocked beams are the parcel's width and how long they stay blocked, at
+  the belt's speed, its length: its shape. In World space, when
+  `rotation = 0`, the local Y-axis points UP `(0, 1)`; rotated by `angle` it
+  becomes `(-sin(angle), cos(angle))` (CCW rotation). The mock PLC measures
+  every parcel this way (`plc_logic.BannerProfile`) and logs
+  `banner_1: parcel 0.45 m long x 0.36 m wide`; the 3D view shows the head
+  on its posts and the lasers down, red where a parcel is under them.
 
 ## Designing layouts
 
@@ -779,7 +786,7 @@ How the simulated devices behave (`devices.py`, `drive.py`, `physics.py`):
 | Device | Settings | Behaviour |
 |---|---|---|
 | IR sensor (`sensorType: "ir"`) | `onDelay`, `offDelay` (s), `invert` | 1 while a parcel is in the sensor's footprint (dark-on). `onDelay` ignores shorter blockages (flicker, gaps), `offDelay` stretches short pulses, `invert` gives a light-on / NC output (1 while clear). `risingEdges` counts detections. |
-| Laser banner (`"laser_banner"`) | `laserCount`, `beamDistance`, the same timing / `invert` per beam | one bit per beam (beam *i* = bit *i*), each beam a segment across the sensor; `blockedBeams` (runtime) is how many are blocked - a parcel's size across the belt. |
+| Laser banner (`"laser_banner"`) | `laserCount`, `beamDistance`, the same timing / `invert` per beam | one bit per beam (beam *i* = bit *i*), each beam a laser shining down at its point; `blockedBeams` (runtime) is how many are blocked - a parcel's size across the belt. |
 | Push button | `buttonType` "momentary" / "latching", `normallyClosed`, `key` | Click (or hold its `key` in the simulator window) to press. Momentary: pressed while held; latching (selector, E-stop): toggles per press. An NC contact (STOP / E-stop) reads 1 until pressed. |
 | LED | `packFormat` "bit" / "byte" | "bit": the PLC switches `isOn`. "byte": the PLC sends a mode - 0 off, 1 on, 2 blink 1 Hz, 3 blink 4 Hz. |
 | Belt motor, command | `commandFormat` "speed" / "vfd" / "frequency" | "speed": `speed` (signed, negative = reverse) + `directionAngle` REALs. "vfd": `run` + `reverse` BOOLs and `speed` (REAL, magnitude, m/s). "frequency": `run` + `reverse` BOOLs and `frequency` (REAL, Hz) to the inverter; the surface speed follows from the drive train (above), and `speed` is the design speed the PLC converts to Hz. |

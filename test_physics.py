@@ -334,7 +334,7 @@ class CompiledKernelTest(unittest.TestCase):
             slow = engine._banner_beams(sensor, sensor.laserCount, sensor.beamDistance, engine.parcels)
             out = np.zeros(sensor.laserCount, dtype=np.bool_)
             rad = math.radians(sensor.rotation)
-            self.kernels.banner_beams(sensor.x, sensor.y, math.cos(rad), math.sin(rad), sensor.width / 2.0,
+            self.kernels.banner_beams(sensor.x, sensor.y, math.cos(rad), math.sin(rad), 0.0,   # point beams
                                       sensor.laserCount, sensor.beamDistance, verts, out)
             self.assertEqual(out.tolist(), slow, f"banner trial {trial}")
             box = get_rect_vertices(sensor.x, sensor.y, sensor.width, sensor.height, sensor.rotation)
@@ -398,9 +398,12 @@ class CrowdedLineSpeedupTest(unittest.TestCase):
         self.assertEqual(gridded, slow)
         self.assertGreater(sum(1 for ids in slow if ids), 300)          # plenty of points on belts
 
-    def test_banner_beams_match_testing_every_beam_segment(self):
+    def test_banner_beams_match_testing_every_beam_point(self):
+        """A banner's lasers shine straight down: beam i is blocked while its
+        point on the banner's line is inside a parcel."""
         import random
         from config_parser import Sensor
+        from math_utils import point_in_polygon
         rng = random.Random(11)
         engine = PhysicsEngine(SimulatorConfig())
         for trial in range(300):
@@ -415,13 +418,10 @@ class CrowdedLineSpeedupTest(unittest.TestCase):
             rad = math.radians(sensor.rotation)
             c, s_ = math.cos(rad), math.sin(rad)
             slow = []
-            for i in range(sensor.laserCount):                          # the segment-by-segment reference
+            for i in range(sensor.laserCount):                          # the point-by-point reference
                 by = (i - (sensor.laserCount - 1) / 2.0) * sensor.beamDistance
-                lx = sensor.width / 2.0
-                start = (sensor.x - lx * c - by * s_, sensor.y - lx * s_ + by * c)
-                end = (sensor.x + lx * c - by * s_, sensor.y + lx * s_ + by * c)
-                slow.append(any(engine._segment_intersects_polygon(start, end, engine._parcel_vertices(p))
-                                for p in engine.parcels))
+                point = (sensor.x - by * s_, sensor.y + by * c)
+                slow.append(any(point_in_polygon(*point, engine._parcel_vertices(p)) for p in engine.parcels))
             self.assertEqual(fast, slow, f"trial {trial}")
 
     def test_velocity_callback_fast_path_gives_the_full_path_result(self):

@@ -228,7 +228,36 @@ function buildBelt(b) {
   layout.add(label(b.id, x, y, group.position.z + 0.3));
 }
 
+const BANNER_HEAD = 0.75;      // m above the belt: the laser banner's head, its lasers shining down
+
+// A laser banner: a head across the belt on two posts, a laser every pitch
+// along it shining straight down (local y = along the banner, as the physics).
+function buildBanner(s) {
+  const g = new THREE.Group();
+  g.position.set(s.x, s.y, beltTopZ(s.level));
+  g.rotation.z = deg(s.rot);
+  const span = (s.beams - 1) * s.pitch;
+  const half = Math.max(span, s.h) / 2 + 0.06;
+  const postMat = mat(COLORS.dark);
+  for (const d of [-half, half]) g.add(post(0, d, -0.3, BANNER_HEAD + 0.06, 0.05, postMat));
+  const head = box(0.09, 2 * half + 0.05, 0.06, mat(COLORS.dark, { metalness: 0.4 }));
+  head.position.z = BANNER_HEAD;
+  g.add(head);
+  const beams = [];
+  for (let i = 0; i < s.beams; i++) {
+    const beam = box(0.006, 0.006, BANNER_HEAD, new THREE.MeshBasicMaterial({ color: COLORS.sensorOff }));
+    beam.position.set(0, (i - (s.beams - 1) / 2) * s.pitch, 0);
+    beam.castShadow = false;
+    g.add(beam);
+    beams.push(beam);
+  }
+  layout.add(tagged(g, `Laser banner ${s.label || s.id} (${s.beams} beams down, ${s.pitch} m apart)`));
+  live.sensors.set(s.id, beams);
+  layout.add(label(s.label || s.id, s.x, s.y, g.position.z + BANNER_HEAD + 0.3));
+}
+
 function buildSensor(s) {
+  if (s.type === "laser_banner") return buildBanner(s);
   const g = new THREE.Group();
   g.position.set(s.x, s.y, beltTopZ(s.level));
   g.rotation.z = deg(s.rot);
@@ -241,25 +270,12 @@ function buildSensor(s) {
     g.add(post(px, py, -0.1, 0.35, 0.05, postMat));
   }
   const beams = [];
-  if (s.type === "laser_banner") {
-    const n = s.beams;
-    for (let i = 0; i < n; i++) {
-      const off = (i - (n - 1) / 2) * s.pitch;
-      const beam = box(across ? 2 * half : 0.008, across ? 0.008 : 2 * half, 0.008,
-                       new THREE.MeshBasicMaterial({ color: COLORS.sensorOff }));
-      beam.position.set(across ? 0 : off, across ? off : 0, 0.12);
-      beam.castShadow = false;
-      g.add(beam);
-      beams.push(beam);
-    }
-  } else {
-    const beam = box(across ? 2 * half : 0.012, across ? 0.012 : 2 * half, 0.012,
-                     new THREE.MeshBasicMaterial({ color: COLORS.sensorOff }));
-    beam.position.z = 0.12;
-    beam.castShadow = false;
-    g.add(beam);
-    beams.push(beam);
-  }
+  const beam = box(across ? 2 * half : 0.012, across ? 0.012 : 2 * half, 0.012,
+                   new THREE.MeshBasicMaterial({ color: COLORS.sensorOff }));
+  beam.position.z = 0.12;
+  beam.castShadow = false;
+  g.add(beam);
+  beams.push(beam);
   layout.add(tagged(g, `Sensor ${s.label || s.id}`));
   live.sensors.set(s.id, beams);
   layout.add(label(s.label || s.id, s.x, s.y, g.position.z + 0.5));

@@ -148,3 +148,66 @@ class IoTopicsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LaserBannerTest(unittest.TestCase):
+    """A laser banner shines its lasers straight down, one every pitch across
+    the belt: a beam is blocked while a parcel is under its point. The PLC
+    measures each parcel's shape with it (plc_logic.BannerProfile): width
+    from the blocked beams, length from the belt's travel while blocked."""
+
+    def plant(self):
+        from physics import PhysicsEngine
+        cfg = SimulatorConfig(
+            useSurfaceVelocity=True,
+            belts=[Belt(id="belt_1", type="linear", x=5.0, y=0.0, length=10.0, beltWidth=1.0, rotation=0.0,
+                        speed=0.0, directionAngle=0.0, color="#888")],
+            sensors=[Sensor(id="banner", x=4.0, y=0.0, width=0.1, height=1.0, rotation=0.0, label="BANNER",
+                            color="#f00", sensorType="laser_banner", laserCount=41, beamDistance=0.02),
+                     Sensor(id="eye", x=9.0, y=0.0, width=0.1, height=1.0, rotation=0.0, label="END", color="#f00")],
+            buttons=[ControlButton(id="start", x=0, y=2, width=0.3, height=0.3, rotation=0, label="START")],
+            sinks=[Sink(id="out", x=10.5, y=0.0, width=1.0, height=1.0, label="out")])
+        return cfg, PhysicsEngine(cfg)
+
+    def test_beams_are_points_under_the_head(self):
+        cfg, engine = self.plant()
+        engine.add_parcel(4.0, 0.15, 0.5, 0.3)              # 0.5 along, 0.3 across, centred 0.15 to the left
+        engine.run_for(0.02)
+        bits = cfg.sensors[0].sensor_states
+        blocked = [i for i, c in enumerate(bits) if c == "1"]
+        # beam i at v = (i - 20) * 0.02: the parcel covers v in [0.0, 0.3]
+        self.assertEqual((blocked[0], blocked[-1]), (20, 35))
+        cfg2, engine2 = self.plant()
+        engine2.add_parcel(3.96, 0.0, 0.07, 0.3)            # its front edge 0.005 m short of the beam line
+        engine2.run_for(0.02)
+        self.assertNotIn("1", cfg2.sensors[0].sensor_states)   # a point beam: not blocked before it is under
+
+    def test_the_plc_measures_each_parcels_shape(self):
+        from plc_logic import make_controller
+        cfg, engine = self.plant()
+        plc = make_controller(cfg, autostart=True)
+        engine.add_parcel(2.0, 0.0, 0.5, 0.3)
+        sizes = []
+        while engine.sim_time < 5.0:
+            sizes += [e for e in plc.step(now=engine.sim_time) if "long x" in e]
+            engine.run_for(0.01)
+        self.assertEqual(len(sizes), 1)
+        length, width = plc.banners["banner"].measured
+        self.assertAlmostEqual(length, 0.5, delta=0.03)      # one scan of travel either way
+        self.assertAlmostEqual(width, 0.3, delta=0.02 + 1e-9)  # the pitch
+        self.assertIn("banner: parcel 0.5", sizes[0])
+
+    def test_the_beams_as_the_plc_receives_them(self):
+        """Off the wire a banner's beams are one integer, bit i = beam i."""
+        from mqtt_message_binding import ComponentMessage
+        from plc_logic import beam_bits
+        cfg, _engine = self.plant()
+        received, _ = self.plant()
+        banner = cfg.sensors[0]
+        banner.sensor_states = "0" * 10 + "1" * 15 + "0" * 16
+        mapping = [(t, f"banner/sensor_states[{i}]") for i, t in enumerate([__import__("io_layout").ByteType.BIT] * 41)]
+        message = ComponentMessage(mapping, endianness="<")
+        message.deserialize(message.serialize(cfg), received)
+        self.assertIsInstance(received.sensors[0].sensor_states, int)
+        self.assertEqual(beam_bits(received.sensors[0]), beam_bits(banner))
+        self.assertEqual([i for i, b in enumerate(beam_bits(banner)) if b], list(range(10, 25)))

@@ -1195,7 +1195,7 @@ class PhysicsEngine:
             else:
                 rad = math.radians(sensor.rotation)
                 out = np.zeros(laser_count, dtype=np.bool_)
-                kernels.banner_beams(sensor.x, sensor.y, math.cos(rad), math.sin(rad), sensor.width / 2.0,
+                kernels.banner_beams(sensor.x, sensor.y, math.cos(rad), math.sin(rad), 0.0,      # point beams
                                      laser_count, beam_dist, verts[close], out)
                 raw = out.tolist()
             sensor.sensor_states = devices.condition(sensor, raw, h)
@@ -1238,17 +1238,22 @@ class PhysicsEngine:
         return self._banner_beams(sensor, laser_count, beam_dist, close)
 
     def _banner_beams(self, sensor, laser_count: int, beam_dist: float, close) -> List[bool]:
-        """Beam i is the segment u in [-w/2, w/2] at v = (i - (n-1)/2) * pitch
-        in the sensor's own frame (u across the belt, v along the banner).
+        """A laser banner is a head above the belt shining its lasers straight
+        down, one every `beamDistance` along the banner (across the belt):
+        beam i is the vertical line through the point u = 0,
+        v = (i - (n-1)/2) * pitch of the sensor's own frame (u along its
+        rotation - the travel -, v along the banner), blocked while a parcel
+        is under it. So the blocked beams are the parcel's width there, and
+        how long they stay blocked, at the belt's speed, its length: the
+        parcel's shape (a PLC measures it - plc_logic.BannerProfile).
         Each nearby parcel (a convex box) is turned into that frame: only the
         beams within its v-range can hit it, and for each of those the
         parcel's cross-section at that v is an interval of u - blocked when
-        it overlaps the beam. Same answer as testing every beam segment
-        against every parcel outline, without the per-beam polygon tests."""
+        it holds u = 0."""
         eps = 1e-9
         rad = math.radians(sensor.rotation)
         cos_a, sin_a = math.cos(rad), math.sin(rad)
-        half_w = sensor.width / 2.0
+        half_w = 0.0                                # point beams (the sensor's width is its housing)
         mid = (laser_count - 1) / 2.0
         beams = [False] * laser_count
         for parcel in close:

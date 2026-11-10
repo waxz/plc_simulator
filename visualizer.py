@@ -651,15 +651,14 @@ class Renderer:
         p0 = self._world_to_screen(cx - ax * half, cy - ay * half)
         p1 = self._world_to_screen(cx + ax * half, cy + ay * half)
         if sensor.sensorType == "laser_banner":
+            # Seen from above: the head across the belt, a dot per laser
+            # shining down (red while a parcel is under it).
             count = int(sensor.laserCount or 16)
             dist = float(sensor.beamDistance or 0.05)
             span = dist * (count - 1)
-            # emitter and receiver columns
-            bx, by = math.cos(rad) * sensor.width / 2.0, math.sin(rad) * sensor.width / 2.0
-            for side in (-1, 1):
-                a = self._world_to_screen(cx + side * bx - ax * span / 2, cy + side * by - ay * span / 2)
-                b = self._world_to_screen(cx + side * bx + ax * span / 2, cy + side * by + ay * span / 2)
-                pygame.draw.line(self.screen, hmi.TEXT_FAINT, a, b, 3)
+            ends = [self._world_to_screen(cx + side * ax * (span / 2 + 0.04), cy + side * ay * (span / 2 + 0.04))
+                    for side in (-1, 1)]
+            pygame.draw.line(self.screen, hmi.TEXT_FAINT, ends[0], ends[1], 5)
             r = 1 if self.zoom * self.scale * dist < 6 else 2
             for i in range(count):
                 t = -span / 2 + i * dist
