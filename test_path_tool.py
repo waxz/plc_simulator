@@ -334,6 +334,27 @@ class SeparateBeltsTest(unittest.TestCase):
         self.assertEqual(len(self.belts()), 3)
         self.assert_joined(self.belts())
 
+    def test_rollers_from_the_shared_belt_roller_choice(self):
+        surface = self.window.cad.surface_combo
+        surface.setCurrentIndex(surface.findData("roller"))
+        self.tool.toolbar.split_check.setChecked(False)                    # a roller path is its pieces anyway
+        self.tool.toolbar.corner_spin.setValue(1.0)
+        self.tool.start()
+        for x, y in ((0, 0), (6, 0), (12, -6)):
+            self.click(x, y)
+        self.key(Qt.Key_Return)
+        belts = self.belts()
+        self.assertEqual([(b.type, b.surface) for b in belts],
+                         [("linear", "roller"), ("curved", "roller"), ("linear", "roller")])
+        self.assertTrue(all(b.id.startswith("roller_") for b in belts))
+        self.assert_joined(belts)
+        self.assertIn("3 roller conveyors", self.window.statusBar().currentMessage())
+        curved = self.window.cad.curved_tool
+        curved.start()
+        for x, y in ((20, 0), (24, 0), (22, 2)):
+            self.click(x, y)
+        self.assertEqual((self.belts()[-1].type, self.belts()[-1].surface), ("curved", "roller"))
+
     def test_sharp_corners_give_straight_belts_only(self):
         self.tool.toolbar.corner_spin.setValue(0.0)
         self.tool.start()

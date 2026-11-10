@@ -240,7 +240,7 @@ class EditorWorkflowTest(unittest.TestCase):
         self.assertTrue(bar.isVisible())
         labels = [a.iconText() for a in bar.actions() if a.text()]
         for name in ("Line", "Arc", "Rectangle", "Circle", "Polygon", "Clear",
-                     "Belt from Sketch", "Belt Path", "Curved Belt", "Outline Belt"):
+                     "Conveyor from Sketch", "Belt Path", "Curved Belt", "Outline Belt"):
             self.assertIn(name, labels)
         arc = next(a for a in bar.actions() if a.iconText() == "Arc")
         self.assertEqual(arc.toolTip(), "Arc (Shift+S)")

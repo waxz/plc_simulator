@@ -1,5 +1,5 @@
 """
-test_belt_from_shapes.py - Belt from Sketch/Drawing with a chosen belt type
+test_belt_from_shapes.py - Conveyor from Sketch/Drawing with a chosen belt type
 (auto / linear / curved / path) and direction, basic sketch shapes
 (rectangle, circle, polygon) as the way to build loops, and picking shapes
 that are split into several parts: line ends that miss each other by a few
@@ -300,20 +300,22 @@ class EditorTest(unittest.TestCase):
         belt = self.belts()[-1]
         self.assertEqual((belt.type, belt.length, belt.directionAngle), ("linear", 5.0, 180))
 
-    def roller_action(self):
-        return next(a for m in self.window.menuBar().findChildren(type(self.window.menuBar().addMenu("x")))
-                    for a in m.actions() if a.text() == "Roller from Sketch/Drawing")
+    def use_rollers(self):
+        """Ctrl+Shift+B: the tool bar's Belt / Roller to Roller."""
+        action = self.cad.toggle_surface_action
+        self.assertEqual(action.shortcut().toString(), "Ctrl+Shift+B")
+        if self.bar.surface != "roller":
+            action.trigger()
+        self.assertEqual(self.bar.surface, "roller")
 
     def test_roller_from_a_line_and_from_a_circle(self):
-        action = self.roller_action()
-        self.assertEqual(action.shortcut().toString(), "Ctrl+Shift+B")
         self.cad.sketch_line_tool.start()
         self.click(0, 0)
         self.click(5, 0)
         self.key(Qt.Key_Return)
         self.sketch(self.cad.sketch_circle_tool, "10,2", "12,2")
-        action.trigger()                                      # the tool, set to rollers
-        self.assertEqual(self.bar.surface, "roller")
+        self.use_rollers()
+        self.cad.pick_tool.start()                            # one tool for both: B
         self.set_type("auto")
         self.click(2.5, 0)
         roller = self.belts()[-1]
@@ -324,7 +326,7 @@ class EditorTest(unittest.TestCase):
         self.click(10.3, 2.4)                                 # inside the circle: a curved roller conveyor
         curved = self.belts()[-1]
         self.assertEqual((curved.type, curved.surface), ("curved", "roller"))
-        self.cad.pick_tool.start("belt")                      # B: belts again
+        self.cad.surface_combo.setCurrentIndex(self.cad.surface_combo.findData("belt"))     # belts again
         self.click(2.5, 0)
         self.assertEqual(self.belts()[-1].surface, "belt")
 
@@ -333,7 +335,8 @@ class EditorTest(unittest.TestCase):
         for x, y in ((0, 0), (4, 0), (4, 3)):
             self.click(x, y)
         self.key(Qt.Key_Return)
-        self.roller_action().trigger()
+        self.use_rollers()
+        self.cad.pick_tool.start()
         self.set_type("auto")
         self.click(2, 0)                                      # Auto would make a path belt
         self.assertEqual(self.belts(), [])

@@ -33,7 +33,7 @@ from PySide6.QtWidgets import QGraphicsPathItem
 
 from cad import modify
 from cad import path as cpath
-from cad.belts import divide_segment, divided_belts, reversed_segment
+from cad.belts import ROLLER_COLOR, ROLLER_SPEED, divide_segment, divided_belts, reversed_segment
 from cad.modify import ModifyError
 from config_parser import SketchEntity
 from id_utils import next_indexed_id
@@ -249,14 +249,14 @@ class DivideTool(_ModifyTool):
     """Divide into Belts: click a line or an arc - of the sketch or of the
     imported drawing - and that piece becomes tool bar Parts conveyors of
     equal length, each with its own drive, joined end to end: linear along
-    a line, curved along an arc, belts or roller conveyors (Surface),
+    a line, curved along an arc, belts or roller conveyors (the tool bar's
+    Belt / Roller),
     running the way it was drawn or the other way (Direction). The piece
     under the cursor shows where it will be cut first. Repeats until Esc."""
 
     title = "Divide into Belts"
     hint = ("Divide into Belts: click a line or arc (sketch or drawing) - it becomes Parts conveyors of equal "
-            "length, joined end to end. Tool bar: Parts, Surface, Direction, Width. Esc to finish.")
-    ROLLER_SPEED = 0.3
+            "length, joined end to end. Tool bar: Parts, Direction, Width; Belt / Roller. Esc to finish.")
 
     def _configure_toolbar(self):
         self.toolbar.configure(self.title, segments=False, width=True, corner=False, points=False, divide=True)
@@ -283,7 +283,7 @@ class DivideTool(_ModifyTool):
 
     def build(self, seg):
         bar = self.toolbar
-        roller = bar.divide_surface_combo.currentData() == "roller"
+        roller = bar.surface == "roller"
         taken = [i.model.id for i in self.window.items_list]
         prefix = "roller" if roller else "belt"
 
@@ -293,8 +293,8 @@ class DivideTool(_ModifyTool):
 
         return divided_belts(new_id, seg, bar.parts_spin.value(), bar.width_spin.value(),
                              reverse=bar.divide_direction_combo.currentData() == "reverse",
-                             speed=self.ROLLER_SPEED if roller else 1.0,
-                             color="#4b5563" if roller else "#3b82f6", surface="roller" if roller else "belt")
+                             speed=ROLLER_SPEED if roller else 1.0,
+                             color=ROLLER_COLOR if roller else "#3b82f6", surface="roller" if roller else "belt")
 
     def mouse_press(self, event) -> bool:
         if event.button() == Qt.RightButton:

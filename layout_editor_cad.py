@@ -783,12 +783,15 @@ class CadController:
             add(tools, "Mirror", mt["mirror"].start, "I", "mirror"),
             add(tools, "Scale", mt["scale"].start, "", "scale"),
         ]
-        tools.addSection("Belts")
+        # Conveyors: one set of tools for belts and rollers - the Belt / Roller
+        # choice beside them on the tool bar decides what they make (a placed
+        # conveyor changes in its properties, Surface).
+        tools.addSection("Conveyors")
+        self.surface_combo = self.draw_toolbar.surface_combo
+        self.toggle_surface_action = add(tools, "Switch Belt / Roller", self.toggle_surface, "Ctrl+Shift+B")
         belt_actions = [
-            add(tools, "Belt from Sketch/Drawing", lambda: self.pick_tool.start("belt"), "B", "belt_pick",
-                "Belt from Sketch"),
-            add(tools, "Roller from Sketch/Drawing", lambda: self.pick_tool.start("roller"), "Ctrl+Shift+B",
-                "roller_pick", "Roller from Sketch"),
+            add(tools, "Conveyor from Sketch/Drawing", self.pick_tool.start, "B", "belt_pick",
+                "Conveyor from Sketch"),
             add(tools, "Divide into Belts", self.divide_tool.start, "N", "divide", "Divide"),
             add(tools, "Draw Belt Path", self.path_tool.start, "P", "belt_path", "Belt Path"),
             add(tools, "Draw Curved Belt", self.curved_tool.start, "U", "curved_belt", "Curved Belt"),
@@ -818,6 +821,8 @@ class CadController:
         for i, group in enumerate((sketch_actions, belt_actions, layout_actions)):
             if i:
                 bar.addSeparator()
+            if group is belt_actions:
+                self.surface_combo_action = bar.addWidget(self.surface_combo)
             for action in group:
                 bar.addAction(action)
         self.sketch_toolbar = bar
@@ -849,6 +854,13 @@ class CadController:
         show_ports.toggled.connect(self._set_ports_visible)
         view.addAction(show_ports)
         self.show_ports_action = show_ports
+
+    def toggle_surface(self):
+        """Ctrl+Shift+B: new conveyors as belts <-> rollers (the tool bar's
+        Belt / Roller); a tool already running uses it from its next one."""
+        combo = self.surface_combo
+        combo.setCurrentIndex(1 - combo.currentIndex())
+        self._status(f"New conveyors: {combo.currentText().lower()}s.")
 
     def _set_ports_visible(self, visible: bool):
         self.ports.visible = visible
@@ -1129,7 +1141,8 @@ class SketchItem(QGraphicsPathItem):
         self.setPen(QPen(QColor("#22d3ee"), 0))
         self.setZValue(SKETCH_Z)
         self.setFlag(QGraphicsPathItem.GraphicsItemFlag.ItemIsSelectable, True)
-        self.setToolTip("Sketch geometry - Tools > Belt from Sketch/Drawing (B) turns it into a belt; Delete removes it")
+        self.setToolTip("Sketch geometry - Tools > Conveyor from Sketch/Drawing (B) turns it into a belt or roller "
+                        "conveyor; Delete removes it")
 
     @staticmethod
     def _path(entity: SketchEntity, to_scene_pos) -> QPainterPath:

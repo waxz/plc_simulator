@@ -12,7 +12,7 @@ Three tools (Tools menu), sharing one input model:
   Draw Belt Outline (O)  the belt's outline itself, corner by corner - any
                          polygon, e.g. a skewed quad feeding a merge ->
                          polygon belt (shape "quadrilateral")
-  Belt from Sketch/Drawing (B)  on sketch geometry or an imported DXF
+  Conveyor from Sketch/Drawing (B)  on sketch geometry or an imported DXF
                          layout: click inside a closed area, or on a
                          line/arc (and everything joined to it). Toolbar Type
                          (auto / linear / curved / path) and Direction choose
@@ -59,7 +59,7 @@ from cad import path as cpath
 from shapely.ops import unary_union
 
 from cad.belts import (
-    belt_from_target, curved_belt_from_segment, flow_arrows, outline_belt, path_belt, segment_belts,
+    as_roller, belt_from_target, curved_belt_from_segment, flow_arrows, outline_belt, path_belt, segment_belts,
 )
 from cad.checks import belt_footprint
 from cad.snap import DrawingPicker, Snap, SnapIndex, best_snap, join_shapes
@@ -204,18 +204,12 @@ class PathToolbar(QToolBar):
         self.sides_actions = [self.addWidget(QLabel(" Sides "))]
         self.sides_spin = QSpinBox(minimum=3, maximum=64, value=6)
         self.sides_actions.append(self.addWidget(self.sides_spin))
-        # Divide into Belts: how many, belt or roller, which way parcels go.
+        # Divide into Belts: how many, which way parcels go.
         self.divide_actions = [self.addWidget(QLabel(" Parts "))]
         self.parts_spin = QSpinBox(minimum=1, maximum=200, value=4)
         self.parts_spin.setToolTip("How many conveyors of equal length the line / arc becomes - "
                                    "1: the whole of it as one belt / roller conveyor")
         self.divide_actions.append(self.addWidget(self.parts_spin))
-        self.divide_actions.append(self.addWidget(QLabel(" Surface ")))
-        self.divide_surface_combo = QComboBox()
-        for label, key in (("Belt", "belt"), ("Roller", "roller")):
-            self.divide_surface_combo.addItem(label, key)
-        self.divide_surface_combo.setToolTip("Belt conveyors, or driven roller conveyors (pallets, totes)")
-        self.divide_actions.append(self.addWidget(self.divide_surface_combo))
         self.divide_actions.append(self.addWidget(QLabel(" Direction ")))
         self.divide_direction_combo = QComboBox()
         for label, key in (("Forward", "forward"), ("Reverse", "reverse")):
@@ -223,7 +217,7 @@ class PathToolbar(QToolBar):
         self.divide_direction_combo.setToolTip("Forward: parcels run the way the line / arc was drawn; "
                                                "Reverse: the other way. The preview arrows show it.")
         self.divide_actions.append(self.addWidget(self.divide_direction_combo))
-        # Belt from Sketch/Drawing: what kind of belt, which way parcels go.
+        # Conveyor from Sketch/Drawing: what kind of belt, which way parcels go.
         self.pick_actions = [self.addWidget(QLabel(" Type "))]
         self.type_combo = QComboBox()
         for label, key in (("Auto", "auto"), ("Linear", "linear"), ("Curved", "curved"), ("Path", "path")):
@@ -233,14 +227,18 @@ class PathToolbar(QToolBar):
             "curved, other areas -> linear.\nLinear: parcels move one way. Curved: parcels turn about the "
             "arc's center. Path: parcels follow the line.")
         self.pick_actions.append(self.addWidget(self.type_combo))
-        self.pick_actions.append(self.addWidget(QLabel(" Surface ")))
+        # Belt or roller for every new conveyor (from sketch, divide, path,
+        # curved): one choice, not in this options bar - the CAD controller
+        # puts it on the main tool bar beside the conveyor tools. A placed
+        # conveyor changes in its properties (Surface).
         self.surface_combo = QComboBox()
+        self.surface_combo.setObjectName("surfaceCombo")
         for label, key in (("Belt", "belt"), ("Roller", "roller")):
             self.surface_combo.addItem(label, key)
         self.surface_combo.setToolTip(
-            "Belt: a belt conveyor. Roller: a driven roller conveyor (pallets, totes) - straight or curved, "
-            "so Type Auto makes rollers only from a straight line, an arc or an area.")
-        self.pick_actions.append(self.addWidget(self.surface_combo))
+            "New conveyors: Belt (a belt conveyor) or Roller (a driven roller conveyor for pallets, totes - "
+            "straight or curved; a path is drawn as straight and curved pieces). Ctrl+Shift+B switches.\n"
+            "Change a placed one in its properties (Surface).")
         self.pick_actions.append(self.addWidget(QLabel(" Direction ")))
         self.direction_combo = QComboBox()
         for label, key in (("Forward", "forward"), ("Reverse", "reverse"), ("Across +90°", "across+"),
@@ -258,7 +256,7 @@ class PathToolbar(QToolBar):
         self.on_options_changed: Optional[Callable[[], None]] = None
         for signal in (self.type_combo.currentIndexChanged, self.surface_combo.currentIndexChanged,
                        self.direction_combo.currentIndexChanged, self.parts_spin.valueChanged,
-                       self.divide_surface_combo.currentIndexChanged, self.divide_direction_combo.currentIndexChanged,
+                       self.divide_direction_combo.currentIndexChanged,
                        self.gap_spin.valueChanged, self.width_spin.valueChanged, self.sides_spin.valueChanged,
                        self.corner_spin.valueChanged):
             signal.connect(self._options_changed)
@@ -397,8 +395,12 @@ class _PointTool:
     def _status(self, text: str, ms: int = 0):
         self.window.statusBar().showMessage(text, ms)
 
+    @property
+    def _roller(self) -> bool:
+        return self.toolbar.surface == "roller"
+
     def _new_id(self) -> str:
-        return next_indexed_id([i.model.id for i in self.window.items_list], "belt")
+        return next_indexed_id([i.model.id for i in self.window.items_list], "roller" if self._roller else "belt")
 
     def _add_belt(self, belt: Belt, text: str):
         item = self.view._add_item(self.belt_item_cls(belt), text=text)
@@ -634,7 +636,8 @@ class PathDrawTool(_PointTool):
             self.stop()
             return
         pts, bulges = list(self.anchors), list(self.bulges)
-        if self.toolbar.split_check.isChecked() and self.on_belts is not None:
+        # Rollers are straight or curved: a roller path is its pieces.
+        if (self.toolbar.split_check.isChecked() or self._roller) and self.on_belts is not None:
             self._finish_separate(pts, bulges, closed)
             return
         # The anchors stay the corners you clicked; the belt rounds them
@@ -650,20 +653,24 @@ class PathDrawTool(_PointTool):
     def _finish_separate(self, pts, bulges, closed: bool):
         """One belt per straight run / curve, each with its own motor."""
         taken = [i.model.id for i in self.window.items_list]
+        prefix = "roller" if self._roller else "belt"
 
         def new_id():
-            taken.append(next_indexed_id(taken, "belt"))
+            taken.append(next_indexed_id(taken, prefix))
             return taken[-1]
         try:
             belts = segment_belts(new_id, pts, bulges, closed, self.toolbar.width_spin.value(),
                                   corner_radius=self.toolbar.corner_spin.value())
+            if self._roller:
+                belts = [as_roller(b) for b in belts]
         except ValueError as exc:
             self._status(str(exc), 8000)   # keep drawing: fix Corner R / Width, then finish again
             return
         self.stop()
         self.on_belts(belts, closed, "Draw Belt Path")
         kinds = [b.type for b in belts]
-        self._status(f"Drew {len(belts)} belts ({kinds.count('linear')} straight, {kinds.count('curved')} curved), "
+        what = "roller conveyors" if self._roller else "belts"
+        self._status(f"Drew {len(belts)} {what} ({kinds.count('linear')} straight, {kinds.count('curved')} curved), "
                      f"each with its own motor, joined {belts[0].id} -> {belts[-1].id}"
                      f"{' -> ' + belts[0].id if closed and len(belts) > 1 else ''}.", 8000)
 
@@ -691,7 +698,7 @@ class PathDrawTool(_PointTool):
 
 class SketchLineTool(PathDrawTool):
     """Construction lines and tangent arcs (no belt yet) - the CAD "line"
-    command. Connect them into a belt with Belt from Sketch/Drawing."""
+    command. Connect them into a belt with Conveyor from Sketch/Drawing."""
 
     title = "Sketch Line"
     hint = ("Sketch Line: click points (OSNAP). L/A line/tangent arc, Shift = 15 deg, type coordinates, "
@@ -915,6 +922,8 @@ class CurvedBeltDrawTool(SketchArcTool):
             if seg.kind != "arc":
                 raise ValueError("The three points are in a line - click a point off the chord to bend the belt.")
             belt = curved_belt_from_segment(self._new_id(), seg, self.toolbar.width_spin.value())
+            if self._roller:
+                as_roller(belt)
         except ValueError as exc:
             del self.anchors[2:]            # keep start and end: click another point on the arc
             self._status(str(exc), 6000)
@@ -923,7 +932,7 @@ class CurvedBeltDrawTool(SketchArcTool):
         self.stop()
         self._add_belt(belt, "Draw Curved Belt")
         sweep = (belt.endAngle - belt.startAngle) % 360.0 or 360.0
-        self._status(f"Drew {belt.id}: curved, R {belt.radius:.3f} m, {sweep:.1f} deg, "
+        self._status(f"Drew {belt.id}: curved{' roller conveyor' if self._roller else ''}, R {belt.radius:.3f} m, {sweep:.1f} deg, "
                      f"{'counter-clockwise' if belt.directionAngle > 0 else 'clockwise'}.", 8000)
 
     def _update_preview(self):
@@ -955,7 +964,7 @@ class CurvedBeltDrawTool(SketchArcTool):
 
 class _SketchShapeTool(_PointTool):
     """Two clicks (or typed points) -> a closed basic shape as sketch
-    geometry; Belt from Sketch/Drawing then turns it into any belt type."""
+    geometry; Conveyor from Sketch/Drawing then turns it into any belt type."""
 
     on_sketch: Optional[Callable[[SketchEntity], None]] = None
     corner = False   # toolbar Corner R rounds the corners
@@ -1082,7 +1091,8 @@ class OutlineDrawTool(_PointTool):
 
     title = "Draw Belt Outline"
     hint = ("Draw Belt Outline: click the corners (OSNAP), Shift = 15 deg, type coordinates. "
-            "Parcels flow along the first edge. Click the first corner or press Enter to finish, Esc to cancel.")
+            "Parcels flow along the first edge. Click the first corner or press Enter to finish, Esc to cancel. "
+            "An outline is always a belt (rollers are straight or curved).")
 
     def _configure_toolbar(self):
         self.toolbar.configure("Outline", segments=False, width=False, corner=False, points=True)
@@ -1137,7 +1147,7 @@ class OutlineDrawTool(_PointTool):
 
 
 class PickFromDrawingTool:
-    """Belt from Sketch/Drawing: hover the sketch or imported layout; inside
+    """Conveyor from Sketch/Drawing: hover the sketch or imported layout; inside
     a closed area the area is highlighted, on a line the chain of lines/arcs
     joined to it. The preview shows the belt that a click creates - its type
     (toolbar Type) and where parcels go (toolbar Direction, arrows).
@@ -1146,18 +1156,15 @@ class PickFromDrawingTool:
     (merged into one outline) or several lines/arcs (joined into one chain,
     e.g. across a branch). Enter creates the belt from them, Esc clears.
 
-    With Surface Roller (toolbar, or Roller from Sketch/Drawing) it makes a
-    driven roller conveyor instead: straight or curved, as the catalogue's -
-    a chain that would be a path belt is refused with the reason."""
+    With the tool bar's Belt / Roller on Roller it makes a driven roller
+    conveyor instead: straight or curved, as the catalogue's - a chain that
+    would be a path belt is refused with the reason."""
 
-    title = "Belt from Sketch/Drawing"
-    roller_hint = ("Roller from Sketch/Drawing: click on a straight line or an arc (a roller conveyor along it) or "
-                   "inside a closed area (filling it). Toolbar: Type, Surface, Direction, Width, Join gap. "
+    title = "Conveyor from Sketch/Drawing"
+    roller_hint = ("Conveyor from Sketch/Drawing (Roller): click on a straight line or an arc (a roller conveyor "
+                   "along it) or inside a closed area (filling it). Toolbar: Type, Direction, Width, Join gap. "
                    "Esc to finish.")
-    ROLLER_SPEED = 0.3       # m/s, the catalogue's roller conveyors
-    ROLLER_PITCH = 0.125     # m between roller centres
-    ROLLER_COLOR = "#4b5563"
-    hint = ("Belt from Sketch/Drawing: click on a line/arc (belt along it and everything joined to it) or inside "
+    hint = ("Conveyor from Sketch/Drawing (Belt): click on a line/arc (belt along it and everything joined to it) or inside "
             "a closed area (belt filling it). Toolbar: Type, Direction, Width, Join gap. Shift+click collects "
             "split pieces, Enter makes one belt of them. Esc to finish.")
 
@@ -1182,8 +1189,8 @@ class PickFromDrawingTool:
         return self.snapper.picker
 
     def start(self, surface: Optional[str] = None):
-        """surface: "belt" / "roller" preselects the toolbar's Surface
-        (Roller from Sketch/Drawing); None keeps it."""
+        """surface: "belt" / "roller" sets the tool bar's Belt / Roller first;
+        None keeps it."""
         if self.picker is None:
             self.window.statusBar().showMessage(
                 "Nothing to pick: sketch lines/arcs/shapes first (Tools > Sketch ...) "
@@ -1319,13 +1326,7 @@ class PickFromDrawingTool:
             belt_id or next_indexed_id([i.model.id for i in self.window.items_list], prefix), target,
             kind=self.toolbar.belt_kind, direction=self.toolbar.direction, width=self.toolbar.width_spin.value(),
             shapes=picker.shapes if picker is not None else (), tol=max(0.01, self.toolbar.gap_spin.value()))
-        if roller:
-            if belt.type not in ("linear", "curved") or belt.vertexs:
-                raise ValueError("A roller conveyor is straight or curved: pick a straight line, an arc or an "
-                                 "area, or set Type to Linear / Curved.")
-            belt.surface, belt.rollerPitch = "roller", self.ROLLER_PITCH
-            belt.speed, belt.color = self.ROLLER_SPEED, self.ROLLER_COLOR
-        return belt
+        return as_roller(belt) if roller else belt
 
     def create(self, target) -> Optional[Belt]:
         try:

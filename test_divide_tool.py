@@ -126,7 +126,7 @@ class EditorTest(unittest.TestCase):
         self.assertEqual(divide.shortcut().toString(), "N")
         divide.trigger()
         self.bar.parts_spin.setValue(3)
-        self.bar.divide_surface_combo.setCurrentIndex(self.bar.divide_surface_combo.findData("roller"))
+        self.cad.surface_combo.setCurrentIndex(self.cad.surface_combo.findData("roller"))   # the tool bar's
         self._mouse(QEvent.MouseMove, 2.5, 0.02, Qt.NoButton, Qt.NoButton)
         self.assertGreaterEqual(len(self.cad.divide_tool._preview_items), 4)       # 3 pieces, cuts, arrow
         self.click(2.5, 0.02)

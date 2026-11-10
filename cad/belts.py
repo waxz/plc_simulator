@@ -199,8 +199,26 @@ def reversed_segment(seg):
     return Segment("line", seg.p1, seg.p0)
 
 
+# A driven roller conveyor as the catalogue's: roller pitch, speed, colour.
+ROLLER_PITCH = 0.125     # m between roller centres
+ROLLER_SPEED = 0.3       # m/s
+ROLLER_COLOR = "#4b5563"
+
+
+def as_roller(belt: Belt) -> Belt:
+    """The conveyor as a driven roller conveyor (the designer's Surface
+    Roller). Rollers are straight or curved: ValueError for a path or a
+    polygon outline."""
+    if belt.type not in ("linear", "curved") or belt.vertexs:
+        raise ValueError("A roller conveyor is straight or curved: pick a straight line, an arc or an area, "
+                         "or set Type to Linear / Curved.")
+    belt.surface, belt.rollerPitch = "roller", ROLLER_PITCH
+    belt.speed, belt.color = ROLLER_SPEED, ROLLER_COLOR
+    return belt
+
+
 def divided_belts(new_id, seg, parts: int, width: float, reverse: bool = False, speed: float = 1.0,
-                  color: str = "#3b82f6", surface: str = "belt", roller_pitch: float = 0.125) -> List[Belt]:
+                  color: str = "#3b82f6", surface: str = "belt", roller_pitch: float = ROLLER_PITCH) -> List[Belt]:
     """A line or arc as `parts` belts of equal length, each with its own
     drive, in flow order (from its start; `reverse`: from its end) - linear
     belts along a line, curved belts along an arc; `surface` "roller" makes

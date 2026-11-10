@@ -149,11 +149,13 @@ class EditorTreesTest(unittest.TestCase):
         tools = self.menu("Tools")
         self.assertFalse([a for a in tools.actions() if a.menu() is not None], "Tools has no sub-menus")
         sections = [a.text() for a in tools.actions() if a.isSeparator() and a.text()]
-        self.assertEqual(sections, ["Sketch", "Modify", "Belts", "Connections"])
+        self.assertEqual(sections, ["Sketch", "Modify", "Conveyors", "Connections"])
         keys = {a.text(): a.shortcut().toString() for a in tools.actions() if a.text() and not a.isSeparator()}
         self.assertEqual(keys["Line"], "S")
         self.assertEqual(keys["Polygon"], "Shift+G")
-        self.assertEqual(keys["Belt from Sketch/Drawing"], "B")
+        self.assertEqual(keys["Conveyor from Sketch/Drawing"], "B")
+        self.assertEqual(keys["Switch Belt / Roller"], "Ctrl+Shift+B")
+        self.assertNotIn("Roller from Sketch/Drawing", keys)                  # one tool for belts and rollers
         self.assertEqual(keys["Trim"], "T")
         for name in ("Connect Belts", "Fillet Belts...", "Disconnect Belts", "Solve Connections"):
             self.assertIn(name, keys)

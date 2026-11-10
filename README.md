@@ -226,13 +226,37 @@ The Qt layout editor is where belt shapes and positions are designed:
   placed where you clicked), the Sketch tools, Select All, Zoom to Fit, Pan,
   Measure, Show Ports, Check Layout, Run in Simulator. While a tool runs,
   the right button ends or cancels it instead.
-- **I/O Table** (a tab beside Layout Check, View > Panels): every PLC signal
-  of the layout in one table, as a PLC tag table - component, signal,
-  direction from the PLC (input / output), PLC type, frame, byte, bit and the
-  ST member it becomes (`Sim_Input.div_1.present`). It comes from the
-  exchange contract the generated ST uses, so it is what is on the wire; a
-  laser banner's beams are one ARRAY row. Filter, sort by any column, Export
-  CSV; double-click a row to select the component.
+- **PLC Tags** (a tab beside Layout Check, View > Panels): every PLC signal
+  of the layout as a tag, laid out like TIA Portal's PLC tags editor.
+  - Left: the tag tables - **Show all tags**, **Default tag table** and your
+    own, each with its count; click one to show only its tags.
+  - Right, one row per tag: **Name**, **Tag table**, **Data type** (Bool,
+    Byte, UInt, UDInt, Real, LInt, `Array[0..31] of Bool` for a laser
+    banner's beams), **Address** in TIA notation and **Comment**, then the
+    component, signal and the ST member it becomes
+    (`Sim_Input.div_1.present`). The address is the signal's place in its
+    frame: the frames the PLC reads are inputs (`%I0.3`, `%IW126`, `%ID122`),
+    the frame it writes is outputs (`%Q1.1`, `%QD222`). A green tag is an
+    input, an orange one an output. Sorted by address at first; click a
+    header to sort by that column.
+  - Edit **Name**, **Tag table** and **Comment** in place (double-click or
+    F2). A name must be unique, not empty, without `"`, at most 128
+    characters. Untouched tags have a generated name (the component id,
+    plus the signal when the component has more than one), the Default tag
+    table and the component's label as comment. Your edits are kept in the
+    layout (`plcTags`, by signal), each one undoable.
+  - Right-click: **Move to Tag Table** (an existing one or **New Tag
+    Table...**), **Reset to Generated Name**, **Go to** the component (also a
+    double-click on a column you can't edit).
+  - **Export CSV...** writes the rows shown. **Export to TIA Portal...**
+    writes an `.xlsx` in TIA Portal's PLC tag export layout (sheet "PLC
+    Tags": Name, Path, Data Type, Logical Address, Comment, Hmi
+    Visible / Accessible / Writeable) for **Import** into a PLC tag table.
+    It exports the tag table shown, or all tags. TIA PLC tags are
+    elementary, so an array becomes one Bool tag per bit (`<name>_<i>`) and
+    the 64-bit clock is left out.
+  - The tags come from the exchange contract the generated ST uses, so they
+    are what is on the wire.
 - **Control Panel** (library, Operator Panel): an operator panel whose push
   buttons, pilot lamps and buzzers are its properties - the **Devices**
   table (type, name, legend, colour, NC contact, key; + Button / + Lamp /
@@ -310,8 +334,8 @@ One compact row (18 px icons, as a CAD tool's tool bars), left to right:
   Measure, Clear Measurements, Fit (zoom to the whole layout, `Z`), Ports
   (show belt inlets / outlets); **Run** in the simulator (`F5`) and the theme;
   **Sketch** - Line, Arc, Arc Center, Rectangle, Circle,
-  Polygon, Clear; **Belts** - Belt from Sketch, Roller from Sketch,
-  Divide, Belt Path, Curved Belt, Outline Belt;
+  Polygon, Clear; **Conveyors** - the **Belt / Roller** choice, then
+  Conveyor from Sketch, Divide, Belt Path, Curved Belt, Outline Belt;
   **Connections** - Connect, Fillet Belts, Disconnect, Solve, Check
   (layout check, `F7`).
 - **Left**: **Modify** (below).
@@ -418,7 +442,12 @@ numbers to type:
    The OSNAP toolbar button turns it off. Shift snaps the angle to 15 deg;
    typed `x,y`, `@dx,dy` and `len<angle` give exact points. A free click is
    only pixel-accurate, so type or snap points that must be exact.
-3. **Connect geometry into a belt with Tools > Belt from Sketch/Drawing (B)**:
+3. **Connect geometry into a conveyor with Tools > Conveyor from Sketch/Drawing (B)**.
+   The **Belt / Roller** choice on the tool bar (`Ctrl+Shift+B` switches)
+   decides what every conveyor tool makes - this one, Divide, Belt Path
+   (a roller path is drawn as straight and curved roller conveyors) and
+   Curved Belt; an outline is always a belt. A placed conveyor changes in
+   its properties (Surface).
    - Click **on a line or arc** for a belt along it *and every line/arc
      joined to it end to end*, in any drawing direction (a branch stops the
      chain). The belt width comes from the toolbar's Width.
@@ -507,7 +536,7 @@ Sharp corners are rounded with the toolbar's
 anchors stay the corners you clicked, so dragging one re-rounds that corner
 and the belt stays smooth.
 For loops of standard shapes, sketch a rectangle, circle or polygon and
-use Belt from Sketch/Drawing with Type Path (on its outline) instead.
+use Conveyor from Sketch/Drawing with Type Path (on its outline) instead.
 
 Select a drawn belt to edit its anchors: drag a handle to move it,
 Ctrl+click to switch the segment after it between straight and tangent arc,
