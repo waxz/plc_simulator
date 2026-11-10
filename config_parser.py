@@ -860,7 +860,7 @@ class AxExport(BaseModel):
     prefix: str = ""                # Station_1: Sim_Input -> Station_1_Input, ...
     frames: List[str] = Field(default_factory=list)    # [] = every frame
     tags: bool = True               # the PLC tags STRUCT, ReadTags / WriteTags
-    bitArrays: bool = False         # a laser banner's beams as ARRAY OF BOOL (else one word)
+    bitArrays: bool = False         # a laser banner's beams as ARRAY OF BOOL (else ARRAY OF BYTE)
     maxPayload: int = 242           # refuse a bigger frame (the AX TcpClient's buffer); 0 = no limit
     vectors: str = ""               # also an AxUnit golden-vector test file ("" = none)
 

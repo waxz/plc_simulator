@@ -51,7 +51,7 @@ class AxExportDialog(QDialog):
         self.tags = QCheckBox("PLC tags: Sim_Tags with ReadTags / WriteTags")
         self.tags.setChecked(settings.tags)
         form.addRow("", self.tags)
-        self.bit_arrays = QCheckBox("Laser banner beams as ARRAY OF BOOL (else one word)")
+        self.bit_arrays = QCheckBox("Laser banner beams as ARRAY OF BOOL (else ARRAY OF BYTE, 8 beams a byte)")
         self.bit_arrays.setChecked(settings.bitArrays)
         form.addRow("", self.bit_arrays)
         self.max_payload = QSpinBox(minimum=0, maximum=65535, value=settings.maxPayload)

@@ -97,7 +97,7 @@ The one `.st` file holds:
 | Part | Contents |
 |---|---|
 | Device STRUCTs | A STRUCT per kind of device and direction, its PLC interface (`Diverter_Command`: `divert`, `commandSpeed`, `commandAngle`; `Diverter_Feedback`, `BeltDrive_Command`, ...), one per `device_kinds.py` entry, so a new kind gets its STRUCTs without touching the generator |
-| Frame STRUCTs | `Sim_Input`, `Sim_Output`, `Belt_Feedback` when sent, the `Metric_Layout_*`s (or the chosen frames; `--prefix Station_1` names them `Station_1_*`), with a member per component named after it (an ST identifier, never a keyword, unique ignoring case): a device or belt of its kind's STRUCT, a sensor / button / lamp a BOOL, a laser banner one word |
+| Frame STRUCTs | `Sim_Input`, `Sim_Output`, `Belt_Feedback` when sent, the `Metric_Layout_*`s (or the chosen frames; `--prefix Station_1` names them `Station_1_*`), with a member per component named after it (an ST identifier, never a keyword, unique ignoring case): a device or belt of its kind's STRUCT, a sensor / button / lamp a BOOL, a laser banner an `ARRAY OF BYTE` (beam i = bit i MOD 8 of byte i DIV 8, any number of beams) |
 | Serializers | `DeserializeFromBytes` / `SerializeToBytes` per frame, from the contract's byte and bit offsets (not re-derived from member order), in the layout's byte order; each first checks that the buffer holds the frame from `startOffset` |
 | PLC tags | `Sim_Tags` with a variable per tag (the designer's PLC Tags), `ReadTags` / `WriteTags` |
 | `SimIoContract` | Constants: every `FrameType`, each frame's size and layout fingerprint (the CRC that `LAYOUT_CHECK` uses), the contract fingerprint |
@@ -129,8 +129,9 @@ Migration steps:
 2. In `tcp_client.st`, use the generated `Sim_Input` / `Sim_Output` (or
    `--prefix Station_1`: `Station_1_Input` / `Station_1_Output`) and their
    overloads instead of the hand-written STRUCTs. The field names are the
-   component ids, as today; a laser banner stays one DWORD (`bitArrays`:
-   `ARRAY[0..31] OF BOOL`).
+   component ids, as today; a laser banner is an `ARRAY OF BYTE` (a
+   32-beam one: `ARRAY[0..3] OF BYTE`, the same bytes as the hand-written
+   DWORD; `bitArrays`: `ARRAY[0..31] OF BOOL`).
 3. Replace the hand-copied frame-type constants with
    `SimIoContract.FRAME_TYPE_*`.
 4. Delete the I/O STRUCTs from `types.st` and their part of

@@ -172,6 +172,36 @@ class EmitTest(unittest.TestCase):
         with open(out, encoding="utf-8") as a, open(again, encoding="utf-8") as b:
             self.assertEqual(a.read(), b.read())                                         # the same ST from the file
 
+    def test_laser_banners_of_any_size_are_byte_arrays(self):
+        """A banner's beams are one ARRAY OF BYTE, beam i = bit (i MOD 8) of
+        byte (i DIV 8), whatever its beam count - the simulator's own bytes."""
+        import ax_export
+        from config_parser import Sensor, SimulatorConfig
+
+        def banner(sensor_id, beams):
+            return Sensor(id=sensor_id, x=0, y=0, width=0.1, height=1, rotation=0, label="", color="#f00",
+                          sensorType="laser_banner", laserCount=beams, beamDistance=0.02)
+        config = SimulatorConfig(sensors=[banner("b48", 48), banner("b20", 20),
+                                          Sensor(id="eye", x=0, y=0, width=0.1, height=1, rotation=0, label="",
+                                                 color="#f00")])
+        text = export_text(config)
+        self.assertIn("b48 : ARRAY[0..5] OF BYTE;", text)
+        self.assertIn("b20 : ARRAY[0..2] OF BYTE;", text)        # 20 beams: 3 bytes, the last one padded
+        self.assertIn("eye : BOOL;", text)
+        frame = next(f for f in st_export.contract(config)["frames"] if f["name"] == "Sim_Input")
+        packed = ax_export.pack_bit_arrays(frame)
+        b48 = [f for f in packed["fields"] if f["member"].startswith("b48[")]
+        self.assertEqual([f["type"] for f in b48], ["byte"] * 6)
+        # The bytes the simulator sends for some blocked beams hold them as the PLC reads them.
+        config.sensors[0].sensor_states = "".join("1" if i in (0, 9, 47) else "0" for i in range(48))
+        config.sensors[1].sensor_states = "".join("1" if i == 19 else "0" for i in range(20))
+        _name, _t, mapping = next(f for f in st_export.frames(config) if f[0] == "Sim_Input")
+        wire = ComponentMessage(mapping, endianness="<").serialize(config)
+        first = b48[0]["byte"]
+        self.assertEqual(list(wire[first:first + 6]), [0x01, 0x02, 0, 0, 0, 0x80])        # beams 0, 9, 47
+        b20 = next(f for f in packed["fields"] if f["member"] == "b20[2]")
+        self.assertEqual(wire[b20["byte"]], 0x08)                                          # beam 19: byte 2, bit 3
+
     def test_a_frame_too_big_for_the_plc_is_refused(self):
         import ax_export
         from config_parser import AxExport

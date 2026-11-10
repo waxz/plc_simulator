@@ -9,7 +9,8 @@ One .st file per export (AxExport settings, saved in the layout):
 
   the device STRUCTs and one STRUCT per frame (Sim_Input, Sim_Output, ...;
   --prefix Station_1 names them Station_1_Input / ...); a laser banner's
-  beams as one BYTE / WORD / DWORD / LWORD (bitArrays keeps ARRAY OF BOOL)
+  beams as ARRAY OF BYTE, beam i = bit (i MOD 8) of byte (i DIV 8), for any
+  number of beams (bitArrays keeps ARRAY OF BOOL)
   DeserializeFromBytes / SerializeToBytes per frame, at the contract's byte
   / bit offsets, each first checking the buffer is long enough
   the PLC tags (Sim_Tags) and ReadTags / WriteTags (tags)
@@ -258,23 +259,25 @@ def emit_sim_tags(frames: list[dict], contract: dict, tags: list, renames: dict[
     return lines
 
 
-# A BOOL array of 8 / 16 / 32 / 64 bits that starts on a byte boundary and
-# runs on contiguously (a laser banner's beams) is, in a little-endian frame,
-# bit for bit a BYTE / WORD / DWORD / LWORD: bit i of the word is element i.
-BIT_WORDS = {8: ("BYTE", "byte"), 16: ("WORD", "uint16"), 32: ("DWORD", "uint32"), 64: ("LWORD", "uint64")}
+# A laser banner's beams - a BOOL array of any length starting on a byte
+# boundary, bit i = beam i, padded to whole bytes on the wire - are one
+# ARRAY OF BYTE in the PLC: beam i is bit (i MOD 8) of byte (i DIV 8), any
+# number of beams (16, 32, 48, ...) the same way, and byte order does not
+# matter (bytes have none), so big-endian frames get it too.
 
 
-def pack_bit_arrays(frame: dict, endianness: str) -> dict:
-    """The frame with each such BOOL array as one word member, read and
-    written with a single Deserialize / Serialize instead of a GetBit /
-    SetBit per bit. Big-endian frames keep their arrays (the bytes of a
-    big-endian word run the other way)."""
-    if endianness != "LE":
-        return frame
+def pack_bit_arrays(frame: dict, endianness: str = "LE") -> dict:
+    """The frame with each such BOOL array as an ARRAY OF BYTE member, read
+    and written a byte at a time instead of a GetBit / SetBit per beam. An
+    array that does not start at bit 0 of a byte, or shares its last byte
+    with another field, keeps its BOOLs."""
     members, fields = [dict(m) for m in frame["members"]], list(frame["fields"])
+    taken = {}                                      # byte -> the members with a field in it
+    for f in fields:
+        taken.setdefault(f["byte"], set()).add(f["member"].split("[")[0].split(".")[0])
     for member in members:
         length = member.get("length")
-        if member["type"] != "BOOL" or length not in BIT_WORDS:
+        if member["type"] != "BOOL" or not length:
             continue
         name = member["name"]
         bits = {f["member"]: f for f in fields if f["type"] == "bit" and f["member"].startswith(name + "[")}
@@ -284,12 +287,15 @@ def pack_bit_arrays(frame: dict, endianness: str) -> dict:
         if any(bits.get(f"{name}[{i}]", {}).get("byte") != first["byte"] + i // 8
                or bits[f"{name}[{i}]"]["bit"] != i % 8 for i in range(length)):
             continue
-        st_type, byte_type = BIT_WORDS[length]
-        member["type"], member["length"] = st_type, None
+        count = (length + 7) // 8
+        if any(taken.get(first["byte"] + k, set()) - {name} for k in range(count)):
+            continue                                # another field in one of its bytes
+        member["type"], member["length"] = "BYTE", count
         position = fields.index(first)
-        word = {"byte": first["byte"], "bit": None, "type": byte_type, "path": first["path"], "member": name}
+        packed = [{"byte": first["byte"] + k, "bit": None, "type": "byte", "path": first["path"],
+                   "member": f"{name}[{k}]"} for k in range(count)]
         fields = [f for f in fields if f["member"] not in bits]
-        fields.insert(position, word)
+        fields[position:position] = packed
     return {**frame, "members": members, "fields": fields}
 
 
@@ -446,7 +452,7 @@ def export(contract: dict, settings, tags: list | None = None, layout_path: Opti
     files = {resolve(settings.output, layout_path): text}
     frames = contract_frames(contract, only)
     if not settings.bitArrays:
-        frames = [pack_bit_arrays(f, contract["endianness"]) for f in frames]
+        frames = [pack_bit_arrays(f) for f in frames]
     if settings.vectors:
         files[resolve(settings.vectors, layout_path)] = emit_vectors(frames, contract, renames, namespace)
     report = [f"{renames.get(f['name'], f['name'])}: {f['size']} bytes"

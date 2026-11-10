@@ -1291,7 +1291,7 @@ to a whole byte, then every other field in declaration order.
 |---|---|---|
 | button, IR sensor, LED (`packFormat` "bit") | 1 bit, 8 per byte, bit 0 first | BOOL |
 | padding | unused bits up to the byte | - |
-| laser banner ("bit") | its beams, beam *i* = bit *i*, padded to whole bytes | BYTE / WORD / DWORD / LWORD, else ARRAY OF BYTE |
+| laser banner ("bit") | its beams, beam *i* = bit *i*, padded to whole bytes | ARRAY OF BYTE, beam *i* = bit *i* MOD 8 of byte *i* DIV 8, any number of beams |
 | `packFormat` "byte" / "uint16" / "uint32" / "float" | 1 / 2 / 4 / 4 bytes (a banner's beam *i* = bit *i* here too) | BYTE / WORD / DWORD / REAL |
 | belt command (output) | speed, directionAngle: 2 x 4-byte float | ARRAY[0..1] OF REAL |
 | belt feedback (BELT_FEEDBACK frame) | actualSpeed float, encoderCount uint32 | REAL, DWORD |
@@ -1308,7 +1308,9 @@ exchange: `ax_export.py`. The designer, `st_export.py` and the AX project's
 `tools/generate_st_serde.py --sim-config` all write through it, so the
 STRUCTs and serializers are defined once. One `.st` file holds:
 - the device STRUCTs and one STRUCT per frame (`--prefix Station_1`:
-  `Station_1_Input`, ...); a laser banner's beams as one word;
+  `Station_1_Input`, ...); a laser banner's beams as one `ARRAY OF BYTE`
+  (beam *i* = bit *i* MOD 8 of byte *i* DIV 8, for 16, 32, 48, ... beams;
+  the `axdev-sim-exchange` library's `BeamBlocked` / `AnyBeamBlocked` read it);
 - `DeserializeFromBytes` / `SerializeToBytes` per frame, at the exact byte
   and bit offsets, in the layout's byte order, each first checking that the
   buffer is long enough (else nothing is done, `startOffset` returned);
