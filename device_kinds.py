@@ -156,14 +156,14 @@ register(DeviceKind(
     "turntables", cp.Turntable, "Turntable",
     commands=([], [(ByteType.BYTE, "targetIndex")]),
     feedback=(bits("turning", "inPosition", "occupied"), [(ByteType.BYTE, "index")]),
-    runtime=("angle",),
+    runtime=("angle", "turnVelocity", "motorSpeed"),
     doc="A turntable: turns its belt between positions."))
 
 register(DeviceKind(
     "transfers", cp.Transfer, "Transfer",
     commands=(bits("transfer"), []),
     feedback=(bits("present", "centered", "up"), [(ByteType.UINT16, "transferred")]),
-    runtime=("lift",),
+    runtime=("lift", "motorSpeed"),
     doc="A 90-degree chain transfer of a roller line."))
 
 register(DeviceKind(

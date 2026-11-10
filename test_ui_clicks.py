@@ -257,6 +257,25 @@ class EditorClicksTest(unittest.TestCase):
         self.assertIn("lift 0.380 m/s", panel.drive_summary.text())
         self.assertIn("level to level", panel.drive_summary.text())
 
+    def test_a_turntable_and_a_transfer_have_their_drive_trains(self):
+        import drivetrain
+        panel = self.window.properties_panel
+        for name, label, words in (("Turntable", "Ring / pinion", "90° turn"),
+                                   ("90\u00b0 Transfer", "Sprocket Ø", "cross")):
+            with self.subTest(name):
+                item = self.window.view.place_template(name, 40.0, 40.0)
+                self.window.scene.clearSelection()
+                item.setSelected(True)
+                _app.processEvents()
+                self.assertIn("set directly", panel.drive_summary.text())
+                panel.spins["drive.gearRatio"].setValue(20.0)
+                self.assertIsNotNone(drivetrain.train_of(item.model))
+                self.assertIn(words, panel.drive_summary.text())
+                labels = [panel.tree.topLevelItem(i).child(j).text(0)
+                          for i in range(panel.tree.topLevelItemCount())
+                          for j in range(panel.tree.topLevelItem(i).childCount())]
+                self.assertIn(label, labels)
+
     def test_the_io_table_lists_every_signal(self):
         self.window.io_dock.raise_()
         self.window.io_dock.show()

@@ -25,6 +25,7 @@ import random
 import zlib
 from typing import Dict, List, Optional, Tuple
 
+import drivetrain
 from config_parser import Accumulator, Diverter, SimulatorConfig, Transfer, Turntable
 from math_utils import get_rect_vertices, point_in_polygon
 
@@ -322,9 +323,12 @@ class LogisticsRuntime:
             if t.lift <= 0.0:
                 state["phase"] = "down"
         t.up = state["phase"] == "up"
+        t.motorSpeed = 0.0
         if t.up:
             c = math.radians(t.rotation + t.crossAngle)
-            self._moves.append((inside, t.speed * math.cos(c), t.speed * math.sin(c)))
+            speed = drivetrain.machine_speed(t)          # the chains: the drive's speed, else `speed`
+            t.motorSpeed = drivetrain.motor_speed_of(t, speed)
+            self._moves.append((inside, speed * math.cos(c), speed * math.sin(c)))
         elif t.stop and ahead:
             self._moves.append((ahead, 0.0, 0.0))                # the positioning stop
 
@@ -366,9 +370,15 @@ class LogisticsRuntime:
                 return
             state["riders"] = self._on_table(table)
             table.turning, table.inPosition = True, False
-        step = table.turnSpeed * h
         delta = goal - table.angle
+        speed = drivetrain.machine_speed(table)
+        if drivetrain.train_of(table) is not None:   # the slewing drive: ramp up, brake onto the angle
+            accel, decel = drivetrain.machine_ramps(table)
+            speed = drivetrain.ramp_velocity(abs(table.turnVelocity), abs(delta), speed, accel, decel, h)
+        step = speed * h
         turn = delta if abs(delta) <= step else math.copysign(step, delta)
+        table.turnVelocity = math.copysign(speed, delta) if abs(delta) > step else 0.0
+        table.motorSpeed = drivetrain.motor_speed_of(table, table.turnVelocity)
         table.angle += turn
         a = math.radians(turn)
         for part in state["riders"]:                         # what is on it turns with it

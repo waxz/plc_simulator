@@ -386,6 +386,11 @@ class EditorUI:
             if item.drive is not None:
                 values["Motor speed"] = f"{item.motorSpeed:.0f} rpm"
             return values
+        if isinstance(item, (Turntable, Transfer)) and item.drive is not None:
+            values = {"Motor speed": f"{item.motorSpeed:.0f} rpm"}
+            if isinstance(item, Turntable):
+                values["Turn"] = f"{item.turnVelocity:+.1f} °/s"
+            return values
         if isinstance(item, Sensor):
             # The conditioned output (delays, NC) as the PLC gets it: True/False
             # or a "0"/"1" string, one character per beam.

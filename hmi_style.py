@@ -154,6 +154,7 @@ PROPERTY_GROUPS = {
     # How it moves.
     "speed": "Motion", "directionAngle": "Motion", "transition_momentum_duration": "Motion",
     "liftSpeed": "Motion", "cycleTime": "Motion", "actuationTime": "Motion", "speedOverride": "Motion",
+    "turnSpeed": "Motion", "crossAngle": "Motion", "liftTime": "Motion",
     # Its signals: what a sensor sees and how it reports it.
     "laserCount": "Signal", "beamDistance": "Signal",
     "onDelay": "Signal", "offDelay": "Signal", "invert": "Signal", "packFormat": "Signal",
@@ -164,7 +165,8 @@ PROPERTY_GROUPS = {
     "pickX": "Operation", "pickY": "Operation", "placeX": "Operation", "placeY": "Operation",
     "pickLevel": "Operation", "placeLevel": "Operation", "placeTarget": "Operation", "control": "Operation",
     "holdTime": "Operation", "releaseTime": "Operation", "beltId": "Operation", "pickSensorId": "Operation",
-    "autoFrom": "Operation", "autoTo": "Operation", "destination": "Operation",
+    "autoFrom": "Operation", "autoTo": "Operation", "destination": "Operation", "angles": "Operation",
+    "stop": "Operation",
     "color": "Display",
 }
 

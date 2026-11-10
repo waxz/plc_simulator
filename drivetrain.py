@@ -68,30 +68,55 @@ class Train:
         """Motor speed (rpm) while the surface runs at `speed` (m/s)."""
         return self.motor_speed(self.frequency_for_speed(speed))
 
+    def turn_speed(self, frequency: float) -> float:
+        """A rotary output (a turntable on its slewing ring): degrees per
+        second of the driven part at this frequency."""
+        return self.output_speed(frequency) / self.transmission_ratio * 6.0
+
+
+def machine_kind(component) -> str:
+    """What the drive moves: "lift" (an elevator's hoist), "turntable" (a
+    slewing drive, rotary), "transfer" (a transfer's chains) or "belt"."""
+    if hasattr(component, "liftSpeed"):
+        return "lift"
+    if hasattr(component, "turnSpeed"):
+        return "turntable"
+    if hasattr(component, "crossAngle"):
+        return "transfer"
+    return "belt"
+
 
 def is_lift(component) -> bool:
-    """An elevator: its train is a hoist, its design speed `liftSpeed`."""
-    return hasattr(component, "liftSpeed")
+    return machine_kind(component) == "lift"
+
+
+def is_rotary(component) -> bool:
+    """A turntable: its speed in degrees per second, no drum."""
+    return machine_kind(component) == "turntable"
 
 
 def design_speed(component) -> float:
-    """The speed the component is designed for (m/s): a belt's `speed`, an
-    elevator's `liftSpeed`."""
-    value = component.liftSpeed if is_lift(component) else getattr(component, "speed", 0.0)
-    return abs(float(value or 0.0))
+    """The speed the component is designed for: a belt's or a transfer's
+    `speed` and an elevator's `liftSpeed` (m/s), a turntable's `turnSpeed`
+    (deg/s)."""
+    kind = machine_kind(component)
+    value = {"lift": "liftSpeed", "turntable": "turnSpeed"}.get(kind, "speed")
+    return abs(float(getattr(component, value, 0.0) or 0.0))
 
 
 def train_of(component, assume_drive: bool = False) -> Optional[Train]:
     """The component's drive train, or None. A belt has one with gearRatio
-    and drumDiameter set, or when commanded in Hz; an elevator as soon as it
-    has a `drive`. Missing values are derived from the design speed.
-    `assume_drive`: an elevator without a drive yet, as it would be (the
+    and drumDiameter set, or when commanded in Hz; a machine (elevator,
+    turntable, transfer) as soon as it has a `drive`. Missing values are
+    derived from the design speed at the rated frequency.
+    `assume_drive`: a machine without a drive yet, as it would be (the
     designer's display)."""
     drive = getattr(component, "drive", None)
-    if drive is not None and drive.gearRatio and drive.drumDiameter:
+    rotary = is_rotary(component)
+    if drive is not None and drive.gearRatio and (drive.drumDiameter or rotary):
         return Train(drive.motorRatedSpeed, drive.motorRatedFrequency, drive.gearRatio,
-                     drive.transmissionRatio or 1.0, drive.drumDiameter, drive.maxFrequency)
-    if is_lift(component):
+                     drive.transmissionRatio or 1.0, drive.drumDiameter or DEFAULT_DRUM_DIAMETER, drive.maxFrequency)
+    if machine_kind(component) != "belt":
         if drive is None and not assume_drive:
             return None
     elif getattr(component, "commandFormat", "speed") != "frequency":
@@ -102,8 +127,13 @@ def train_of(component, assume_drive: bool = False) -> Optional[Train]:
     transmission = (drive.transmissionRatio or 1.0) if drive is not None else 1.0
     gear = drive.gearRatio if drive is not None else None
     diameter = drive.drumDiameter if drive is not None else None
+    design = design_speed(component) or (90.0 if rotary else DEFAULT_DESIGN_SPEED)
+    if rotary:
+        # The gear ratio that turns the table at its design speed (deg/s = rpm * 6).
+        gear = gear or rated_speed / transmission / (design / 6.0)
+        return Train(rated_speed, rated_frequency, gear, transmission, diameter or DEFAULT_DRUM_DIAMETER,
+                     max_frequency)
     # The missing one of gear ratio / drum diameter: the design speed at the rated frequency.
-    design = design_speed(component) or DEFAULT_DESIGN_SPEED
     if gear:
         drum_rpm = rated_speed / transmission / gear
         diameter = design * 60.0 / (math.pi * drum_rpm)
@@ -134,23 +164,50 @@ def motor_preset(rated_speed: float, rated_frequency: float) -> str:
     return CUSTOM_MOTOR
 
 
-def lift_speed(elevator) -> float:
-    """The speed an elevator travels at (m/s): its hoist's at the rated
-    frequency (no higher than the max frequency), else `liftSpeed`."""
-    train = train_of(elevator)
+def _speed_at(component, train: Train, frequency: float) -> float:
+    return train.turn_speed(frequency) if is_rotary(component) else train.speed_for_frequency(frequency)
+
+
+def machine_speed(component) -> float:
+    """The speed a machine moves at - m/s, a turntable deg/s: its drive's at
+    the rated frequency (no higher than the max frequency), else its own
+    speed setting."""
+    train = train_of(component)
     if train is None:
-        return float(elevator.liftSpeed)
-    return train.speed_for_frequency(min(train.motor_rated_frequency, train.max_frequency))
+        return design_speed(component)
+    return _speed_at(component, train, min(train.motor_rated_frequency, train.max_frequency))
 
 
-def lift_time(elevator, distance: float) -> float:
-    """Seconds to travel `distance` m from standstill to standstill, with
-    the drive's ramps (a triangle when the distance is too short to reach
-    full speed)."""
-    v = lift_speed(elevator)
+def machine_ramps(component) -> tuple:
+    """(accel, decel) per second^2 in the machine's unit (m or deg): from
+    the inverter's ramp times (0 to the rated frequency), inf without."""
+    drive = getattr(component, "drive", None)
+    train = train_of(component)
+    if drive is None or train is None:
+        return math.inf, math.inf
+    rated = _speed_at(component, train, train.motor_rated_frequency)
+    accel = rated / drive.rampUpTime if drive.rampUpTime else math.inf
+    decel = rated / drive.rampDownTime if drive.rampDownTime else math.inf
+    return accel, decel
+
+
+def motor_speed_of(component, velocity: float) -> float:
+    """Motor rpm while the machine moves at `velocity` (its unit, signed)."""
+    train = train_of(component)
+    if train is None:
+        return 0.0
+    per_hz = _speed_at(component, train, 1.0)
+    return train.motor_speed(velocity / per_hz) if per_hz else 0.0
+
+
+def travel_time(component, distance: float) -> float:
+    """Seconds to move `distance` (m, a turntable deg) from standstill to
+    standstill with the drive's ramps (a triangle when too short for full
+    speed)."""
+    v = machine_speed(component)
     if v <= 0.0:
         return math.inf
-    accel, decel = lift_ramps(elevator)
+    accel, decel = machine_ramps(component)
     if accel == math.inf and decel == math.inf:
         return distance / v
     ramp_distance = v * v / 2.0 * (1.0 / accel + 1.0 / decel)
@@ -160,34 +217,41 @@ def lift_time(elevator, distance: float) -> float:
     return peak / accel + peak / decel
 
 
-def lift_ramps(elevator) -> tuple:
-    """(accel, decel) in m/s^2 of an elevator's hoist: from the inverter's
-    ramp times (0 to the rated frequency), inf without them."""
-    drive = getattr(elevator, "drive", None)
-    train = train_of(elevator)
-    if drive is None or train is None:
-        return math.inf, math.inf
-    rated = train.speed_for_frequency(train.motor_rated_frequency)
-    accel = rated / drive.rampUpTime if drive.rampUpTime else math.inf
-    decel = rated / drive.rampDownTime if drive.rampDownTime else math.inf
-    return accel, decel
+def ramp_velocity(velocity: float, left: float, vmax: float, accel: float, decel: float, h: float) -> float:
+    """The next speed (magnitude) of a positioning move: up to vmax on the
+    accel ramp, then braking so it stops after `left` more
+    (v <= sqrt(2 * decel * left)); always some progress, so it never creeps
+    to a halt short of the target."""
+    reachable = min(vmax, math.sqrt(2.0 * decel * left)) if decel != math.inf else vmax
+    if reachable > velocity:
+        velocity = reachable if accel == math.inf else min(reachable, velocity + accel * h)
+    else:
+        velocity = reachable if decel == math.inf else max(reachable, velocity - decel * h)
+    return max(velocity, min(vmax, 1e-3))
 
 
-def summary(belt) -> tuple:
+# An elevator's names for the same.
+lift_speed = machine_speed
+lift_ramps = machine_ramps
+lift_time = travel_time
+
+
+def summary(component) -> tuple:
     """(text, warning) describing the drive train in words, for the
     designer: the chain from the inverter to the surface at the rated
     frequency, the reach at the max frequency, and the design speed in Hz
-    (an elevator: its lift speed and the time from level to level).
+    (a machine: its speed and a typical move's time).
     warning is "" or why the design speed is out of reach."""
-    if is_lift(belt):
-        return _lift_summary(belt)
+    if machine_kind(component) != "belt":
+        return _machine_summary(component)
+    belt = component
     train = train_of(belt)
     if train is None:
         return "", ""
     rated = train.motor_rated_frequency
     carrier = "rollers" if getattr(belt, "surface", "belt") == "roller" else "drum"
-    text = (f"{rated:g} Hz → motor {train.motor_speed(rated):.0f} rpm → "
-            f"{train.output_speed(rated) / train.transmission_ratio:.1f} rpm at the {carrier} → "
+    text = (f"{rated:g} Hz \u2192 motor {train.motor_speed(rated):.0f} rpm \u2192 "
+            f"{train.output_speed(rated) / train.transmission_ratio:.1f} rpm at the {carrier} \u2192 "
             f"{train.speed_for_frequency(rated):.3f} m/s\n"
             f"max {train.max_speed:.3f} m/s at {train.max_frequency:g} Hz")
     design = abs(float(getattr(belt, "speed", 0.0) or 0.0))
@@ -201,19 +265,35 @@ def summary(belt) -> tuple:
     return text, warning
 
 
-def _lift_summary(elevator) -> tuple:
-    train = train_of(elevator)
+_MACHINE_WORDS = {
+    # kind: (what is driven, speed unit, own speed field, a typical move: (label, distance))
+    "lift": ("drum", "m/s", "liftSpeed", None),
+    "transfer": ("sprocket", "m/s", "speed", None),
+    "turntable": ("slewing ring", "\u00b0/s", "turnSpeed", ("90\u00b0 turn", 90.0)),
+}
+
+
+def _machine_summary(component) -> tuple:
+    kind = machine_kind(component)
+    part, unit, field, move = _MACHINE_WORDS[kind]
+    train = train_of(component)
     if train is None:
-        return (f"Lift speed {elevator.liftSpeed:g} m/s, set directly. Edit the hoist's values to "
-                f"drive it by motor, gearbox and drum instead."), ""
+        return (f"{field} {getattr(component, field):g} {unit}, set directly. Edit the drive's values to "
+                f"derive it from motor, gearbox and {part} instead."), ""
     rated = min(train.motor_rated_frequency, train.max_frequency)
-    v = lift_speed(elevator)
-    text = (f"{rated:g} Hz \u2192 motor {train.motor_speed(rated):.0f} rpm \u2192 "
-            f"{train.output_speed(rated) / train.transmission_ratio:.1f} rpm at the drum \u2192 "
-            f"lift {v:.3f} m/s\n"
-            f"level to level ({elevator.levelHeight:g} m): {lift_time(elevator, elevator.levelHeight):.1f} s")
+    v = machine_speed(component)
+    if kind == "turntable":
+        result = f"table {train.output_speed(rated) / train.transmission_ratio:.2f} rpm = {v:.1f} {unit}"
+    else:
+        result = (f"{train.output_speed(rated) / train.transmission_ratio:.1f} rpm at the {part} \u2192 "
+                  f"{'lift' if kind == 'lift' else 'cross'} {v:.3f} {unit}")
+    text = f"{rated:g} Hz \u2192 motor {train.motor_speed(rated):.0f} rpm \u2192 {result}"
+    if kind == "lift":
+        move = (f"level to level ({component.levelHeight:g} m)", component.levelHeight)
+    if move is not None:
+        text += f"\n{move[0]}: {travel_time(component, move[1]):.1f} s"
     warning = ""
     if train.max_frequency < train.motor_rated_frequency:
         warning = (f"The inverter's max {train.max_frequency:g} Hz is below the rated "
-                   f"{train.motor_rated_frequency:g} Hz: the lift runs at {v:.3f} m/s.")
+                   f"{train.motor_rated_frequency:g} Hz: it runs at {v:.3f} {unit}.")
     return text, warning

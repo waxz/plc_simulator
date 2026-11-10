@@ -688,13 +688,7 @@ class MachineRuntime:
             return speed * h
         accel, decel = drivetrain.lift_ramps(elevator)
         left = abs(target - elevator.position) * elevator.levelHeight
-        v = abs(elevator.liftVelocity)
-        reachable = min(speed, math.sqrt(2.0 * decel * left)) if decel != math.inf else speed
-        if reachable > v:
-            v = min(reachable, v + accel * h)
-        else:
-            v = reachable if decel == math.inf else max(reachable, v - decel * h)
-        v = max(v, min(speed, 1e-3))                 # always some progress: no creeping to a halt short of the floor
+        v = drivetrain.ramp_velocity(abs(elevator.liftVelocity), left, speed, accel, decel, h)
         elevator.liftVelocity = v if target > elevator.position else -v
         elevator.motorSpeed = train.motor_speed_for_surface(elevator.liftVelocity)
         return v * h

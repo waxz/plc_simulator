@@ -651,6 +651,13 @@ class Turntable(BaseModel):
     inPosition: bool = Field(default=True, exclude=True)
     occupied: bool = Field(default=False, exclude=True)
     angle: float = Field(default=0.0, exclude=True)          # runtime: the table's turn now (deg)
+    # The slewing drive (drivetrain.py): motor, gearbox, pinion on the
+    # slewing ring (transmissionRatio = ring teeth / pinion teeth). With it
+    # the table turns at the drive's speed and ramps; turnSpeed is the design
+    # speed missing values derive from.
+    drive: Optional[DriveConfig] = None
+    turnVelocity: float = Field(default=0.0, exclude=True)   # runtime: deg/s, signed
+    motorSpeed: float = Field(default=0.0, exclude=True)     # runtime: rpm
 
 
 class Transfer(BaseModel):
@@ -686,6 +693,11 @@ class Transfer(BaseModel):
     centered: bool = Field(default=False, exclude=True)
     up: bool = Field(default=False, exclude=True)
     transferred: int = Field(default=0, exclude=True)
+    # The chain drive (drivetrain.py): motor, gearbox, chain sprocket
+    # (drumDiameter). With it the chains carry at the drive's speed; `speed`
+    # is the design speed missing values derive from.
+    drive: Optional[DriveConfig] = None
+    motorSpeed: float = Field(default=0.0, exclude=True)     # runtime: rpm, while carrying
     lift: float = Field(default=0.0, exclude=True)           # runtime: 0 down .. 1 up (drawing)
 
 

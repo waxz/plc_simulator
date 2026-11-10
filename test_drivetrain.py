@@ -284,5 +284,47 @@ class ElevatorHoistTest(unittest.TestCase):
         self.assertEqual((frames["Sim_Input"], frames["Sim_Output"]), (0x083EBF55, 0xC5E971E0))
 
 
+class TurntableAndTransferDriveTest(unittest.TestCase):
+    """A turntable's slewing drive (rotary) and a transfer's chain drive."""
+
+    def test_turn_speed_from_the_slewing_drive(self):
+        from config_parser import Turntable
+        table = Turntable(id="tt", x=0, y=0, turnSpeed=90.0)
+        self.assertIsNone(drivetrain.train_of(table))
+        self.assertEqual(drivetrain.machine_speed(table), 90.0)               # no drive: turnSpeed
+        table.drive = DriveConfig(gearRatio=50.0, transmissionRatio=6.0)       # no drum needed
+        self.assertAlmostEqual(drivetrain.machine_speed(table), 1450.0 / 50.0 / 6.0 * 6.0, places=9)   # deg/s
+        self.assertAlmostEqual(drivetrain.motor_speed_of(table, 29.0), 1450.0, places=6)
+        table.drive = DriveConfig(transmissionRatio=6.0)                        # gear derived: the design speed
+        self.assertAlmostEqual(drivetrain.machine_speed(table), 90.0, places=9)
+
+    def test_the_simulated_table_turns_on_its_ramps(self):
+        from physics import PhysicsEngine
+        config = load_config("logistics_full.json")
+        table = config.turntables[0]
+        table.control = "manual"
+        table.drive = DriveConfig(gearRatio=50.0, transmissionRatio=6.0, rampUpTime=0.5, rampDownTime=0.5)
+        engine = PhysicsEngine(config)
+        table.targetIndex = 1
+        t, peak = 0.0, 0.0
+        while t < 30.0 and not (table.inPosition and table.index == 1):
+            engine.update(0.02)
+            t += 0.02
+            peak = max(peak, abs(table.turnVelocity))
+        turn = abs(table.angles[1] - table.angles[0])
+        expected = drivetrain.travel_time(table, turn)
+        self.assertAlmostEqual(t, expected, delta=0.05 * expected)
+        self.assertAlmostEqual(peak, 29.0, places=3)
+        self.assertEqual((table.angle, table.turnVelocity), (table.angles[1], 0.0))
+
+    def test_chain_speed_from_the_sprocket(self):
+        from config_parser import Transfer
+        transfer = Transfer(id="tr", x=0, y=0, speed=0.5)
+        self.assertEqual(drivetrain.machine_speed(transfer), 0.5)
+        transfer.drive = DriveConfig(gearRatio=30.0, drumDiameter=0.08)
+        self.assertAlmostEqual(drivetrain.machine_speed(transfer), 1450.0 / 30.0 * math.pi * 0.08 / 60.0, places=9)
+        self.assertIn("cross 0.202 m/s", drivetrain.summary(transfer)[0])
+
+
 if __name__ == "__main__":
     unittest.main()

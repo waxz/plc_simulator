@@ -4258,6 +4258,7 @@ def _field_specs_for(item: PlacedItem):
                   ("text", "angles", "Positions"), ("float", "turnSpeed", "Turn speed", 1.0, 720.0, 5.0),
                   ("int", "autoFrom", "Auto from", 0, 20),
                   ("int", "autoTo", "Auto to", 0, 20), ("text", "label", "Label")]
+        specs += _TABLE_TRAIN_SPECS         # the slewing drive: pinion on the ring, gearbox, motor, inverter
     elif isinstance(item, TransferItem):
         specs += [("float", "width", "Zone length", 0.2, 10.0, 0.05), ("float", "height", "Zone width", 0.2, 10.0, 0.05),
                   ("float", "crossAngle", "Transfer angle", -180.0, 180.0, 90.0),
@@ -4265,6 +4266,7 @@ def _field_specs_for(item: PlacedItem):
                   ("float", "liftTime", "Lift time", 0.0, 5.0, 0.05), ("bool", "stop", "Stops pallets"),
                   ("int", "level", "Level", 0, 20),
                   ("text", "label", "Label")]
+        specs += _CHAIN_TRAIN_SPECS         # the chains: sprocket, chain, gearbox, motor, inverter
     elif isinstance(item, AccumulatorItem):
         specs += [("text", "beltIds", "Zone belts"), ("combo", "mode", "Mode", ["singulation", "train"]),
                   ("text", "label", "Label")]
@@ -4453,6 +4455,13 @@ _DRIVE_TRAIN_SPECS = [
 ]
 # An elevator's hoist: the same, without the encoder.
 _LIFT_TRAIN_SPECS = [spec for spec in _DRIVE_TRAIN_SPECS if spec[1] != "drive.encoderCountsPerRev"]
+# A transfer's chain drive: the same as a hoist, the drum is the chain sprocket.
+_CHAIN_TRAIN_SPECS = [("float", "drive.drumDiameter", "Sprocket Ø", 0.01, 2.0, 0.005) if spec[1] == "drive.drumDiameter"
+                      else spec for spec in _LIFT_TRAIN_SPECS]
+# A turntable's slewing drive: no drum; the "chain" is the pinion on the slewing ring.
+_TABLE_TRAIN_SPECS = [("float", "drive.transmissionRatio", "Ring / pinion", 0.1, 100.0, 0.1)
+                      if spec[1] == "drive.transmissionRatio" else spec
+                      for spec in _LIFT_TRAIN_SPECS if spec[1] != "drive.drumDiameter"]
 # Drive fields where 0 in the grid means "not set" (None in the model).
 _DRIVE_ZERO_IS_NONE = {"rampUpTime", "rampDownTime", "encoderCountsPerRev"}
 
@@ -4781,7 +4790,7 @@ class PropertiesPanel(QWidget):
         item = self.current
         preset = getattr(self, "motor_preset", None)
         summary = getattr(self, "drive_summary", None)
-        if item is None or not isinstance(item.model, (Belt, Elevator)):
+        if item is None or not isinstance(item.model, (Belt, Elevator, Turntable, Transfer)):
             return
         if preset is not None:
             preset.blockSignals(True)
