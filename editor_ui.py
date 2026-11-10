@@ -381,6 +381,11 @@ class EditorUI:
                 values["Output frequency"] = f"{item.outputFrequency:.1f} Hz"
                 values["Motor speed"] = f"{item.motorSpeed:.0f} rpm"
             return values
+        if isinstance(item, Elevator):
+            values = {"Lift": f"{item.liftVelocity:+.2f} m/s"}
+            if item.drive is not None:
+                values["Motor speed"] = f"{item.motorSpeed:.0f} rpm"
+            return values
         if isinstance(item, Sensor):
             # The conditioned output (delays, NC) as the PLC gets it: True/False
             # or a "0"/"1" string, one character per beam.

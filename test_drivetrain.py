@@ -233,5 +233,56 @@ class MockPlcTest(unittest.TestCase):
         self.assertAlmostEqual(belt.actualSpeed, v_max, places=6)
 
 
+class ElevatorHoistTest(unittest.TestCase):
+    """An elevator driven by a hoist: motor, gearbox, drum / sprocket."""
+
+    def lift(self, drive=None):
+        from config_parser import Elevator
+        return Elevator(id="lift", x=0, y=0, levels=2, levelHeight=1.2, liftSpeed=0.6, drive=drive)
+
+    def test_lift_speed_from_the_hoist(self):
+        self.assertIsNone(drivetrain.train_of(self.lift()))                      # no drive: liftSpeed
+        self.assertEqual(drivetrain.lift_speed(self.lift()), 0.6)
+        hoist = self.lift(DriveConfig(gearRatio=40.0, drumDiameter=0.2))
+        self.assertAlmostEqual(drivetrain.lift_speed(hoist), 1450.0 / 40.0 * math.pi * 0.2 / 60.0, places=9)
+        # only the gear ratio: the drum is the one that gives the design speed
+        self.assertAlmostEqual(drivetrain.lift_speed(self.lift(DriveConfig(gearRatio=40.0))), 0.6, places=9)
+        # an inverter capped below the rated frequency: slower
+        capped = self.lift(DriveConfig(gearRatio=40.0, drumDiameter=0.2, maxFrequency=25.0))
+        self.assertAlmostEqual(drivetrain.lift_speed(capped), drivetrain.lift_speed(hoist) / 2, places=9)
+        self.assertTrue(drivetrain.summary(capped)[1])                          # and the designer says so
+
+    def test_travel_time_with_ramps(self):
+        hoist = self.lift(DriveConfig(gearRatio=40.0, drumDiameter=0.2, rampUpTime=1.0, rampDownTime=1.0))
+        v = drivetrain.lift_speed(hoist)
+        # 1 s up, 1 s down (0.38 m together), the rest at full speed
+        self.assertAlmostEqual(drivetrain.lift_time(hoist, 1.2), 2.0 + (1.2 - v) / v, places=9)
+        self.assertAlmostEqual(drivetrain.lift_time(self.lift(), 1.2), 2.0, places=9)   # no ramps: 1.2 / 0.6
+
+    def test_the_simulated_lift_follows_the_profile(self):
+        from physics import PhysicsEngine
+        config = load_config("logistics_full.json")
+        lift = config.elevators[0]
+        lift.control = "manual"
+        lift.drive = DriveConfig(gearRatio=40.0, drumDiameter=0.2, rampUpTime=1.0, rampDownTime=1.0)
+        engine = PhysicsEngine(config)
+        lift.targetLevel = 1
+        t, peak, peak_rpm, h = 0.0, 0.0, 0.0, 0.02
+        while t < 20.0 and not (lift.atLevel and lift.level == 1):
+            engine.update(h)
+            t += h
+            peak, peak_rpm = max(peak, abs(lift.liftVelocity)), max(peak_rpm, abs(lift.motorSpeed))
+        expected = drivetrain.lift_time(lift, lift.levelHeight)
+        self.assertAlmostEqual(t, expected, delta=0.05 * expected)              # ramps and cruise
+        self.assertAlmostEqual(peak, drivetrain.lift_speed(lift), places=3)
+        self.assertAlmostEqual(peak_rpm, 1450.0, delta=1.0)
+        self.assertEqual((lift.position, lift.liftVelocity), (1.0, 0.0))        # on the floor, stopped
+
+    def test_the_plc_interface_is_unchanged(self):
+        self.assertEqual(st_export.device_type(self.lift(DriveConfig(gearRatio=40.0)), "in"), "Elevator_Command")
+        frames = {f["name"]: f["fingerprint"] for f in st_export.contract(load_config("logistics_full.json"))["frames"]}
+        self.assertEqual((frames["Sim_Input"], frames["Sim_Output"]), (0x083EBF55, 0xC5E971E0))
+
+
 if __name__ == "__main__":
     unittest.main()

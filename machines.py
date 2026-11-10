@@ -31,6 +31,7 @@ from typing import Dict, List, Optional, Tuple
 
 import pymunk
 
+import drivetrain
 import heights
 import robot6
 
@@ -656,11 +657,12 @@ class MachineRuntime:
             if belt is not None:
                 belt.level = NO_LEVEL
             elevator.moving, elevator.atLevel = True, False
-        step = elevator.liftSpeed / max(1e-6, elevator.levelHeight) * h
+        step = self._lift_step(elevator, target, h) / max(1e-6, elevator.levelHeight)
         if abs(target - elevator.position) <= step:
             elevator.position = float(target)
             elevator.level = target
             elevator.moving, elevator.atLevel = False, True
+            elevator.liftVelocity = elevator.motorSpeed = 0.0
             for part in state["riders"]:
                 part.level = target
             state["riders"] = []
@@ -671,6 +673,31 @@ class MachineRuntime:
             for part in state["riders"]:
                 part.body.velocity = (0.0, 0.0)
                 part.body.angular_velocity = 0.0
+
+
+    @staticmethod
+    def _lift_step(elevator: Elevator, target: int, h: float) -> float:
+        """Metres the platform travels in this step. Without a drive train: at
+        liftSpeed. With one (drivetrain.py): at the hoist's speed, ramping up
+        and braking on the inverter's ramps so it stops at the floor
+        (v <= sqrt(2 * decel * distance left))."""
+        speed = drivetrain.lift_speed(elevator)
+        train = drivetrain.train_of(elevator)
+        if train is None:
+            elevator.liftVelocity = speed if target > elevator.position else -speed
+            return speed * h
+        accel, decel = drivetrain.lift_ramps(elevator)
+        left = abs(target - elevator.position) * elevator.levelHeight
+        v = abs(elevator.liftVelocity)
+        reachable = min(speed, math.sqrt(2.0 * decel * left)) if decel != math.inf else speed
+        if reachable > v:
+            v = min(reachable, v + accel * h)
+        else:
+            v = reachable if decel == math.inf else max(reachable, v - decel * h)
+        v = max(v, min(speed, 1e-3))                 # always some progress: no creeping to a halt short of the floor
+        elevator.liftVelocity = v if target > elevator.position else -v
+        elevator.motorSpeed = train.motor_speed_for_surface(elevator.liftVelocity)
+        return v * h
 
 
 def _seg(kind: str, phase: str, p0: float, p1: float, duration: float, frm=None, to=None, yaw: float = 0.0) -> dict:

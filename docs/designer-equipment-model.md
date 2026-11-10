@@ -78,15 +78,15 @@ Each step is usable on its own.
    as its own library item, assignable to one or several conveyors: one motor
    driving several roller zones by chain, as on real roller lines, and a
    catalog of the units actually used (as Emulate3D's motor aspect).
-2. **Elevators, lifts and turntables with drive trains.** The lift speed from
-   a motor, a gearbox and a sprocket / belt / spindle, instead of a bare m/s;
-   the same Drive group and result row.
+2. **Turntables and transfers with drive trains.** Done for elevators: the
+   lift speed comes from the hoist (motor, gearbox, chain, drum / sprocket)
+   with ramped acceleration and braking, the same Drive rows and Result.
 3. **Sensors with an electrical layer.** Supply and output type (PNP / NPN,
    NO / NC), response time, and the wiring to an input module channel.
-4. **A project-wide I/O table.** Every signal of the layout in one table
-   (as FACTORY I/O's driver screen and a TIA tag table): component, signal,
-   direction, PLC type, frame offset, the PLC tag it becomes; filter, sort,
-   export. It would also show the generated frame layout (`tools/frame_map.py`).
+4. **I/O table: addresses and tags.** Done: every signal in one table
+   (component, signal, direction, PLC type, frame, byte, bit, ST member),
+   filter, sort, CSV. Next: editable PLC tag names and a link to the frame
+   picture (`tools/frame_map.py`).
 5. **Templates of whole stations.** A configured group (infeed with its
    drives, sensors and buttons) saved to the library and placed again with
    new ids, so a factory is built from proven stations, not single parts.

@@ -132,7 +132,8 @@ PROPERTY_GROUP_ORDER = ("Identity", "Layout", "Mechanics", "Devices", "Drive", "
                         "Display")
 PROPERTY_GROUPS = {
     # What it is.
-    "id": "Identity", "label": "Identity", "sensorType": "Identity",
+    "id": "Identity", "label": "Identity", "sensorType": "Identity", "diverterType": "Identity",
+    "scannerType": "Identity",
     # Where it stands and its footprint.
     "x": "Layout", "y": "Layout", "rotation": "Layout", "level": "Layout",
     "length": "Layout", "beltWidth": "Layout", "cornerRadius": "Layout", "width": "Layout", "height": "Layout",
@@ -143,6 +144,7 @@ PROPERTY_GROUPS = {
     "drive.gearRatio": "Mechanics", "drive.transmissionRatio": "Mechanics", "drive.drumDiameter": "Mechanics",
     "mass": "Mechanics", "capacity": "Mechanics", "levels": "Mechanics", "levelHeight": "Mechanics",
     "reach": "Mechanics", "pickRadius": "Mechanics", "mountHeight": "Mechanics", "toolLength": "Mechanics",
+    "divertAngle": "Mechanics",
     # The devices built into it: a control panel's buttons, lamps and buzzers.
     "elements": "Devices",
     # The drive: how it is commanded, the motor, the inverter, the encoder.
@@ -162,7 +164,7 @@ PROPERTY_GROUPS = {
     "pickX": "Operation", "pickY": "Operation", "placeX": "Operation", "placeY": "Operation",
     "pickLevel": "Operation", "placeLevel": "Operation", "placeTarget": "Operation", "control": "Operation",
     "holdTime": "Operation", "releaseTime": "Operation", "beltId": "Operation", "pickSensorId": "Operation",
-    "autoFrom": "Operation", "autoTo": "Operation",
+    "autoFrom": "Operation", "autoTo": "Operation", "destination": "Operation",
     "color": "Display",
 }
 
@@ -314,6 +316,10 @@ def qt_stylesheet() -> str:
     QGroupBox {{ border: 1px solid {b}; border-radius: 3px; margin-top: 14px; padding-top: 6px; }}
     QGroupBox::title {{ subcontrol-origin: margin; left: 8px; padding: 0 4px; color: {d}; font-weight: 600; }}
     QCheckBox {{ spacing: 6px; }}
+    QCheckBox::indicator, QTableWidget::indicator {{ width: 13px; height: 13px; border: 1px solid {b};
+                                                     border-radius: 3px; background: {pd}; }}
+    QCheckBox::indicator:hover, QTableWidget::indicator:hover {{ border-color: {a}; }}
+    QCheckBox::indicator:checked, QTableWidget::indicator:checked {{ background: {a}; border-color: {a}; }}
     QStatusBar {{ background: {pd}; color: {d}; border-top: 1px solid {b}; }}
     QStatusBar QLabel {{ color: {d}; padding: 0 8px; }}
     QScrollBar:vertical, QScrollBar:horizontal {{ background: {pd}; border: none; width: 10px; height: 10px; }}

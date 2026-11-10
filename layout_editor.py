@@ -4241,6 +4241,7 @@ def _field_specs_for(item: PlacedItem):
                   ("float", "liftSpeed", "Lift speed", 0.01, 10.0, 0.05),
                   ("int", "autoFrom", "Auto from", 0, 20),
                   ("int", "autoTo", "Auto to", 0, 20), ("text", "label", "Label")]
+        specs += _LIFT_TRAIN_SPECS          # the hoist: drum / sprocket, chain, gearbox, motor, inverter
     elif isinstance(item, ScannerItem):
         specs += [("combo", "scannerType", "Type", ["barcode", "rfid", "dws"]),
                   ("float", "width", "Zone length", 0.05, 10.0, 0.05), ("float", "height", "Zone width", 0.05, 10.0, 0.05),
@@ -4450,6 +4451,8 @@ _DRIVE_TRAIN_SPECS = [
     ("int", "drive.encoderCountsPerRev", "Encoder/rev", 0, 1000000),
     ("summary", "drive.summary", "Result"),
 ]
+# An elevator's hoist: the same, without the encoder.
+_LIFT_TRAIN_SPECS = [spec for spec in _DRIVE_TRAIN_SPECS if spec[1] != "drive.encoderCountsPerRev"]
 # Drive fields where 0 in the grid means "not set" (None in the model).
 _DRIVE_ZERO_IS_NONE = {"rampUpTime", "rampDownTime", "encoderCountsPerRev"}
 
@@ -4470,7 +4473,7 @@ def _shown_value(model, attr: str):
     unset, which shows what the simulation derives (drivetrain.train_of)."""
     value = _model_value(model, attr)
     if value is None and attr in ("drive.gearRatio", "drive.drumDiameter"):
-        train = drivetrain.train_of(model)
+        train = drivetrain.train_of(model, assume_drive=True)
         if train is not None:
             return train.gear_ratio if attr == "drive.gearRatio" else train.drum_diameter
     if value is None and attr[len("drive."):] in _DRIVE_ZERO_IS_NONE:
@@ -4778,7 +4781,7 @@ class PropertiesPanel(QWidget):
         item = self.current
         preset = getattr(self, "motor_preset", None)
         summary = getattr(self, "drive_summary", None)
-        if item is None or not isinstance(item.model, Belt):
+        if item is None or not isinstance(item.model, (Belt, Elevator)):
             return
         if preset is not None:
             preset.blockSignals(True)
@@ -5559,6 +5562,23 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.BottomDockWidgetArea, check_dock)
         # Compact by default: the canvas is what matters; drag to enlarge.
         self.resizeDocks([check_dock], [120], Qt.Vertical)
+        # The I/O table: every PLC signal of the layout (io_table.py), a tab
+        # beside Layout Check; rebuilt when shown and after edits while shown.
+        from io_table import IoTablePanel
+        self.io_table = IoTablePanel(lambda: self.config, on_select=self._select_component)
+        io_dock = QDockWidget("I/O Table", self)
+        io_dock.setObjectName("ioTableDock")
+        io_dock.setWidget(self.io_table)
+        self.addDockWidget(Qt.BottomDockWidgetArea, io_dock)
+        self.tabifyDockWidget(check_dock, io_dock)
+        check_dock.raise_()
+        self.io_dock = io_dock
+        self._io_refresh = QTimer(self)
+        self._io_refresh.setSingleShot(True)
+        self._io_refresh.setInterval(300)
+        self._io_refresh.timeout.connect(self.io_table.refresh)
+        io_dock.visibilityChanged.connect(self._io_dock_shown)
+        self.undo_stack.indexChanged.connect(lambda _i: self.io_dock.isVisible() and self._io_refresh.start())
         # View > Theme: dark / light (also the toolbar switch), remembered.
         theme_menu = self.cad.view_menu.addMenu("Theme")
         self.theme_group = QActionGroup(self)
@@ -5573,7 +5593,7 @@ class MainWindow(QMainWindow):
         self._build_quick_access(view_toolbar)
         # View > Panels: show / hide every dock and toolbar.
         panels = self.cad.view_menu.addMenu("Panels")
-        for dock in (library_dock, manager_dock, props_dock, check_dock):
+        for dock in (library_dock, manager_dock, props_dock, check_dock, io_dock):
             panels.addAction(dock.toggleViewAction())
         panels.addSeparator()
         for toolbar in self.findChildren(QToolBar):
@@ -5858,6 +5878,27 @@ class MainWindow(QMainWindow):
             menu.addAction(self.cad.check_action)
             menu.addAction(self.run_sim_action)
         return menu
+
+    def _io_dock_shown(self, visible: bool):
+        if not visible:
+            return
+        if self.io_dock.height() < 220:          # a table needs room: the bottom area grows once
+            self.resizeDocks([self.io_dock], [300], Qt.Vertical)
+        self._io_refresh.start()
+
+    def _select_component(self, component_id: str):
+        """Select a component on the canvas and bring it into view (a control
+        panel's device selects its panel)."""
+        item = next((i for i in self.items_list if i.model.id == component_id), None)
+        if item is None:
+            child = next((c for c in (*self.config.buttons, *self.config.leds) if c.id == component_id), None)
+            if child is not None and getattr(child, "panel", None):
+                item = next((i for i in self.items_list if i.model.id == child.panel), None)
+        if item is None:
+            return
+        self.scene.clearSelection()
+        item.setSelected(True)
+        self.view.centerOn(item)
 
     def _show_properties(self):
         dock = self.properties_panel.parentWidget()

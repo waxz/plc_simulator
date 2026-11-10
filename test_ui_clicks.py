@@ -239,6 +239,38 @@ class EditorClicksTest(unittest.TestCase):
         reloaded = load_config(self.layout)
         self.assertIn(f"{item.model.id}_horn", [l.id for l in reloaded.leds])
 
+    def test_an_elevator_is_driven_by_its_hoist(self):
+        import drivetrain
+        item = self.window.view.place_template("Elevator", 40.0, 40.0)
+        self.window.scene.clearSelection()
+        item.setSelected(True)
+        _app.processEvents()
+        panel = self.window.properties_panel
+        groups = [panel.tree.topLevelItem(i).text(0) for i in range(panel.tree.topLevelItemCount())]
+        self.assertTrue({"Mechanics", "Drive"} <= set(groups))
+        self.assertNotIn("drive.encoderCountsPerRev", panel.spins)
+        self.assertIn("set directly", panel.drive_summary.text())             # no drive yet: liftSpeed
+        panel.spins["drive.drumDiameter"].setValue(0.2)
+        panel.spins["drive.gearRatio"].setValue(40.0)
+        lift = item.model
+        self.assertAlmostEqual(drivetrain.lift_speed(lift), 1450.0 / 40.0 * 3.141592653589793 * 0.2 / 60.0, places=6)
+        self.assertIn("lift 0.380 m/s", panel.drive_summary.text())
+        self.assertIn("level to level", panel.drive_summary.text())
+
+    def test_the_io_table_lists_every_signal(self):
+        self.window.io_dock.raise_()
+        self.window.io_dock.show()
+        self.window.io_table.refresh()
+        table = self.window.io_table
+        self.assertEqual(table.table.rowCount(), 52)                           # test_config.json's frames
+        self.assertIn("Sim_Input 18 B", table.summary.text())
+        table.filter.setText("led_1_1_1")
+        (row,) = table.visible_rows()
+        self.assertEqual(row[:4], ["led_1_1_1", "isOn", "PLC output", "BOOL"])
+        visible = next(r for r in range(table.table.rowCount()) if not table.table.isRowHidden(r))
+        table._double_clicked(visible, 0)
+        self.assertEqual([i.model.id for i in self.window.scene.selectedItems()], ["led_1_1_1"])
+
     def test_sensor_signal_settings_are_editable(self):
         self.click_on_canvas("sensor_1_1_1")
         panel = self.window.properties_panel

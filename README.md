@@ -217,6 +217,13 @@ The Qt layout editor is where belt shapes and positions are designed:
   placed where you clicked), the Sketch tools, Select All, Zoom to Fit, Pan,
   Measure, Show Ports, Check Layout, Run in Simulator. While a tool runs,
   the right button ends or cancels it instead.
+- **I/O Table** (a tab beside Layout Check, View > Panels): every PLC signal
+  of the layout in one table, as a PLC tag table - component, signal,
+  direction from the PLC (input / output), PLC type, frame, byte, bit and the
+  ST member it becomes (`Sim_Input.div_1.present`). It comes from the
+  exchange contract the generated ST uses, so it is what is on the wire; a
+  laser banner's beams are one ARRAY row. Filter, sort by any column, Export
+  CSV; double-click a row to select the component.
 - **Control Panel** (library, Operator Panel): an operator panel whose push
   buttons, pilot lamps and buzzers are its properties - the **Devices**
   table (type, name, legend, colour, NC contact, key; + Button / + Lamp /
@@ -523,6 +530,19 @@ its per-frame rendering of moving parcels measured ~9x slower than pygame's
 
 ## Running the Simulation
 
+The **launcher** starts everything from one window:
+
+```bash
+python launcher.py
+```
+
+Pick a layout (recent layouts are remembered, or Browse), then **Open in
+Designer** / **New Layout**, or **Run Simulator** - with the PLC exchange of
+the layout or `tcp_exchange_config.json`, headless or with the 3D view, and
+optionally the **mock PLC** (runs the line) and the **Foxglove bridge**
+(the mock PLC reports to it). **Running** lists what was started, with Stop /
+Stop All. Each program is its own process, as when started by hand:
+
 ```bash
 # Pygame GUI, with a specific configuration file
 python main.py test_config.json
@@ -684,6 +704,14 @@ See [drive_traction_plan.md](drive_traction_plan.md) for the design.
   gets them derived from its design speed (`speed`, reached at the rated
   frequency). In the designer, choose Command "frequency" to edit the train
   (group Drive).
+- **Elevator hoist.** An elevator's `drive` is its hoist: motor, gearbox,
+  chain and drum / sprocket (the same fields). It travels at the train's
+  speed at the rated frequency, accelerating and braking on `rampUpTime` /
+  `rampDownTime`, so it lands softly on the floor; `liftSpeed` is then the
+  design speed missing values are derived from. The designer shows the
+  hoist's rows for every elevator, and the Result: the lift speed and the
+  time from level to level. The simulator's inspector shows the lift speed
+  and the motor speed live. The PLC signals are unchanged.
 - **Traction** (`traction.py`). With `"tractionModel": "friction"`, parcels are
   dragged by friction capped at `Belt.friction` × m × g (`floorFriction` off belts),
   so starts, stops, slip and pushing come from physics. The default `"kinematic"`

@@ -135,7 +135,7 @@ register(DeviceKind(
     "elevators", cp.Elevator, "Elevator",
     commands=([], [(ByteType.BYTE, "targetLevel")]),
     feedback=(bits("moving", "atLevel", "occupied"), [(ByteType.BYTE, "level")]),
-    runtime=("position",),
+    runtime=("position", "liftVelocity", "motorSpeed"),
     doc="A lift between floor levels."))
 
 register(DeviceKind(

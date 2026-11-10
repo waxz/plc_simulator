@@ -508,6 +508,11 @@ class Elevator(BaseModel):
     level. `levels` floors (0 .. levels-1), `levelHeight` m apart, moving
     at `liftSpeed` m/s.
 
+    With a `drive` (drivetrain.py) the lift is a hoist: motor, gearbox,
+    chain and drum / sprocket; it travels at the train's speed at the rated
+    frequency (`liftSpeed` is then the design speed missing train values
+    are derived from), accelerating and braking on the inverter's ramps.
+
     Command (control "plc"): `targetLevel` (BYTE).
     Feedback: `level` (the floor it is at, or last left), `moving`,
     `atLevel` (stopped at a floor) and `occupied` (something on the
@@ -535,6 +540,9 @@ class Elevator(BaseModel):
     atLevel: bool = Field(default=True, exclude=True)
     occupied: bool = Field(default=False, exclude=True)
     position: float = Field(default=0.0, exclude=True)     # runtime: height in levels (0.5 = halfway)
+    drive: Optional[DriveConfig] = None                    # the hoist's drive train (None: liftSpeed, no ramps)
+    liftVelocity: float = Field(default=0.0, exclude=True)  # runtime: m/s, signed (up +)
+    motorSpeed: float = Field(default=0.0, exclude=True)    # runtime: rpm, with a drive train
 
 
 # ---------------------------------------------------------------------------
