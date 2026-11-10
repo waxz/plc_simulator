@@ -73,7 +73,7 @@ import subprocess
 import sys
 from copy import deepcopy
 from dataclasses import dataclass, replace as dataclass_replace
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
 from PySide6.QtCore import Qt, QPointF, QMimeData, QRectF, QSize, QTimer
 from PySide6.QtGui import (
@@ -106,7 +106,8 @@ from cad.path import (
 )
 from id_utils import next_indexed_id, unique_incremented_id
 from component_library import (
-    LibraryEntry, clean_folder, default_library_path, entry_from_model, load_library, save_library, unique_name,
+    LibraryEntry, clean_folder, default_library_path, entry_from_model, load_library, remap_references, save_library,
+    shift_model, station_from_models, unique_name,
 )
 
 def _path_signature(model) -> tuple:
@@ -2838,15 +2839,7 @@ def _make_chute(new_id: str) -> Sink:
     return Sink(id=new_id, x=0.0, y=0.0, width=1.2, height=1.0, label="Chute", capacity=10)
 
 
-def move_model(model, dx: float, dy: float):
-    """Move a component by (dx, dy) - a robot arm's pick / place points too."""
-    model.x += dx
-    model.y += dy
-    if isinstance(model, RobotArm):
-        model.pickX += dx
-        model.pickY += dy
-        model.placeX += dx
-        model.placeY += dy
+move_model = shift_model     # move a component by (dx, dy) - a robot arm's pick / place points too
 
 
 # Maps a template's `kind` string (also each component's `.kind` attribute)
@@ -2977,8 +2970,11 @@ def _make_curved_belt(new_id: str) -> Belt:
 
 
 def _template_from_entry(entry: LibraryEntry) -> ComponentTemplate:
+    """A user's library entry as a template (a station is placed by
+    CanvasView.place_station, its factory never called)."""
+    description = f"Station: {len(entry.members)} components placed together." if entry.is_station else ""
     return ComponentTemplate(entry.name, entry.kind, lambda new_id, e=entry: e.instantiate(new_id),
-                             removable=True, entry=entry)
+                             removable=True, entry=entry, description=description)
 
 
 class ComponentLibrary(QTreeWidget):
@@ -3251,7 +3247,9 @@ class ComponentLibraryPanel(QWidget):
       search box     filter the tree by name
       Add Selected   the component selected on the canvas (any kind, e.g. a
                      belt drawn from a DXF) becomes a reusable component, in
-                     the My Components folder that is current
+                     the My Components folder that is current; several
+                     selected become a station (component_library.py),
+                     placed again in one go with its links kept
       Update         overwrite the chosen component with the canvas selection
       Rename / Folder... / Remove   your own components (built-ins are fixed);
                      Folder... files one into a sub-folder ("Merges/45 deg")
@@ -3272,10 +3270,12 @@ class ComponentLibraryPanel(QWidget):
         self.description.setText(f"<b>{template.name}</b> - {about}")
 
     def __init__(self, library_path: Optional[str] = None, get_selection: Optional[Callable[[], list]] = None,
-                 status: Optional[Callable[[str], None]] = None):
+                 status: Optional[Callable[[str], None]] = None,
+                 get_connections: Optional[Callable[[], list]] = None):
         super().__init__()
         self.library_path = library_path
         self.get_selection = get_selection or (lambda: [])
+        self.get_connections = get_connections or (lambda: [])     # the layout's belt connections
         self.status = status or (lambda _msg: None)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
@@ -3380,25 +3380,41 @@ class ComponentLibraryPanel(QWidget):
 
     # -- actions (also used by tests) -----------------------------------------------
 
-    def _selected_model(self):
+    def _selected_items(self) -> list:
         selected = [i for i in self.get_selection() if hasattr(i, "model") and hasattr(i, "kind")]
-        if len(selected) != 1:
-            raise ValueError("Select exactly one component on the canvas first.")
-        return selected[0]
+        if not selected:
+            raise ValueError("Select a component on the canvas first (several for a station).")
+        return selected
+
+    def _entry_from(self, name: str, selected: list) -> Tuple[LibraryEntry, str]:
+        """(entry, what it is): one component as a component, several as a
+        station (their links to the rest of the layout dropped, said in the
+        text)."""
+        if len(selected) == 1:
+            item = selected[0]
+            return entry_from_model(name, item.model, item.kind), item.kind
+        entry, dropped = station_from_models(name, [(i.kind, i.model) for i in selected], self.get_connections())
+        text = f"station of {len(entry.members)} components"
+        if dropped:
+            text += f"; links to components outside it dropped: {', '.join(dropped)}"
+        return entry, text
 
     def add_selected(self, name: Optional[str] = None, folder: Optional[str] = None) -> Optional[ComponentTemplate]:
+        """The canvas selection into My Components: one component, or several
+        as a station placed again in one go."""
         try:
-            item = self._selected_model()
+            selected = self._selected_items()
         except ValueError as exc:
             self._warn("Add to Library", str(exc))
             return None
         if name is None:
-            default = getattr(item.model, "label", None) or item.model.id
+            model = selected[0].model
+            default = (getattr(model, "label", None) or model.id) if len(selected) == 1 else "Station"
             name, ok = QInputDialog.getText(self, "Add to Library", "Name:", text=str(default))
             if not ok:
                 return None
         try:
-            entry = entry_from_model(name, item.model, item.kind)
+            entry, what = self._entry_from(name, selected)
         except ValueError as exc:
             self._warn("Add to Library", str(exc))
             return None
@@ -3408,7 +3424,7 @@ class ComponentLibraryPanel(QWidget):
         self.list_widget.setCurrentItem(self.list_widget.add_template(template))
         self.save()
         where = f" ({entry.folder})" if entry.folder else ""
-        self.status(f"Added '{entry.name}' ({entry.kind}) to My Components{where}.")
+        self.status(f"Added '{entry.name}' ({what}) to My Components{where}.")
         return template
 
     def update_from_selection(self) -> Optional[ComponentTemplate]:
@@ -3417,8 +3433,8 @@ class ComponentLibraryPanel(QWidget):
             self._warn("Update Library Component", "Choose one of your own library components to update.")
             return None
         try:
-            item = self._selected_model()
-            entry = entry_from_model(template.name, item.model, item.kind)
+            selected = self._selected_items()
+            entry, what = self._entry_from(template.name, selected)
         except ValueError as exc:
             self._warn("Update Library Component", str(exc))
             return None
@@ -3426,7 +3442,7 @@ class ComponentLibraryPanel(QWidget):
         updated = _template_from_entry(entry)
         self.list_widget.setCurrentItem(self.list_widget.add_template(updated))
         self.save()
-        self.status(f"Updated '{entry.name}' from {item.model.id}.")
+        self.status(f"Updated '{entry.name}' ({what}) from the selection.")
         return updated
 
     def rename_current(self, new_name: Optional[str] = None) -> bool:
@@ -3675,6 +3691,9 @@ class CanvasView(QGraphicsView):
         # the selected ones, and how to paste them moved by (dx, dy).
         self.on_copy_extra = None
         self.on_paste_extra = None
+        # Adds belt connections as an undo step (layout_editor_cad.py); unset,
+        # a placed station's connections go straight into the config.
+        self.on_add_connections = None
         self._clipboard_sketch = []
         self._pan_tool_active = False
         self._middle_pan_active = False
@@ -3739,6 +3758,8 @@ class CanvasView(QGraphicsView):
         template = self.get_template(name) if self.get_template else None
         if template is None:
             return None
+        if template.entry is not None and template.entry.is_station:
+            return self.place_station(template.entry, x, y)
         existing_ids = (i.model.id for i in self.items_list if i.kind == template.kind)
         model = template.factory(next_indexed_id(existing_ids, template.kind))
         for key, value in overrides.items():
@@ -3746,6 +3767,39 @@ class CanvasView(QGraphicsView):
         move_model(model, x - model.x, y - model.y)
         item_cls = ITEM_CLASS_FOR_KIND[template.kind]
         return self._add_item(item_cls(model), text=f"Add {template.kind}")
+
+    def _fresh_id(self) -> Callable[[str, str], str]:
+        """new_id(kind, old id): an id not yet used by that kind - also not
+        by one handed out before from the same function."""
+        taken = {}
+
+        def new_id(kind: str, old: str) -> str:
+            ids = taken.setdefault(kind, {i.model.id for i in self.items_list if i.kind == kind})
+            fresh = old if old not in ids else unique_incremented_id(ids, old)
+            ids.add(fresh)
+            return fresh
+        return new_id
+
+    def place_station(self, entry: LibraryEntry, x: float, y: float) -> list:
+        """Place every component of a station entry, centred on (x, y), with
+        fresh ids and its links and belt connections pointing to the new
+        copies - one undo step. Returns the new items, selected."""
+        placed, connections = entry.place_station(self._fresh_id(), x, y)
+        text = f"Add {entry.name}"
+        if self.undo_stack is not None:
+            self.undo_stack.beginMacro(text)
+        items = [self._add_item(ITEM_CLASS_FOR_KIND[kind](model), text=text) for kind, model in placed]
+        if connections:
+            if self.on_add_connections is not None:
+                self.on_add_connections(connections)
+            elif self.config is not None:
+                self.config.connections.extend(connections)
+        if self.undo_stack is not None:
+            self.undo_stack.endMacro()
+        self.scene().clearSelection()
+        for item in items:
+            item.setSelected(True)
+        return items
 
     def _do_add_item(self, item: PlacedItem) -> PlacedItem:
         """The actual add mutation - scene, items_list, config. Called
@@ -4071,12 +4125,20 @@ class CanvasView(QGraphicsView):
         with_sketch = bool(self._clipboard_sketch and self.on_paste_extra is not None)
         if self.undo_stack is not None and (multi or with_sketch):
             self.undo_stack.beginMacro(text + (" and sketch" if with_sketch else ""))
-        new_items = []
-        for model in self._clipboard_models:
-            new_model = deepcopy(model)
-            kind = KIND_FOR_MODEL_CLASS[type(new_model)]
+        # Fresh ids first, then the links among the pasted ones (a turntable
+        # and its platform belt) point to the copies; links to the rest of
+        # the layout stay as they are.
+        copies = [(KIND_FOR_MODEL_CLASS[type(m)], deepcopy(m)) for m in self._clipboard_models]
+        id_map = {}
+        for kind, new_model in copies:
             existing_ids = {i.model.id for i in self.items_list if i.kind == kind}
-            new_model.id = unique_incremented_id(existing_ids, new_model.id)
+            existing_ids |= {new for (k, _), new in id_map.items() if k == kind}
+            old_id = new_model.id
+            new_model.id = unique_incremented_id(existing_ids, old_id)
+            id_map[(kind, old_id)] = new_model.id
+        new_items = []
+        for kind, new_model in copies:
+            remap_references(kind, new_model, id_map)
             move_model(new_model, offset_x, offset_y)
             item_cls = ITEM_CLASS_FOR_KIND[kind]
             new_items.append(self._add_item(item_cls(new_model), text=text))
@@ -5084,7 +5146,7 @@ _KIND_COLORS = {"belt": (156, 163, 175), "sensor": hmi.ALARM, "source": hmi.SOUR
                 "robot": (124, 58, 237), "elevator": (8, 145, 178), "scanner": (14, 165, 233),
                 "diverter": (249, 115, 22), "turntable": (100, 116, 139), "transfer": (163, 163, 163),
                 "accumulator": (34, 197, 94),
-                "door": (250, 204, 21), "safety": (234, 179, 8)}
+                "door": (250, 204, 21), "safety": (234, 179, 8), "station": (217, 70, 239)}
 _KIND_ICONS = {}
 
 
@@ -5440,6 +5502,7 @@ class MainWindow(QMainWindow):
             library_path=library_path or default_library_path(),
             get_selection=lambda: [i for i in self.scene.selectedItems() if isinstance(i, PlacedItem)],
             status=lambda message: self.statusBar().showMessage(message, 8000),
+            get_connections=lambda: self.config.connections,
         )
         self.library_panel = library_panel
         library_dock = QDockWidget("Component Library", self)

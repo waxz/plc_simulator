@@ -187,6 +187,15 @@ The Qt layout editor is where belt shapes and positions are designed:
     **Update** overwrites the chosen template with the canvas selection;
     **Rename** / **Folder...** (move it, `Station 1/Lanes` for a sub-folder) /
     **Remove**. Right-click for the same. Built-ins can't be changed.
+  - **Stations**: select several components and **Add Selected** saves them
+    as one station (a turntable with its platform belt, a lane with its
+    sensors and e-stops). Dropping it places them all at once, one undo
+    step, with fresh ids; the links inside the group (platform belt, zone
+    belts, a safety relay's e-stops, doors, curtains and belts, a robot's
+    pick sensor) and the belt connections between its belts point to the
+    new copies. Links to components outside the group can't be kept: the
+    status bar names the ones dropped. Copy / paste keeps such links to the
+    copies too.
   - Your library is saved to `~/.conveyor_sim/component_library.json` after
     every change (or the file named by `CONVEYOR_COMPONENT_LIBRARY`) and is
     there again next time.

@@ -363,6 +363,7 @@ class CadController:
         window.view.on_delete_extra = self._delete_selected_sketch
         window.view.on_copy_extra = self.selected_sketch_entities
         window.view.on_paste_extra = self.paste_sketch
+        window.view.on_add_connections = self.add_connections
         self.grips = AnchorGripManager(window, belt_item_cls=belt_item_cls, scale=scale, snap=self.snap)
         self.sketch_grips = SketchGripManager(self)
         self.ports = PortOverlay(self)
@@ -884,6 +885,11 @@ class CadController:
         self.window.scene.clearSelection()
         for item in items:
             item.setSelected(True)
+
+    def add_connections(self, connections: List[BeltConnection], text: str = "Add connections"):
+        """Add belt connections as they are (a placed station's), undoable."""
+        before = list(self.config.connections)
+        self.window.undo_stack.push(ConnectionsCommand(self, before, before + list(connections), text))
 
     def connect_selected(self):
         selected = self.selected_belt_items()
