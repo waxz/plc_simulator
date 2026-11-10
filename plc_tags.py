@@ -218,29 +218,10 @@ def tia_rows(tags: List[Tag]) -> Tuple[List[list], int]:
     return rows, skipped
 
 
-ST_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-# IEC 61131-3 / AX ST words a tag can't be called (compared ignoring case).
-ST_KEYWORDS = {k.lower() for k in """
-    ABSTRACT AND ARRAY AT BOOL BY BYTE CASE CHAR CLASS CONFIGURATION CONSTANT DATE DATE_AND_TIME DINT DO DT
-    DWORD ELSE ELSIF END_CASE END_CLASS END_CONFIGURATION END_FOR END_FUNCTION END_FUNCTION_BLOCK END_IF
-    END_INTERFACE END_METHOD END_NAMESPACE END_PROGRAM END_REPEAT END_STRUCT END_TYPE END_VAR END_WHILE EXIT
-    EXTENDS FALSE FINAL FOR FUNCTION FUNCTION_BLOCK IF IMPLEMENTS INT INTERFACE INTERNAL LDATE LDT LINT LREAL
-    LTIME LTOD LWORD METHOD MOD NAMESPACE NOT NULL OF OR OVERRIDE PRIVATE PROGRAM PROTECTED PUBLIC READ_ONLY
-    READ_WRITE REAL REF REF_TO REPEAT RETAIN RETURN SINT STRING STRUCT SUPER TASK THEN THIS TIME TIME_OF_DAY TO
-    TOD TRUE TYPE UDINT UINT ULINT UNTIL USINT USING VAR VAR_ACCESS VAR_CONFIG VAR_EXTERNAL VAR_GLOBAL VAR_INPUT
-    VAR_IN_OUT VAR_OUTPUT VAR_STAT VAR_TEMP WCHAR WHILE WORD WSTRING XOR
-""".split()}
-
-
-def st_name(name: str) -> str:
-    """`name` as an ST identifier: other characters to "_", "_" before a
-    leading digit, "_" after a keyword."""
-    clean = re.sub(r"[^A-Za-z0-9_]", "_", name.strip()) or "_"
-    if clean[0].isdigit():
-        clean = "_" + clean
-    if clean.lower() in ST_KEYWORDS:
-        clean += "_"
-    return clean
+# One rule for ST names - the generated frame members and the tags: st_export.
+ST_IDENTIFIER = st_export.ST_IDENTIFIER
+ST_KEYWORDS = st_export.ST_KEYWORDS
+st_name = st_export.st_name
 
 
 def st_names(tags: List["Tag"]) -> Dict[str, str]:

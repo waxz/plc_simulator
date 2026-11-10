@@ -129,5 +129,33 @@ class EmitTest(unittest.TestCase):
         self.assertEqual(st_export.main([layout, "--out", out, "--check"]), 1)
 
 
+class MemberNameTest(unittest.TestCase):
+    """Component ids become ST member names the AX compiler accepts: ST
+    identifiers, never a keyword, unique ignoring case - and two ids that
+    clean to the same name are two members, never merged into one."""
+
+    def test_names_are_valid_unique_st_identifiers(self):
+        from config_parser import Belt, SimulatorConfig
+
+        def belt(belt_id, x):
+            return Belt(id=belt_id, type="linear", x=x, y=0, length=2, beltWidth=1, rotation=0, speed=1,
+                        directionAngle=0, color="#888")
+        config = SimulatorConfig(belts=[belt("belt-1", 0), belt("belt_1", 2), belt("2nd_belt", 4), belt("Belt_A", 6),
+                                        belt("belt_a", 8), belt("type", 10)])
+        frame = next(f for f in st_export.contract(config)["frames"] if f["name"] == "Sim_Output")
+        names = [m["name"] for m in frame["members"]]
+        self.assertEqual(names, ["belt_1", "belt_1_2", "_2nd_belt", "Belt_A", "belt_a_2", "type_"])
+        self.assertEqual(len({n.lower() for n in names}), len(names))
+        self.assertTrue(all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", n) for n in names))
+        members = {f["path"]: f["member"] for f in frame["fields"]}
+        self.assertEqual(members["belt-1/speed"], "belt_1.speed")
+        self.assertEqual(members["belt_1/speed"], "belt_1_2.speed")              # its own member
+
+    def test_station_1_keeps_its_names(self):
+        frame = next(f for f in st_export.contract(load_config("station_1.json"))["frames"]
+                     if f["name"] == "Sim_Input")
+        self.assertEqual([m["name"] for m in frame["members"]][:3], ["button_1_1_1", "button_1_1_2", "button_1_1_3"])
+
+
 if __name__ == "__main__":
     unittest.main()

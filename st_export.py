@@ -121,9 +121,53 @@ def _metric_name(enum_name: str) -> str:
     return "_".join(part.capitalize() for part in enum_name.lower().split("_"))
 
 
-def _st_name(text: str) -> str:
-    name = re.sub(r"[^A-Za-z0-9_]", "_", text)
-    return name if not name[:1].isdigit() else f"_{name}"
+ST_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# IEC 61131-3 / AX ST words no generated name may be (compared ignoring case).
+ST_KEYWORDS = {k.lower() for k in """
+    ABSTRACT AND ARRAY AT BOOL BY BYTE CASE CHAR CLASS CONFIGURATION CONSTANT DATE DATE_AND_TIME DINT DO DT
+    DWORD ELSE ELSIF END_CASE END_CLASS END_CONFIGURATION END_FOR END_FUNCTION END_FUNCTION_BLOCK END_IF
+    END_INTERFACE END_METHOD END_NAMESPACE END_PROGRAM END_REPEAT END_STRUCT END_TYPE END_VAR END_WHILE EXIT
+    EXTENDS FALSE FINAL FOR FUNCTION FUNCTION_BLOCK IF IMPLEMENTS INT INTERFACE INTERNAL LDATE LDT LINT LREAL
+    LTIME LTOD LWORD METHOD MOD NAMESPACE NOT NULL OF OR OVERRIDE PRIVATE PROGRAM PROTECTED PUBLIC READ_ONLY
+    READ_WRITE REAL REF REF_TO REPEAT RETAIN RETURN SINT STRING STRUCT SUPER TASK THEN THIS TIME TIME_OF_DAY TO
+    TOD TRUE TYPE UDINT UINT ULINT UNTIL USINT USING VAR VAR_ACCESS VAR_CONFIG VAR_EXTERNAL VAR_GLOBAL VAR_INPUT
+    VAR_IN_OUT VAR_OUTPUT VAR_STAT VAR_TEMP WCHAR WHILE WORD WSTRING XOR
+""".split()}
+
+
+def st_name(name: str) -> str:
+    """`name` as an ST identifier: other characters to "_", "_" before a
+    leading digit, "_" after a keyword."""
+    clean = re.sub(r"[^A-Za-z0-9_]", "_", name.strip()) or "_"
+    if clean[0].isdigit():
+        clean = "_" + clean
+    if clean.lower() in ST_KEYWORDS:
+        clean += "_"
+    return clean
+
+
+_st_name = st_name
+
+
+class _Names:
+    """ST names for a frame's members: st_name, unique ignoring case (ST
+    identifiers are not case-sensitive) with _2, _3, ... - two components
+    whose ids clean to the same name ("belt-1", "belt_1") get two members,
+    never one."""
+
+    def __init__(self):
+        self.names: Dict[str, str] = {}
+        self.taken: set = set()
+
+    def __call__(self, key: str, text: str) -> str:
+        if key not in self.names:
+            base = st_name(text)
+            name, n = base, 2
+            while name.lower() in self.taken:
+                name, n = f"{base}_{n}", n + 1
+            self.taken.add(name.lower())
+            self.names[key] = name
+        return self.names[key]
 
 
 class Member:
@@ -161,20 +205,22 @@ def members(mapping, config: Optional[SimulatorConfig] = None, direction: Option
     out: List[Member] = []
     access: List[Tuple[io_layout.LayoutField, str]] = []
     declared: Dict[str, Member] = {}
+    unique = _Names()
     for f in fields:
         component, field, index = parse_path(f.path)
         if grouped.get(component):
-            name = _st_name(component)
+            name = unique(component, component)
             if name not in declared:
                 declared[name] = Member(name, grouped[component])
                 out.append(declared[name])
             access.append((f, f"{name}.{_st_name(field)}"))
             continue
         if component == "clock":
-            name, st_type = "clock", "LINT"
+            name, st_type = unique("clock", "clock"), "LINT"
+        elif len(per_component[component]) == 1:
+            name, st_type = unique(component, component), ST_TYPES[f.byte_type]
         else:
-            name = _st_name(component if len(per_component[component]) == 1 else f"{component}_{field}")
-            st_type = ST_TYPES[f.byte_type]
+            name, st_type = unique(f"{component}/{field}", f"{component}_{field}"), ST_TYPES[f.byte_type]
         length = indexed.get((component, field))
         array = length is not None and length > 1
         if name not in declared:
