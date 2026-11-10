@@ -276,7 +276,8 @@ class EditorClicksTest(unittest.TestCase):
                           for j in range(panel.tree.topLevelItem(i).childCount())]
                 self.assertIn(label, labels)
 
-    def test_the_io_table_lists_every_signal(self):
+    def test_the_plc_tag_table_lists_every_signal(self):
+        self.assertEqual(self.window.io_dock.windowTitle(), "PLC Tags")
         self.window.io_dock.raise_()
         self.window.io_dock.show()
         self.window.io_table.refresh()
@@ -285,10 +286,14 @@ class EditorClicksTest(unittest.TestCase):
         self.assertIn("Sim_Input 18 B", table.summary.text())
         table.filter.setText("led_1_1_1")
         (row,) = table.visible_rows()
-        self.assertEqual(row[:4], ["led_1_1_1", "isOn", "PLC output", "BOOL"])
+        self.assertEqual(row[:4], ["led_1_1_1", "Default tag table", "Bool", "%Q0.0"])
         visible = next(r for r in range(table.table.rowCount()) if not table.table.isRowHidden(r))
-        table._double_clicked(visible, 0)
+        table._double_clicked(visible, 5)                                      # the Component column
         self.assertEqual([i.model.id for i in self.window.scene.selectedItems()], ["led_1_1_1"])
+        self.assertTrue(table.edit_tag("led_1_1_1/isOn", name="L1_Auto_Lamp"))  # an undoable layout edit
+        self.assertFalse(self.window.undo_stack.isClean())
+        self.window.undo_stack.undo()
+        self.assertEqual(self.window.config.plcTags, [])
 
     def test_sensor_signal_settings_are_editable(self):
         self.click_on_canvas("sensor_1_1_1")

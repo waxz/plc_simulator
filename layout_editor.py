@@ -5634,11 +5634,14 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.BottomDockWidgetArea, check_dock)
         # Compact by default: the canvas is what matters; drag to enlarge.
         self.resizeDocks([check_dock], [120], Qt.Vertical)
-        # The I/O table: every PLC signal of the layout (io_table.py), a tab
-        # beside Layout Check; rebuilt when shown and after edits while shown.
+        # The PLC tag table: every PLC signal of the layout as a tag, as TIA
+        # Portal's PLC tags editor (io_table.py), a tab beside Layout Check;
+        # rebuilt when shown and after edits while shown.
         from io_table import IoTablePanel
-        self.io_table = IoTablePanel(lambda: self.config, on_select=self._select_component)
-        io_dock = QDockWidget("I/O Table", self)
+        self.io_table = IoTablePanel(lambda: self.config, on_select=self._select_component,
+                                     undo_stack=self.undo_stack,
+                                     status=lambda message: self.statusBar().showMessage(message, 8000))
+        io_dock = QDockWidget("PLC Tags", self)
         io_dock.setObjectName("ioTableDock")
         io_dock.setWidget(self.io_table)
         self.addDockWidget(Qt.BottomDockWidgetArea, io_dock)

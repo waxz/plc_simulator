@@ -312,6 +312,9 @@ def qt_stylesheet() -> str:
     QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {{ color: {f}; }}
     QComboBox QAbstractItemView {{ background: {pd}; border: 1px solid {b}; selection-background-color: {a}; }}
     QListWidget, QTreeWidget, QTableWidget {{ background: {pd}; border: 1px solid {b}; outline: none; }}
+    QTableWidget {{ alternate-background-color: {p}; gridline-color: {b}; }}
+    QHeaderView::section {{ background: {p}; color: {d}; border: none; border-right: 1px solid {b};
+                           border-bottom: 1px solid {b}; padding: 2px 6px; }}
     QListWidget::item {{ padding: 3px 4px; }}
     QListWidget::item:selected {{ background: {a}; color: white; }}
     QListWidget::item:hover:!selected {{ background: {p}; }}

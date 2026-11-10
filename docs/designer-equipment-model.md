@@ -85,9 +85,10 @@ Each step is usable on its own.
    and braking and the same Drive rows and Result.
 3. **Sensors with an electrical layer.** Supply and output type (PNP / NPN,
    NO / NC), response time, and the wiring to an input module channel.
-4. **I/O table: addresses and tags.** Done: every signal in one table
-   (component, signal, direction, PLC type, frame, byte, bit, ST member),
-   filter, sort, CSV. Next: editable PLC tag names and a link to the frame
+4. **I/O table: addresses and tags.** Done: every signal as a PLC tag, as
+   TIA Portal's PLC tags editor - tag tables, editable names and comments,
+   %I / %Q addresses, filter, sort, CSV and an .xlsx for import into TIA
+   Portal. Next: the tag names in the generated ST, and a link to the frame
    picture (`tools/frame_map.py`).
 5. **Templates of whole stations.** Done: a selected group saved to the
    library as one station and placed again with new ids, its internal links

@@ -827,6 +827,17 @@ class BeltConnection(BaseModel):
     toBelt: str
 
 
+class PlcTag(BaseModel):
+    """Your entry for one PLC signal in the designer's tag table (io_table.py):
+    `key` is the signal, "<component>/<signal>"; an empty `name` / `table` /
+    `comment` keeps the generated one (the component id, the "Default tag
+    table", the component's label)."""
+    key: str
+    name: str = ""
+    table: str = ""
+    comment: str = ""
+
+
 class BackgroundDrawing(BaseModel):
     """A DXF floor plan shown behind the layout in the editor (cad/dxf_io.py).
     `path` is relative to the layout file when possible. Only what passes the
@@ -876,6 +887,7 @@ class SimulatorConfig(BaseModel):
     controlPanels: List[ControlPanel] = Field(default_factory=list)
     mqttSettings: MqttSettings = Field(default_factory=MqttSettings)
     connections: List[BeltConnection] = Field(default_factory=list)
+    plcTags: List[PlcTag] = Field(default_factory=list)     # tag names / tables / comments (io_table.py)
     sketch: List[SketchEntity] = Field(default_factory=list)
     background: Optional[BackgroundDrawing] = None
     simulatorBackend: Literal["matter", "rapier"] = "matter"
@@ -913,6 +925,8 @@ class SimulatorConfig(BaseModel):
             for key, models in (("buttons", self.buttons), ("leds", self.leds)):
                 if key in data and len(data[key]) == len(models):
                     data[key] = [d for d, m in zip(data[key], models) if not m.panel]
+            if not self.plcTags:
+                data.pop("plcTags", None)          # untouched tags: nothing to save
         return data
 
 def load_config(file_path: str) -> SimulatorConfig:
