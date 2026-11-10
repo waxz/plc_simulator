@@ -3538,6 +3538,22 @@ class ComponentLibraryPanel(QWidget):
             self.save()
 
 
+class AxExportSettingsCommand(QUndoCommand):
+    """The layout's SIMATIC AX export settings changed: saved with it."""
+
+    def __init__(self, config, before, after):
+        super().__init__("SIMATIC AX export settings")
+        self.config = config
+        self.before = before.model_copy() if before is not None else None
+        self.after = after.model_copy() if after is not None else None
+
+    def redo(self):
+        self.config.axExport = self.after
+
+    def undo(self):
+        self.config.axExport = self.before
+
+
 class AddItemCommand(QUndoCommand):
     """Adds a PlacedItem to the scene/items_list/config (redo) or removes it
     again (undo). `do_add`/`do_remove` are CanvasView's own `_add_item`/
@@ -5571,6 +5587,19 @@ class MainWindow(QMainWindow):
         save_as_action.setShortcut(QKeySequence.SaveAs)
         save_as_action.triggered.connect(self._save_config_as)
         file_menu.addAction(save_as_action)
+        # The layout's PLC exchange as SIMATIC AX ST (ax_export.py, the one ST
+        # generator): with the settings saved in the layout - asked the first
+        # time - or after changing them.
+        file_menu.addSeparator()
+        self.ax_export_action = QAction("Export to SIMATIC AX", self)
+        self.ax_export_action.setShortcut(QKeySequence("Ctrl+Shift+E"))
+        self.ax_export_action.setToolTip("Write the layout's PLC frames, serializers and tags as AX ST "
+                                         "(the settings saved with the layout)")
+        self.ax_export_action.triggered.connect(lambda: self.export_ax())
+        file_menu.addAction(self.ax_export_action)
+        self.ax_settings_action = QAction("SIMATIC AX Export Settings...", self)
+        self.ax_settings_action.triggered.connect(lambda: self.export_ax(ask=True))
+        file_menu.addAction(self.ax_settings_action)
 
         # Edit > Undo/Redo - createUndoAction/createRedoAction give us
         # actions whose text ("Undo Move Component", "Redo Delete
@@ -5658,7 +5687,8 @@ class MainWindow(QMainWindow):
         from io_table import IoTablePanel
         self.io_table = IoTablePanel(lambda: self.config, on_select=self._select_component,
                                      undo_stack=self.undo_stack,
-                                     status=lambda message: self.statusBar().showMessage(message, 8000))
+                                     status=lambda message: self.statusBar().showMessage(message, 8000),
+                                     on_export_ax=lambda: self.export_ax(ask=True))
         io_dock = QDockWidget("PLC Tags", self)
         io_dock.setObjectName("ioTableDock")
         io_dock.setWidget(self.io_table)
@@ -6150,6 +6180,44 @@ class MainWindow(QMainWindow):
         self._update_title()
         self.statusBar().showMessage(f"Saved layout to {path} - run it with: python main.py {path}", 8000)
         return True
+
+    def export_ax(self, ask: bool = False, settings=None):
+        """File > Export to SIMATIC AX: the layout's ST, as its saved settings
+        say (the dialog the first time, or with `ask`; `settings` given:
+        those, no dialog). Returns ax_export's result, None if cancelled or
+        refused (the reason in a message box)."""
+        import ax_export
+        import plc_tags
+        import st_export
+        from ax_export_dialog import AxExportDialog, default_settings
+        config = self._build_export_config()
+        control_panel.refresh(config)
+        source = os.path.basename(self.config_path) if self.config_path else "untitled.json"
+        try:
+            contract = st_export.contract(config, source)
+        except Exception as exc:                        # an unfinished layout
+            QMessageBox.warning(self, "Export to SIMATIC AX", f"The layout's exchange can't be built: {exc}")
+            return None
+        saved = self.config.axExport if self.config is not None else None
+        if settings is None:
+            settings = saved
+            if ask or settings is None or not settings.output:
+                dialog = AxExportDialog(self, settings or default_settings(contract), contract, self.config_path)
+                if dialog.exec() != QDialog.Accepted:
+                    return None
+                settings = dialog.settings()
+        if settings != saved and self.config is not None:
+            self.undo_stack.push(AxExportSettingsCommand(self.config, saved, settings))
+        try:
+            result = ax_export.export(contract, settings, plc_tags.tags_json(config), self.config_path)
+        except ax_export.ExportError as exc:
+            QMessageBox.warning(self, "Export to SIMATIC AX", str(exc))
+            return None
+        changed = ax_export.write(result)
+        files = ", ".join(os.path.basename(p) for p in result.files)
+        what = "wrote" if changed else "up to date:"
+        self.statusBar().showMessage(f"SIMATIC AX: {what} {files} - {'; '.join(result.report)}", 12000)
+        return result
 
     def _build_export_config(self) -> SimulatorConfig:
         """Reassemble a `SimulatorConfig` from the *current* `items_list`

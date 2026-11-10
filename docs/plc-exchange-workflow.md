@@ -72,34 +72,50 @@ add `--endianness`, `--namespace` and `--check`.
 
 ## 3. Recommended workflow: Python as the single source
 
-`st_export.py` (new) generates the PLC side of the exchange from the
-simulator's own definition:
+One generator writes the PLC side of the exchange: `ax_export.py`, from
+the simulator's own definition (`st_export.contract`). Three ways in, one
+code path, so nothing is defined twice:
+
+- **Designer:** File > Export to SIMATIC AX (`Ctrl+Shift+E`). It asks for
+  the settings the first time and saves them with the layout (`axExport`):
+  the `.st` file (relative to the layout), namespace, STRUCT prefix,
+  frames, tags, bit arrays, max frame and an optional AxUnit test file.
+- **Command line:** `st_export.py layout.json` writes as saved; options
+  override, `--save` keeps them, `--check` exits 1 when stale.
+- **AX project:** `tools/generate_st_serde.py --sim-config layout.json`
+  passes its options to the simulator's `st_export.py` (it has no copy of
+  the code; its struct mode for hand-written STRUCTs stays).
 
 ```bash
-python st_export.py layout.json --out <AX>/src/generated --tests-out <AX>/test/generated --contract <AX>/contract/io_contract.json
-python st_export.py layout.json --out <AX>/src/generated --tests-out <AX>/test/generated --check   # exit 1 if stale
+python st_export.py layout.json -o <AX>/src/sim_io.st --namespace Plant.Io --frames Sim_Input,Sim_Output --save
+python st_export.py layout.json            # as saved
+python st_export.py layout.json --check    # exit 1 if stale
 ```
 
-| File | Contents |
-|---|---|
-| `SimIoTypes.st` | `NAMESPACE Simulator.Io`: a STRUCT per kind of device and direction, its PLC interface (`Diverter_Command`: `divert`, `commandSpeed`, `commandAngle`; `Diverter_Feedback`, `Stopper_Command`, `BeltDrive_Command`, ...), one per `device_kinds.py` entry; then one STRUCT per frame (`Sim_Input`, `Sim_Output`, `Belt_Feedback` when sent, the `Metric_Layout_*`s), with a member per component named after it: a device or belt of its kind's STRUCT (`div_1 : Diverter_Command`), a sensor / button / lamp a BOOL. So a PLC function block per kind of device takes that kind's STRUCTs, and a new kind (one entry in `device_kinds.py`) gets its STRUCTs without touching the generator |
-| `SimIoSerde.st` | `DeserializeFromBytes` / `SerializeToBytes` per STRUCT, written from the Python packer's byte and bit offsets (`io_layout.layout_fields`), not re-derived from member order. They use the layout's byte order (`Endianness#Little` / `#Big`), so banners, padding and metric bits are right by construction |
-| `SimIoContract.st` | `CLASS SimIoContract` with constants: the frame magic, header / trailer sizes, every `FrameType`, each frame's size and layout fingerprint (the CRC that `LAYOUT_CHECK` uses), and the contract fingerprint |
-| `SimIoVectorsTest.st` | An AxUnit test per frame: sample values must serialize to exactly the bytes the Python packer produces, and deserialize back. This catches byte-order, bit-order and padding drift that a size check misses |
-| `io_contract.json` | The same contract as data: byte, bit, type, path and member per field; frame types; byte order |
+The one `.st` file holds:
 
-Every generated file carries the contract fingerprint in its header and a
-do-not-edit note.
+| Part | Contents |
+|---|---|
+| Device STRUCTs | A STRUCT per kind of device and direction, its PLC interface (`Diverter_Command`: `divert`, `commandSpeed`, `commandAngle`; `Diverter_Feedback`, `BeltDrive_Command`, ...), one per `device_kinds.py` entry, so a new kind gets its STRUCTs without touching the generator |
+| Frame STRUCTs | `Sim_Input`, `Sim_Output`, `Belt_Feedback` when sent, the `Metric_Layout_*`s (or the chosen frames; `--prefix Station_1` names them `Station_1_*`), with a member per component named after it (an ST identifier, never a keyword, unique ignoring case): a device or belt of its kind's STRUCT, a sensor / button / lamp a BOOL, a laser banner one word |
+| Serializers | `DeserializeFromBytes` / `SerializeToBytes` per frame, from the contract's byte and bit offsets (not re-derived from member order), in the layout's byte order; each first checks that the buffer holds the frame from `startOffset` |
+| PLC tags | `Sim_Tags` with a variable per tag (the designer's PLC Tags), `ReadTags` / `WriteTags` |
+| `SimIoContract` | Constants: every `FrameType`, each frame's size and layout fingerprint (the CRC that `LAYOUT_CHECK` uses), the contract fingerprint |
+| Test file (optional) | An AxUnit test per frame: sample values must serialize to exactly the simulator packer's bytes, and back |
+
+A frame bigger than the AX `TcpClient`'s buffer carries (242 bytes) is
+refused with the reason. The file carries the contract fingerprint in its
+header and a do-not-edit note.
 
 In the AX project's `apax.yml` (proposed; not applied), with
 `SIM_DIR: "../../conveyor-flow-simulator/python_sim"` and `LAYOUT` set under
-`variables:`:
+`variables:`, and the export settings saved in the layout:
 
 ```yaml
   gen_io:
-    - python $SIM_DIR/st_export.py $SIM_DIR/$LAYOUT --out src/generated --tests-out test/generated --contract contract/io_contract.json
+    - python $SIM_DIR/st_export.py $SIM_DIR/$LAYOUT
   check_io:
-    - python $SIM_DIR/st_export.py $SIM_DIR/$LAYOUT --out src/generated --tests-out test/generated --contract contract/io_contract.json --check
+    - python $SIM_DIR/st_export.py $SIM_DIR/$LAYOUT --check
 ```
 
 Then run `apax check_io && apax build && apax test` before every load.
@@ -110,10 +126,11 @@ AX checkout, so either repository fails when the two drift.
 
 Migration steps:
 1. Run `apax gen_io`.
-2. In `tcp_client.st`, use `Simulator.Io.Sim_Input` / `Sim_Output` and the
-   generated overloads instead of `Station_1_Input` / `Station_1_Output`.
-   The field names are the component ids, as today; a laser banner becomes
-   `ARRAY[0..31] OF BOOL` instead of a DWORD.
+2. In `tcp_client.st`, use the generated `Sim_Input` / `Sim_Output` (or
+   `--prefix Station_1`: `Station_1_Input` / `Station_1_Output`) and their
+   overloads instead of the hand-written STRUCTs. The field names are the
+   component ids, as today; a laser banner stays one DWORD (`bitArrays`:
+   `ARRAY[0..31] OF BOOL`).
 3. Replace the hand-copied frame-type constants with
    `SimIoContract.FRAME_TYPE_*`.
 4. Delete the I/O STRUCTs from `types.st` and their part of

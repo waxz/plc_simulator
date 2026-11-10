@@ -849,6 +849,22 @@ class PlcTag(BaseModel):
     comment: str = ""
 
 
+class AxExport(BaseModel):
+    """How this layout's PLC exchange is exported as SIMATIC AX ST
+    (ax_export.py): set once - in the designer (File > Export to SIMATIC
+    AX) or with st_export.py --save - and every later export, from the
+    designer, st_export.py or the AX project's generate_st_serde.py, writes
+    the same file the same way. Paths are relative to the layout file."""
+    output: str = ""                # the .st file (e.g. ../ax_dev/src/demo/sim_exchange/sim_io.st)
+    namespace: str = ""             # NAMESPACE around the ST ("" = none)
+    prefix: str = ""                # Station_1: Sim_Input -> Station_1_Input, ...
+    frames: List[str] = Field(default_factory=list)    # [] = every frame
+    tags: bool = True               # the PLC tags STRUCT, ReadTags / WriteTags
+    bitArrays: bool = False         # a laser banner's beams as ARRAY OF BOOL (else one word)
+    maxPayload: int = 242           # refuse a bigger frame (the AX TcpClient's buffer); 0 = no limit
+    vectors: str = ""               # also an AxUnit golden-vector test file ("" = none)
+
+
 class BackgroundDrawing(BaseModel):
     """A DXF floor plan shown behind the layout in the editor (cad/dxf_io.py).
     `path` is relative to the layout file when possible. Only what passes the
@@ -899,6 +915,7 @@ class SimulatorConfig(BaseModel):
     mqttSettings: MqttSettings = Field(default_factory=MqttSettings)
     connections: List[BeltConnection] = Field(default_factory=list)
     plcTags: List[PlcTag] = Field(default_factory=list)     # tag names / tables / comments (io_table.py)
+    axExport: Optional[AxExport] = None                      # SIMATIC AX ST export settings (ax_export.py)
     sketch: List[SketchEntity] = Field(default_factory=list)
     background: Optional[BackgroundDrawing] = None
     simulatorBackend: Literal["matter", "rapier"] = "matter"
@@ -938,6 +955,8 @@ class SimulatorConfig(BaseModel):
                     data[key] = [d for d, m in zip(data[key], models) if not m.panel]
             if not self.plcTags:
                 data.pop("plcTags", None)          # untouched tags: nothing to save
+            if self.axExport is None:
+                data.pop("axExport", None)
         return data
 
 def load_config(file_path: str) -> SimulatorConfig:

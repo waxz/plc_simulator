@@ -149,7 +149,8 @@ class IoTablePanel(QWidget):
     columns, CSV and TIA Portal (.xlsx) export."""
 
     def __init__(self, get_config: Callable, on_select: Optional[Callable[[str], None]] = None,
-                 undo_stack=None, status: Optional[Callable[[str], None]] = None):
+                 undo_stack=None, status: Optional[Callable[[str], None]] = None,
+                 on_export_ax: Optional[Callable[[], object]] = None):
         super().__init__()
         self.get_config = get_config
         self.on_select = on_select
@@ -177,6 +178,12 @@ class IoTablePanel(QWidget):
         self.tia_btn.setToolTip("An .xlsx in TIA Portal's PLC tag format: PLC tags > tag table > Import")
         self.tia_btn.clicked.connect(self._export_tia)
         top.addWidget(self.tia_btn)
+        self.ax_btn = QPushButton("Export to SIMATIC AX...")
+        self.ax_btn.setToolTip("These frames and tags as AX ST: STRUCTs, serializers, Sim_Tags (ax_export.py)")
+        self.ax_btn.setVisible(on_export_ax is not None)
+        if on_export_ax is not None:
+            self.ax_btn.clicked.connect(lambda: on_export_ax())
+        top.addWidget(self.ax_btn)
         layout.addLayout(top)
         self.summary = QLabel()
         self.summary.setWordWrap(True)

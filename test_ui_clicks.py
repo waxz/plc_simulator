@@ -276,6 +276,41 @@ class EditorClicksTest(unittest.TestCase):
                           for j in range(panel.tree.topLevelItem(i).childCount())]
                 self.assertIn(label, labels)
 
+    def test_export_to_simatic_ax_from_the_designer(self):
+        """File > Export to SIMATIC AX: the ST written by ax_export (the one
+        generator), its settings kept in the layout (undoable, saved)."""
+        from ax_export_dialog import AxExportDialog, default_settings
+        from config_parser import AxExport
+        import st_export
+        window = self.window
+        self.assertEqual(window.ax_export_action.shortcut().toString(), "Ctrl+Shift+E")
+        settings = AxExport(output="ax/sim_io.st", namespace="SimDemo.Io", frames=["Sim_Input", "Sim_Output"])
+        result = window.export_ax(settings=settings)
+        out = os.path.join(self.tmp.name, "ax", "sim_io.st")                  # relative to the layout
+        self.assertEqual(list(result.files), [out])
+        with open(out, encoding="utf-8") as f:
+            text = f.read()
+        self.assertIn("NAMESPACE SimDemo.Io", text)
+        self.assertIn("Sim_Tags : STRUCT", text)
+        self.assertIn("18 bytes", window.statusBar().currentMessage())
+        self.assertEqual(window.config.axExport, settings)                    # kept in the layout ...
+        QTest.mouseClick(self.toolbar_button(window.save_action), Qt.LeftButton)
+        self.assertEqual(load_config(self.layout).axExport.output, "ax/sim_io.st")   # ... and saved
+        # the same file from the command line, as saved
+        self.assertEqual(st_export.main([self.layout, "--check"]), 0)
+        window.undo_stack.undo()
+        self.assertIsNone(window.config.axExport)
+        # the dialog: what it shows is what it gives back
+        contract = st_export.contract(window.config)
+        dialog = AxExportDialog(window, default_settings(contract), contract, self.layout)
+        self.addCleanup(dialog.deleteLater)
+        self.assertEqual(dialog.settings().frames, ["Sim_Input", "Sim_Output"])        # not the metric layouts
+        dialog.output.setText("plc/io.st")
+        dialog.prefix.setText("Station_1")
+        dialog.frames.item(0).setCheckState(Qt.Unchecked)
+        given = dialog.settings()
+        self.assertEqual((given.output, given.prefix, given.frames), ("plc/io.st", "Station_1", ["Sim_Output"]))
+
     def test_the_plc_tag_table_lists_every_signal(self):
         self.assertEqual(self.window.io_dock.windowTitle(), "PLC Tags")
         self.window.io_dock.raise_()

@@ -96,7 +96,10 @@ class ExchangeTest(unittest.TestCase):
                          ["op1_start", "op1_stop", "op1_reset"])
         self.assertEqual([i for i in sub["output"]["custom_ids"] if i.startswith("op1")],
                          ["op1_run", "op1_fault", "op1_horn"])
-        types = st_export.emit_types(st_export.contract(self.config), self.config, "Simulator.Io")
+        import ax_export
+        from config_parser import AxExport
+        types = ax_export.export(st_export.contract(self.config),
+                                 AxExport(output="x.st", maxPayload=0)).files["x.st"]     # 248 bytes: no limit here
         for name in ("op1_start", "op1_stop", "op1_run", "op1_horn"):
             self.assertIn(f"{name} : BOOL;", types)
 

@@ -1,10 +1,11 @@
 """
-test_st_export.py - the SIMATIC AX package generated from the simulator's
-exchange definition (st_export.py): its frames match the wire exactly (the
-golden-vector packer reproduces ComponentMessage's bytes for live values,
-for every frame of several layouts), its offsets / sizes / fingerprints
-are the ones io_layout and LAYOUT_CHECK use, the ST it writes is complete
-and deterministic, and --check catches a stale package.
+test_st_export.py - the exchange contract (st_export.py) and the SIMATIC AX
+ST written from it by the one ST generator (ax_export.py): the frames match
+the wire exactly (the golden-vector packers reproduce ComponentMessage's
+bytes for live values, for every frame of several layouts), the offsets /
+sizes / fingerprints are the ones io_layout and LAYOUT_CHECK use, the ST is
+complete and deterministic, the export settings are kept in the layout, and
+--check catches a stale file.
 """
 import json
 import os
@@ -20,6 +21,16 @@ from mqtt_message_binding import ByteType, ComponentMessage
 from physics import PhysicsEngine
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def export_text(config, namespace="Simulator.Io", **settings) -> str:
+    """The layout's ST from ax_export, as one export would write it."""
+    import ax_export
+    import plc_tags
+    from config_parser import AxExport
+    result = ax_export.export(st_export.contract(config, "x"), AxExport(output="out.st", namespace=namespace,
+                                                                        **settings), plc_tags.tags_json(config))
+    return result.files["out.st"]
 LAYOUTS = ("station_1.json", "machines_demo.json", "logistics_demo.json")
 
 
@@ -52,7 +63,7 @@ class WireTest(unittest.TestCase):
             wire = ComponentMessage(mapping, endianness=">").serialize(config)
             _m, access = st_export.members(mapping)
             self.assertEqual(st_export.pack(len(wire), access, st_export.unpack(wire, access, "BE"), "BE"), wire)
-        self.assertIn("Endianness#Big", st_export.generate(config, "x", "Ns")["SimIoSerde.st"])
+        self.assertIn("Endianness#Big", export_text(config, "Ns"))
 
 
 class ContractTest(unittest.TestCase):
@@ -81,52 +92,93 @@ class ContractTest(unittest.TestCase):
 
 
 class EmitTest(unittest.TestCase):
+    """The ST ax_export writes - the designer, st_export.py and the AX
+    project's generate_st_serde.py all write it through ax_export."""
+
     def setUp(self):
         self.config = load_config(os.path.join(HERE, "logistics_demo.json"))
-        self.files = st_export.generate(self.config, "logistics_demo.json", "Simulator.Io")
+        self.text = export_text(self.config)
 
     def test_complete_and_deterministic_st(self):
-        self.assertEqual(st_export.generate(self.config, "logistics_demo.json", "Simulator.Io"), self.files)
-        types, serde = self.files["SimIoTypes.st"], self.files["SimIoSerde.st"]
-        for frame, _t, mapping in st_export.frames(self.config):
-            self.assertIn(f"{frame} : STRUCT", types)
-            self.assertIn(f"value : {frame};", serde)
-            self.assertIn(f"startOffset + UDINT#{io_layout.layout_size(mapping)};", serde)
-        self.assertEqual(serde.count("FUNCTION DeserializeFromBytes"), serde.count("FUNCTION SerializeToBytes"))
-        self.assertEqual(serde.count("FUNCTION "), serde.count("END_FUNCTION"))
+        self.assertEqual(export_text(self.config), self.text)
+        for frame in st_export.contract(self.config)["frames"]:
+            self.assertIn(f"{frame['name']} : STRUCT", self.text)
+            self.assertIn(f"value : {frame['name']};", self.text)
+            self.assertIn(f"startOffset + UDINT#{frame['size']};", self.text)
+            self.assertIn(f"TO_DINT(startOffset) + DINT#{frame['size']} THEN", self.text)    # the length guard
+        self.assertEqual(self.text.count("FUNCTION DeserializeFromBytes"), self.text.count("FUNCTION SerializeToBytes"))
+        self.assertEqual(self.text.count("FUNCTION "), self.text.count("END_FUNCTION"))
         # A device is one member of its kind's STRUCT (device_kinds.py), and
         # the serializers reach its fields through it.
-        self.assertIn("dws_1 : Scanner_Feedback;", types)
-        self.assertIn("Scanner_Feedback : STRUCT", types)
-        self.assertIn("            code : UDINT;", types)
-        self.assertIn("div_1 : Diverter_Command;", types)
-        self.assertIn("infeed : BeltDrive_Command;", types)
-        self.assertIn("value.dws_1.code", serde)
+        self.assertIn("dws_1 : Scanner_Feedback;", self.text)
+        self.assertIn("Scanner_Feedback : STRUCT", self.text)
+        self.assertIn("div_1 : Diverter_Command;", self.text)
+        self.assertIn("infeed : BeltDrive_Command;", self.text)
+        self.assertIn("value.dws_1.code", self.text)
+        self.assertIn("Sim_Tags : STRUCT", self.text)
+        self.assertIn("Do not edit by hand", self.text)
+        self.assertNotRegex(self.text, r"\bNone\b")
         structs = st_export.device_structs(self.config)
         self.assertEqual([n for n, _t in structs["Diverter_Command"]], ["divert", "commandSpeed", "commandAngle"])
-        for text in self.files.values():
-            self.assertIn("Do not edit by hand", text)
-            self.assertNotRegex(text, r"\bNone\b")
 
-    def test_golden_vectors_hold_the_python_bytes(self):
-        vectors = self.files["SimIoVectorsTest.st"]
-        frame, _t, mapping = st_export.frames(self.config)[0]
-        _m, access = st_export.members(mapping, self.config, st_export.FRAME_DIRECTIONS.get(frame))
-        size = io_layout.layout_size(mapping)
-        expected = st_export.pack(size, access, st_export.sample_values(access), "LE")
-        literal = ", ".join(f"BYTE#16#{b:02X}" for b in expected)
-        self.assertIn(f"expected : ARRAY[0..{size - 1}] OF BYTE := [{literal}];", vectors)
-        self.assertEqual(len(re.findall(r"\{Test\}", vectors)), len(st_export.frames(self.config)))
+    def test_golden_vectors_hold_the_simulators_bytes(self):
+        """The vector test's expected bytes (ax_export.pack_frame, from the
+        contract) are the simulator's own bytes for the same values."""
+        import ax_export
+        config = running("logistics_demo.json", 10.0)
+        contract = st_export.contract(config)
+        for frame, _t, mapping in st_export.frames(config):
+            if frame.startswith("Metric"):
+                continue
+            with self.subTest(frame=frame):
+                wire = ComponentMessage(mapping, endianness="<").serialize(config)
+                _m, access = st_export.members(mapping, config, st_export.FRAME_DIRECTIONS.get(frame))
+                values = {expr: value for (f, expr), value in zip(access, st_export.unpack(wire, access, "LE").values())}
+                described = next(f for f in contract["frames"] if f["name"] == frame)
+                self.assertEqual(ax_export.pack_frame(described, values, "LE"), wire)
+        vectors = export_text(self.config, vectors="vectors.st")
+        self.assertIn("Sim_Tags", vectors)                                 # (the ST) and the test file:
+        import ax_export as ax
+        from config_parser import AxExport
+        files = ax.export(st_export.contract(self.config), AxExport(output="o.st", vectors="t.st")).files
+        self.assertIn("METHOD PUBLIC Sim_Input_matches_the_simulator", files["t.st"])
+        self.assertEqual(files["t.st"].count("{Test}"), len(st_export.contract(self.config)["frames"]))
 
-    def test_check_mode_reports_stale_files(self):
-        out = tempfile.mkdtemp()
-        layout = os.path.join(HERE, "logistics_demo.json")
-        self.assertEqual(st_export.main([layout, "--out", out, "--contract", os.path.join(out, "c.json")]), 0)
-        self.assertEqual(st_export.main([layout, "--out", out, "--contract", os.path.join(out, "c.json"),
-                                         "--check"]), 0)
-        with open(os.path.join(out, "SimIoTypes.st"), "a", encoding="utf-8") as f:
+    def test_settings_are_kept_in_the_layout_and_check_catches_a_stale_file(self):
+        import json
+        import shutil
+        folder = tempfile.mkdtemp()
+        layout = os.path.join(folder, "plant.json")
+        shutil.copy(os.path.join(HERE, "logistics_demo.json"), layout)
+        out = os.path.join(folder, "ax", "sim_io.st")
+        self.assertEqual(st_export.main([layout, "-o", out, "--namespace", "Plant.Io", "--frames",
+                                         "Sim_Input,Sim_Output", "--save"]), 0)
+        with open(layout, encoding="utf-8") as f:
+            saved = json.load(f)["axExport"]
+        self.assertEqual((saved["output"], saved["namespace"], saved["frames"]),
+                         ("ax/sim_io.st", "Plant.Io", ["Sim_Input", "Sim_Output"]))      # relative to the layout
+        self.assertEqual(load_config(layout).axExport.namespace, "Plant.Io")
+        self.assertEqual(st_export.main([layout, "--check"]), 0)                         # as saved: up to date
+        with open(out, "a", encoding="utf-8") as f:
             f.write("// edited\n")
-        self.assertEqual(st_export.main([layout, "--out", out, "--check"]), 1)
+        self.assertEqual(st_export.main([layout, "--check"]), 1)
+        self.assertEqual(st_export.main([layout]), 0)                                    # regenerated as saved
+        self.assertEqual(st_export.main([layout, "--check"]), 0)
+        contract_file = os.path.join(folder, "c.json")
+        st_export.main([layout, "--contract", contract_file])
+        again = os.path.join(folder, "again.st")
+        self.assertEqual(st_export.main(["--from-contract", contract_file, "-o", again, "--namespace", "Plant.Io",
+                                         "--frames", "Sim_Input,Sim_Output"]), 0)
+        with open(out, encoding="utf-8") as a, open(again, encoding="utf-8") as b:
+            self.assertEqual(a.read(), b.read())                                         # the same ST from the file
+
+    def test_a_frame_too_big_for_the_plc_is_refused(self):
+        import ax_export
+        from config_parser import AxExport
+        contract = st_export.contract(load_config(os.path.join(HERE, "logistics_full.json")))
+        with self.assertRaisesRegex(ax_export.ExportError, "Sim_Output \\(247 bytes\\)"):
+            ax_export.export(contract, AxExport(output="x.st"))
+        self.assertIn("x.st", ax_export.export(contract, AxExport(output="x.st", maxPayload=0)).files)
 
 
 class MemberNameTest(unittest.TestCase):

@@ -268,10 +268,10 @@ The Qt layout editor is where belt shapes and positions are designed:
     elementary, so an array becomes one Bool tag per bit (`<name>_<i>`) and
     the 64-bit clock is left out.
   - The tags come from the exchange contract the generated ST uses, so they
-    are what is on the wire. `st_export.py --tags tags.json` writes them for
-    the AX generator (`tools/generate_st_serde.py --sim-config`), which makes
-    a `Sim_Tags` STRUCT with a variable per tag, named as the tag, and
-    `ReadTags` / `WriteTags` to copy between it and the frames.
+    are what is on the wire. **Export to SIMATIC AX...** (here, or File >
+    Export to SIMATIC AX) writes them into the layout's AX ST as a
+    `Sim_Tags` STRUCT with a variable per tag, named as the tag, and
+    `ReadTags` / `WriteTags` to copy between it and the frames (below).
 - **Control Panel** (library, Operator Panel): an operator panel whose push
   buttons, pilot lamps and buzzers are its properties - the **Devices**
   table (type, name, legend, colour, NC contact, key; + Button / + Lamp /
@@ -1303,25 +1303,48 @@ to a whole byte, then every other field in declaration order.
 python io_layout.py delivery.json --st
 ```
 
-**The PLC side, generated.** `st_export.py` writes the whole AX side of
-the exchange from this layout:
-- STRUCTs per frame;
-- serializers built from the exact byte and bit offsets, in the layout's
-  byte order;
-- a `SimIoContract` class with the frame magic, frame types, sizes and
-  fingerprints;
-- AxUnit golden-vector tests, which must reproduce the Python bytes;
-- `io_contract.json`.
+**The PLC side, generated.** One generator writes the AX side of the
+exchange: `ax_export.py`. The designer, `st_export.py` and the AX project's
+`tools/generate_st_serde.py --sim-config` all write through it, so the
+STRUCTs and serializers are defined once. One `.st` file holds:
+- the device STRUCTs and one STRUCT per frame (`--prefix Station_1`:
+  `Station_1_Input`, ...); a laser banner's beams as one word;
+- `DeserializeFromBytes` / `SerializeToBytes` per frame, at the exact byte
+  and bit offsets, in the layout's byte order, each first checking that the
+  buffer is long enough (else nothing is done, `startOffset` returned);
+- the PLC tags (`Sim_Tags`, `ReadTags` / `WriteTags`);
+- `SimIoContract`: frame types, sizes and fingerprints;
+- optionally an AxUnit golden-vector test that must reproduce the
+  simulator's bytes.
 
-`--check` exits 1 when the generated files are stale, for an apax script or
-CI. See [docs/plc-exchange-workflow.md](docs/plc-exchange-workflow.md) for
-the evaluation and the workflow, including the existing
-`generate_st_serde.py` and what the PLC side still needs.
+A frame bigger than the AX `TcpClient` carries (242 bytes) is refused.
+
+**In the designer:** **File > Export to SIMATIC AX** (`Ctrl+Shift+E`). The
+first time it asks: the `.st` file (relative to the layout), namespace,
+STRUCT prefix, frames, tags, bit arrays, max frame, test file. The settings
+are saved with the layout (`axExport`), so after that it is one click, and
+the status bar shows the frame sizes. **File > SIMATIC AX Export
+Settings...** changes them; the PLC Tags dock has the same button.
+
+**From the command line**, with the same saved settings:
 
 ```bash
-python st_export.py delivery.json --out ../ax_dev/src/generated --tests-out ../ax_dev/test/generated --contract ../ax_dev/contract/io_contract.json
-python st_export.py delivery.json --out ../ax_dev/src/generated --tests-out ../ax_dev/test/generated --check
+python st_export.py station_1.json -o ../ax_dev/src/demo/sim_exchange/sim_io.st --namespace SimDemo.Io --frames Sim_Input,Sim_Output --save
 ```
+
+```bash
+python st_export.py station_1.json
+```
+
+```bash
+python st_export.py station_1.json --check
+```
+
+`--check` exits 1 when the file is stale, for an apax script or CI.
+`--contract c.json` writes the contract (with the tags) as data, and
+`--from-contract c.json -o x.st` writes the ST from it. See
+[docs/plc-exchange-workflow.md](docs/plc-exchange-workflow.md) for the
+workflow.
 
 **TCP robustness options** (`mqttSettings`, all off by default):
 

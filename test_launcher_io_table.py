@@ -183,7 +183,7 @@ class PlcTagsTest(unittest.TestCase):
         import st_export
         out = os.path.join(_SETTINGS_DIR, "st")
         tags_file = os.path.join(out, "tags.json")
-        st_export.main(["station_1.json", "--out", out, "--tags", tags_file])
+        st_export.main(["station_1.json", "--tags", tags_file])
         with open(tags_file, encoding="utf-8") as f:
             tags = json.load(f)
         self.assertEqual(len(tags), 13 + 39)
