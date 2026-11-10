@@ -79,8 +79,11 @@ PLC_MAX_PAYLOAD = 242
 def io_topics(config: SimulatorConfig) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
     """The IO-mapping channels for a layout: (publish_topics, subscribe_topics).
 
-    PUBLISH_TOPICS/SUBSCRIBE_TOPICS above name test_config.json's components.
-    A layout that has all of them keeps exactly that wire layout; any other
+    PUBLISH_TOPICS/SUBSCRIBE_TOPICS above name Station_1's components
+    (station_1.json, the AX project's Station_1). A layout that has all of
+    them keeps exactly that wire layout - with its machines (scanners,
+    diverters, ...) appended: their feedback before the clock, their
+    commands after the belts; any other
     layout (e.g. one designed in the layout editor, with ids like sensor_1,
     button_1, belt_1) gets channels derived from its own components:
       input  (simulator -> PLC): every button, then every sensor, then every
@@ -92,9 +95,18 @@ def io_topics(config: SimulatorConfig) -> Tuple[Dict[str, Dict[str, Any]], Dict[
     and the PLC side (plc_mock.py) both call this, so they always agree on
     the byte layout."""
     legacy = PUBLISH_TOPICS["input"]["custom_ids"] + SUBSCRIBE_TOPICS["output"]["custom_ids"]
-    if set(legacy) <= known_component_ids(config):
-        return PUBLISH_TOPICS, SUBSCRIBE_TOPICS
     machines = [m.id for m in exchanged_devices(config)]
+    if set(legacy) <= known_component_ids(config):
+        if not machines:
+            return PUBLISH_TOPICS, SUBSCRIBE_TOPICS
+        # Station_1 with machines added (a scanner, diverters): its wire layout
+        # first, unchanged, then the machines - feedback before the clock,
+        # commands after the belts - so they are exchanged too.
+        legacy_in = [i for i in PUBLISH_TOPICS["input"]["custom_ids"] if i != "clock"]
+        clock = ["clock"] if "clock" in PUBLISH_TOPICS["input"]["custom_ids"] else []
+        return ({"input": {**PUBLISH_TOPICS["input"], "custom_ids": legacy_in + machines + clock}},
+                {"output": {**SUBSCRIBE_TOPICS["output"],
+                            "custom_ids": SUBSCRIBE_TOPICS["output"]["custom_ids"] + machines}})
     inputs = [b.id for b in config.buttons] + [s.id for s in config.sensors] + machines + ["clock"]
     outputs = [l.id for l in config.leds] + [b.id for b in config.belts] + machines
     return ({"input": {**PUBLISH_TOPICS["input"], "custom_ids": inputs}},

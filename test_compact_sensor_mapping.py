@@ -17,7 +17,7 @@ def _sensor(config, sensor_id):
 
 class CompactBitFieldRoundTripTest(unittest.TestCase):
     def test_ir_sensor_bool_like_state_round_trips_through_a_compact_byte(self):
-        config = load_config("test_config.json")
+        config = load_config("station_1.json")
         ir_sensor = next(s for s in config.sensors if s.sensorType == "ir")
         mapping = [(ByteType.BYTE, f"{ir_sensor.id}/sensor_states")]
         verify_component_list(mapping, config)
@@ -32,7 +32,7 @@ class CompactBitFieldRoundTripTest(unittest.TestCase):
         self.assertEqual(ir_sensor.sensor_states, "1")
 
     def test_laser_banner_round_trips_through_a_compact_uint32(self):
-        config = load_config("test_config.json")
+        config = load_config("station_1.json")
         banner = next(s for s in config.sensors if s.sensorType == "laser_banner" and s.laserCount)
         mapping = [(ByteType.UINT32, f"{banner.id}/sensor_states")]
         verify_component_list(mapping, config)
@@ -49,7 +49,7 @@ class CompactBitFieldRoundTripTest(unittest.TestCase):
         self.assertEqual(len(banner.sensor_states), original_width)
 
     def test_led_ison_bool_round_trips_through_a_compact_byte(self):
-        config = load_config("test_config.json")
+        config = load_config("station_1.json")
         led = config.leds[0]
         mapping = [(ByteType.BYTE, f"{led.id}/isOn")]
         message = ComponentMessage(mapping)
@@ -63,7 +63,7 @@ class CompactBitFieldRoundTripTest(unittest.TestCase):
     def test_a_compact_field_alongside_ordinary_bit_and_float_fields(self):
         """Mixing a compact field into a normal mapping doesn't disturb the
         surrounding BIT-packing/float handling."""
-        config = load_config("test_config.json")
+        config = load_config("station_1.json")
         ir_sensor = next(s for s in config.sensors if s.sensorType == "ir")
         button = config.buttons[0]
         belt = config.belts[0]
@@ -93,7 +93,7 @@ class CompactBitFieldRoundTripTest(unittest.TestCase):
         """Deliberately bypassing verify_component_list's width guard (as
         if it had been skipped) to document the actual, honest behavior of
         an intentionally-too-small compact type: truncation, not garbage."""
-        config = load_config("test_config.json")
+        config = load_config("station_1.json")
         banner = next(s for s in config.sensors if s.sensorType == "laser_banner" and s.laserCount)
         mapping = [(ByteType.BYTE, f"{banner.id}/sensor_states")]  # 8 bits for a 32-bit banner
         message = ComponentMessage(mapping)
@@ -114,7 +114,7 @@ class CompactBitFieldRoundTripTest(unittest.TestCase):
 
 class CompactWidthValidationTest(unittest.TestCase):
     def test_rejects_a_laser_banner_compacted_into_a_too_narrow_byte(self):
-        config = load_config("test_config.json")
+        config = load_config("station_1.json")
         banner = next(s for s in config.sensors if s.sensorType == "laser_banner" and s.laserCount)
         mapping = [(ByteType.BYTE, f"{banner.id}/sensor_states")]
         with self.assertRaises(ValueError) as ctx:
@@ -123,13 +123,13 @@ class CompactWidthValidationTest(unittest.TestCase):
         self.assertIn(banner.id, str(ctx.exception))
 
     def test_accepts_a_laser_banner_compacted_into_a_wide_enough_uint32(self):
-        config = load_config("test_config.json")
+        config = load_config("station_1.json")
         banner = next(s for s in config.sensors if s.sensorType == "laser_banner" and s.laserCount)
         mapping = [(ByteType.UINT32, f"{banner.id}/sensor_states")]
         verify_component_list(mapping, config)  # must not raise
 
     def test_ir_sensor_fits_in_any_compact_type(self):
-        config = load_config("test_config.json")
+        config = load_config("station_1.json")
         ir_sensor = next(s for s in config.sensors if s.sensorType == "ir")
         for byte_type in (ByteType.BYTE, ByteType.UINT16, ByteType.UINT32, ByteType.UINT64):
             verify_component_list([(byte_type, f"{ir_sensor.id}/sensor_states")], config)

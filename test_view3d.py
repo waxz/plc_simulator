@@ -87,7 +87,7 @@ class SceneTest(unittest.TestCase):
         self.assertAlmostEqual(geometry["mount"], robot.mountHeight)
 
     def test_buttons_and_lamps_become_control_panels(self):
-        config = load_config(os.path.join(HERE, "test_config.json"))
+        config = load_config(os.path.join(HERE, "station_1.json"))
         config.background = None
         panels = scene3d.static_scene(config)["panels"]
         self.assertEqual(sorted(p["title"] for p in panels), ["L1", "L2", "L3"])     # one console per line
@@ -141,7 +141,7 @@ class LogisticsSceneTest(unittest.TestCase):
         wheels.control, wheels.commandAngle = "manual", -30.0
         wheels.wheelAngle = 12.5
         state = scene3d.dynamic_state(config, engine.parcel_views(), engine.sim_time)
-        self.assertEqual(state["diverters"][wheels.id][1:], [wheels.divertAngle - 30.0, 12.5])
+        self.assertEqual(state["diverters"][wheels.id][1:3], [wheels.divertAngle - 30.0, 12.5])
 
 
 class ServerTest(unittest.TestCase):
@@ -239,10 +239,10 @@ class SimulatorButtonTest(unittest.TestCase):
     def test_the_window_button_opens_the_view_and_presses_reach_the_simulation(self):
         os.environ["SDL_VIDEODRIVER"] = "dummy"
         from visualizer import Renderer
-        config = load_config(os.path.join(HERE, "test_config.json"))
+        config = load_config(os.path.join(HERE, "station_1.json"))
         r = Renderer(config, headless=False)
         self.addCleanup(r.quit)
-        r.config_path = "test_config.json"
+        r.config_path = "station_1.json"
         old = view3d.SERVER
         view3d.SERVER = view3d.View3DServer(port=0)
         self.addCleanup(lambda: (view3d.SERVER.stop(), setattr(view3d, "SERVER", old)))

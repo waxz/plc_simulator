@@ -33,7 +33,7 @@ from tcp_framed_transport import FrameType, TcpFramedClient
 
 
 def make_tcp_config(port: int):
-    config = load_config("test_config.json")
+    config = load_config("station_1.json")
     config.mqttSettings.enabled = True
     config.mqttSettings.transport = "tcp"
     config.mqttSettings.tcpBindHost = "127.0.0.1"
@@ -99,7 +99,7 @@ def write_default_registry(tmp_dir: str, config) -> str:
 
 class LoadMappingCsvTest(unittest.TestCase):
     def test_round_trips_print_mapping_output(self):
-        config = load_config("test_config.json")
+        config = load_config("station_1.json")
         mapping = custom_component_mapping(config, SUBSCRIBE_TOPICS["output"]["custom_ids"])
         with tempfile.TemporaryDirectory() as tmp_dir:
             path = os.path.join(tmp_dir, "output.csv")
@@ -183,7 +183,7 @@ class LoadMappingCsvTest(unittest.TestCase):
 
 class LoadChannelRegistryTest(unittest.TestCase):
     def test_resolves_csv_paths_relative_to_the_registry_file(self):
-        config = load_config("test_config.json")
+        config = load_config("station_1.json")
         with tempfile.TemporaryDirectory() as tmp_dir:
             registry_path = write_default_registry(tmp_dir, config)
             publish_topics, subscribe_topics, metrics_channels = load_channel_registry(registry_path)

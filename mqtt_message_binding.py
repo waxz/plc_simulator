@@ -872,7 +872,7 @@ class MetricsMessage:
 
 
 def main():
-    config = load_config("test_config.json")
+    config = load_config("station_1.json")
     mapping = compact_component_mapping(config)
     verify_component_list(mapping, config)
 

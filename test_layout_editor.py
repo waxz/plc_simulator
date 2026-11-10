@@ -26,7 +26,7 @@ class LayoutEditorRoundTripTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.path = os.path.join(self.tmp.name, "layout.json")
-        config = load_config("test_config.json")
+        config = load_config("station_1.json")
         config.tractionModel = "friction"
         config.physicsDt = 0.002
         config.mqttSettings.beltFeedback = True

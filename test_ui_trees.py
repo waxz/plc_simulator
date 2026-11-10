@@ -31,7 +31,7 @@ class EditorTreesTest(unittest.TestCase):
         self.window = self.open()
 
     def open(self):
-        window = MainWindow(config=load_config("test_config.json"), config_path="test_config.json",
+        window = MainWindow(config=load_config("station_1.json"), config_path="station_1.json",
                             library_path=self.library_file)
         self.addCleanup(self._close, window)
         return window
@@ -170,7 +170,7 @@ class EditorTreesTest(unittest.TestCase):
 
 class SimulatorTreesTest(unittest.TestCase):
     def setUp(self):
-        self.config = load_config("test_config.json")
+        self.config = load_config("station_1.json")
         self.r = Renderer(self.config)
         self.addCleanup(self.r.quit)
         self.ui = self.r.editor_ui

@@ -33,7 +33,7 @@ class RunnerSpeedTest(unittest.TestCase):
 
     def test_max_speed_lets_other_threads_take_the_lock(self):
         lock = threading.Lock()
-        engine = PhysicsEngine(load_config("test_config.json"), lock=lock)
+        engine = PhysicsEngine(load_config("station_1.json"), lock=lock)
         runner = SimulationRunner(engine, None, speed=None)
         runner.start()
         self.addCleanup(runner.stop)

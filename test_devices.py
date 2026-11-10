@@ -4,7 +4,7 @@ physics.py) and their I/O: IR sensors and laser banners with on/off delay
 and light-on/dark-on output, push buttons (momentary/latching, NO/NC), LEDs
 with blink modes, belt motors commanded like a VFD (run / reverse / speed)
 with feedback (running, atSpeed, reversing, fault, actualSpeed, encoder)
-and an overload fault - plus the cleaned-up test_config.json and the motor
+and an overload fault - plus the cleaned-up station_1.json and the motor
 feedback reaching plc_mock.py over TCP.
 """
 import json
@@ -309,11 +309,11 @@ class OverloadFaultTest(unittest.TestCase):
 
 
 class TestConfigTest(unittest.TestCase):
-    """test_config.json: Station_1 only (the AX project's Station_1_Input /
+    """station_1.json: Station_1 only (the AX project's Station_1_Input /
     Station_1_Output), with drives, sensor timing, button roles and keys."""
 
     def setUp(self):
-        self.config = load_config("test_config.json")
+        self.config = load_config("station_1.json")
 
     def test_only_station_1(self):
         ids = {c.id for kind in ("belts", "sensors", "buttons", "leds") for c in getattr(self.config, kind)}

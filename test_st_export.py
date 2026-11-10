@@ -20,7 +20,7 @@ from mqtt_message_binding import ByteType, ComponentMessage
 from physics import PhysicsEngine
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-LAYOUTS = ("test_config.json", "machines_demo.json", "logistics_demo.json")
+LAYOUTS = ("station_1.json", "machines_demo.json", "logistics_demo.json")
 
 
 def running(name: str, seconds: float = 20.0):
@@ -57,8 +57,8 @@ class WireTest(unittest.TestCase):
 
 class ContractTest(unittest.TestCase):
     def test_sizes_and_fingerprints_are_the_layout_checks(self):
-        config = load_config(os.path.join(HERE, "test_config.json"))
-        c = st_export.contract(config, "test_config.json")
+        config = load_config(os.path.join(HERE, "station_1.json"))
+        c = st_export.contract(config, "station_1.json")
         frames = {f["name"]: f for f in c["frames"]}
         self.assertEqual(frames["Sim_Input"]["size"], 18)                   # the AX project's Station_1 frames
         self.assertEqual(frames["Sim_Output"]["size"], 122)

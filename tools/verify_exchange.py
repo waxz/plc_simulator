@@ -135,6 +135,9 @@ def main(argv=None) -> int:
             filled = sum(v[0] for v in after["chutes"].values())
             check("parcels sorted into chutes", filled > 0 or any(v[1] for v in after["chutes"].values()),
                   json.dumps(after["chutes"]))
+        if after.get("diverters"):
+            fired = {k: v[3] for k, v in after["diverters"].items() if len(v) > 3}
+            check("diverters fire on the PLC's command", any(n > 0 for n in fired.values()), json.dumps(fired))
         if after.get("scanners"):
             reads = {k: v[3] for k, v in after["scanners"].items()}
             check("scanners read", all(n > 0 for n in reads.values()), json.dumps(reads))

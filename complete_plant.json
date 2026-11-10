@@ -1,0 +1,3045 @@
+{
+  "version": "1.0.0",
+  "savedAt": 0,
+  "belts": [
+    {
+      "id": "loop_s",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 5.5,
+      "y": -12.0,
+      "length": 10.0,
+      "beltWidth": 1.0,
+      "rotation": 0.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
+      "speed": 0.6,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#4b5563",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "frequency": 0.0,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "roller",
+      "rollerPitch": 0.125,
+      "level": 0
+    },
+    {
+      "id": "loop_e",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 10.0,
+      "y": -9.5,
+      "length": 4.0,
+      "beltWidth": 1.0,
+      "rotation": 90.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
+      "speed": 0.6,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#4b5563",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "frequency": 0.0,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "roller",
+      "rollerPitch": 0.125,
+      "level": 0
+    },
+    {
+      "id": "loop_n",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 4.5,
+      "y": -8.0,
+      "length": 10.0,
+      "beltWidth": 1.0,
+      "rotation": 180.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
+      "speed": 0.6,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#4b5563",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "frequency": 0.0,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "roller",
+      "rollerPitch": 0.125,
+      "level": 0
+    },
+    {
+      "id": "loop_w",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 0.0,
+      "y": -10.5,
+      "length": 4.0,
+      "beltWidth": 1.0,
+      "rotation": -90.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
+      "speed": 0.6,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#4b5563",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "frequency": 0.0,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "roller",
+      "rollerPitch": 0.125,
+      "level": 0
+    },
+    {
+      "id": "feed",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 3.0,
+      "y": -14.5,
+      "length": 4.0,
+      "beltWidth": 1.0,
+      "rotation": 0.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
+      "speed": 0.5,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#64748b",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "frequency": 0.0,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "belt",
+      "rollerPitch": 0.125,
+      "level": 0
+    },
+    {
+      "id": "low",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 14.0,
+      "y": -12.0,
+      "length": 4.0,
+      "beltWidth": 1.0,
+      "rotation": 0.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
+      "speed": 0.6,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#64748b",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "frequency": 0.0,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "belt",
+      "rollerPitch": 0.125,
+      "level": 0
+    },
+    {
+      "id": "lift",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 16.7,
+      "y": -12.0,
+      "length": 1.4,
+      "beltWidth": 1.0,
+      "rotation": 0.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
+      "speed": 0.6,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#0e7490",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "frequency": 0.0,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "belt",
+      "rollerPitch": 0.125,
+      "level": 0
+    },
+    {
+      "id": "high",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 19.6,
+      "y": -12.0,
+      "length": 4.4,
+      "beltWidth": 1.0,
+      "rotation": 0.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
+      "speed": 0.6,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#334155",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "frequency": 0.0,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "belt",
+      "rollerPitch": 0.125,
+      "level": 1
+    },
+    {
+      "id": "under",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 19.6,
+      "y": -12.0,
+      "length": 4.4,
+      "beltWidth": 1.0,
+      "rotation": 0.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
+      "speed": 0.0,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#1f2937",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "frequency": 0.0,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "belt",
+      "rollerPitch": 0.125,
+      "level": 0
+    },
+    {
+      "id": "infeed",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 3.0,
+      "y": 0.0,
+      "length": 6.0,
+      "beltWidth": 1.0,
+      "rotation": 0.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
+      "speed": 1.0,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#64748b",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "frequency",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "frequency": 0.0,
+      "drive": {
+        "accel": 2.0,
+        "decel": 2.0,
+        "tau": 0.05,
+        "speedMax": 5.0,
+        "countsPerM": 10000.0,
+        "maxLoad": null,
+        "overloadTime": 1.0,
+        "atSpeedTolerance": 0.05,
+        "runningThreshold": 0.01,
+        "motorRatedSpeed": 1450.0,
+        "motorRatedFrequency": 50.0,
+        "gearRatio": null,
+        "transmissionRatio": 1.0,
+        "drumDiameter": 0.1,
+        "maxFrequency": 50.0,
+        "rampUpTime": 1.0,
+        "rampDownTime": 0.8,
+        "encoderCountsPerRev": null
+      },
+      "friction": 0.5,
+      "surface": "belt",
+      "rollerPitch": 0.125,
+      "level": 0
+    },
+    {
+      "id": "acc_1",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 6.75,
+      "y": 0.0,
+      "length": 1.5,
+      "beltWidth": 1.0,
+      "rotation": 0.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
+      "speed": 1.0,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#3f7a52",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "frequency": 0.0,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "belt",
+      "rollerPitch": 0.125,
+      "level": 0
+    },
+    {
+      "id": "acc_2",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 8.25,
+      "y": 0.0,
+      "length": 1.5,
+      "beltWidth": 1.0,
+      "rotation": 0.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
+      "speed": 1.0,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#3f7a52",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "frequency": 0.0,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "belt",
+      "rollerPitch": 0.125,
+      "level": 0
+    },
+    {
+      "id": "acc_3",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 9.75,
+      "y": 0.0,
+      "length": 1.5,
+      "beltWidth": 1.0,
+      "rotation": 0.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
+      "speed": 1.0,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#3f7a52",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "frequency": 0.0,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "belt",
+      "rollerPitch": 0.125,
+      "level": 0
+    },
+    {
+      "id": "scan",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 11.25,
+      "y": 0.0,
+      "length": 1.5,
+      "beltWidth": 1.0,
+      "rotation": 0.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
+      "speed": 1.0,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#64748b",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "frequency": 0.0,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "belt",
+      "rollerPitch": 0.125,
+      "level": 0
+    },
+    {
+      "id": "sorter",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 18.0,
+      "y": 0.0,
+      "length": 12.0,
+      "beltWidth": 1.0,
+      "rotation": 0.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
+      "speed": 1.0,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#64748b",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "frequency",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "frequency": 0.0,
+      "drive": {
+        "accel": 2.0,
+        "decel": 2.0,
+        "tau": 0.05,
+        "speedMax": 5.0,
+        "countsPerM": 10000.0,
+        "maxLoad": null,
+        "overloadTime": 1.0,
+        "atSpeedTolerance": 0.05,
+        "runningThreshold": 0.01,
+        "motorRatedSpeed": 1450.0,
+        "motorRatedFrequency": 50.0,
+        "gearRatio": null,
+        "transmissionRatio": 1.0,
+        "drumDiameter": 0.1,
+        "maxFrequency": 50.0,
+        "rampUpTime": 1.0,
+        "rampDownTime": 0.8,
+        "encoderCountsPerRev": null
+      },
+      "friction": 0.5,
+      "surface": "belt",
+      "rollerPitch": 0.125,
+      "level": 0
+    },
+    {
+      "id": "branch_1",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 14.5,
+      "y": -2.0,
+      "length": 3.0,
+      "beltWidth": 1.0,
+      "rotation": -90.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
+      "speed": 0.8,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#64748b",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "frequency": 0.0,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "belt",
+      "rollerPitch": 0.125,
+      "level": 0
+    },
+    {
+      "id": "branch_2",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 18.0,
+      "y": 2.0,
+      "length": 3.0,
+      "beltWidth": 1.0,
+      "rotation": 90.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
+      "speed": 0.8,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#64748b",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "frequency": 0.0,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "belt",
+      "rollerPitch": 0.125,
+      "level": 0
+    },
+    {
+      "id": "branch_3",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 21.5,
+      "y": -2.0,
+      "length": 3.0,
+      "beltWidth": 1.0,
+      "rotation": -90.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
+      "speed": 0.8,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#64748b",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "frequency": 0.0,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "belt",
+      "rollerPitch": 0.125,
+      "level": 0
+    },
+    {
+      "id": "tt_belt",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 24.75,
+      "y": 0.0,
+      "length": 1.5,
+      "beltWidth": 1.0,
+      "rotation": 0.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
+      "speed": 0.8,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#64748b",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "frequency": 0.0,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "belt",
+      "rollerPitch": 0.125,
+      "level": 0
+    },
+    {
+      "id": "reject",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 24.75,
+      "y": 2.25,
+      "length": 3.0,
+      "beltWidth": 1.0,
+      "rotation": 90.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
+      "speed": 0.8,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#64748b",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "frequency": 0.0,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "belt",
+      "rollerPitch": 0.125,
+      "level": 0
+    },
+    {
+      "id": "tote_in",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 2.0,
+      "y": 8.0,
+      "length": 4.0,
+      "beltWidth": 1.0,
+      "rotation": 0.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
+      "speed": 0.5,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#4b5563",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "frequency": 0.0,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "roller",
+      "rollerPitch": 0.125,
+      "level": 0
+    },
+    {
+      "id": "tote_curve",
+      "type": "curved",
+      "shape": "arc",
+      "x": 4.0,
+      "y": 9.5,
+      "length": 0.0,
+      "beltWidth": 1.0,
+      "rotation": 0.0,
+      "radius": 1.5,
+      "startAngle": 270.0,
+      "endAngle": 360.0,
+      "speed": 0.5,
+      "directionAngle": 90.0,
+      "direction": 1,
+      "color": "#4b5563",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "frequency": 0.0,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "roller",
+      "rollerPitch": 0.125,
+      "level": 0
+    },
+    {
+      "id": "tote_up",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 5.5,
+      "y": 11.0,
+      "length": 3.0,
+      "beltWidth": 1.0,
+      "rotation": 90.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
+      "speed": 0.5,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#3b82f6",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "frequency": 0.0,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "belt",
+      "rollerPitch": 0.125,
+      "level": 0
+    },
+    {
+      "id": "tote_turn",
+      "type": "curved",
+      "shape": "arc",
+      "x": 7.0,
+      "y": 12.5,
+      "length": 0.0,
+      "beltWidth": 1.0,
+      "rotation": 0.0,
+      "radius": 1.5,
+      "startAngle": 90.0,
+      "endAngle": 180.0,
+      "speed": 0.5,
+      "directionAngle": -90.0,
+      "direction": 1,
+      "color": "#3b82f6",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "frequency": 0.0,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "belt",
+      "rollerPitch": 0.125,
+      "level": 0
+    },
+    {
+      "id": "tote_out",
+      "type": "linear",
+      "shape": "rectangle",
+      "x": 8.5,
+      "y": 14.0,
+      "length": 3.0,
+      "beltWidth": 1.0,
+      "rotation": 0.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
+      "speed": 0.5,
+      "directionAngle": 0.0,
+      "direction": 1,
+      "color": "#3b82f6",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "frequency": 0.0,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "belt",
+      "rollerPitch": 0.125,
+      "level": 0
+    }
+  ],
+  "sensors": [
+    {
+      "id": "s_high",
+      "x": 19.0,
+      "y": -12.0,
+      "width": 0.1,
+      "height": 1.0,
+      "rotation": 0.0,
+      "isActive": false,
+      "label": "L1 sensor",
+      "color": "#ef4444",
+      "stateBinding": null,
+      "sensorType": "ir",
+      "laserCount": null,
+      "beamDistance": null,
+      "wordBinding": null,
+      "detectedWord": 0,
+      "sensor_states": null,
+      "packFormat": "bit",
+      "control": "sim",
+      "onDelay": 0.0,
+      "offDelay": 0.0,
+      "invert": false,
+      "level": 1
+    },
+    {
+      "id": "s_pick",
+      "x": 4.775,
+      "y": -14.5,
+      "width": 0.1,
+      "height": 1.0,
+      "rotation": 0.0,
+      "isActive": false,
+      "label": "Pick sensor",
+      "color": "#ef4444",
+      "stateBinding": null,
+      "sensorType": "ir",
+      "laserCount": null,
+      "beamDistance": null,
+      "wordBinding": null,
+      "detectedWord": 0,
+      "sensor_states": null,
+      "packFormat": "bit",
+      "control": "sim",
+      "onDelay": 0.0,
+      "offDelay": 0.0,
+      "invert": false,
+      "level": 0
+    },
+    {
+      "id": "banner_1",
+      "x": 12.7,
+      "y": 0.0,
+      "width": 0.1,
+      "height": 1.0,
+      "rotation": 0.0,
+      "isActive": false,
+      "label": "Profile banner",
+      "color": "#f97316",
+      "stateBinding": null,
+      "sensorType": "laser_banner",
+      "laserCount": 16,
+      "beamDistance": 0.06,
+      "wordBinding": null,
+      "detectedWord": 0,
+      "sensor_states": null,
+      "packFormat": "bit",
+      "control": "sim",
+      "onDelay": 0.0,
+      "offDelay": 0.0,
+      "invert": false,
+      "level": 0
+    },
+    {
+      "id": "curtain_1",
+      "x": 27.0,
+      "y": 1.5,
+      "width": 0.1,
+      "height": 1.2,
+      "rotation": 90.0,
+      "isActive": false,
+      "label": "Light curtain",
+      "color": "#facc15",
+      "stateBinding": null,
+      "sensorType": "laser_banner",
+      "laserCount": 24,
+      "beamDistance": 0.05,
+      "wordBinding": null,
+      "detectedWord": 0,
+      "sensor_states": null,
+      "packFormat": "bit",
+      "control": "sim",
+      "onDelay": 0.0,
+      "offDelay": 0.0,
+      "invert": false,
+      "level": 0
+    },
+    {
+      "id": "s_tote",
+      "x": 9.0,
+      "y": 14.0,
+      "width": 0.1,
+      "height": 1.0,
+      "rotation": 0.0,
+      "isActive": false,
+      "label": "Tote out",
+      "color": "#ff0000",
+      "stateBinding": null,
+      "sensorType": "ir",
+      "laserCount": null,
+      "beamDistance": null,
+      "wordBinding": null,
+      "detectedWord": 0,
+      "sensor_states": null,
+      "packFormat": "bit",
+      "control": "sim",
+      "onDelay": 0.0,
+      "offDelay": 0.0,
+      "invert": false,
+      "level": 0
+    }
+  ],
+  "sources": [
+    {
+      "id": "parts",
+      "x": 1.5,
+      "y": -14.5,
+      "rotation": 0.0,
+      "interval": 20.0,
+      "minWidth": 0.35,
+      "maxWidth": 0.4,
+      "minHeight": 0.35,
+      "maxHeight": 0.4,
+      "label": "Parts",
+      "colorScheme": null,
+      "triggerBinding": null,
+      "intervalBinding": null,
+      "minMass": 1.0,
+      "maxMass": 1.0,
+      "level": 0,
+      "destinations": [],
+      "destinationWeights": [],
+      "noReadRate": 0.0,
+      "barcodeStart": 1000001
+    },
+    {
+      "id": "cartons",
+      "x": 12.5,
+      "y": -12.0,
+      "rotation": 0.0,
+      "interval": 6.0,
+      "minWidth": 0.4,
+      "maxWidth": 0.5,
+      "minHeight": 0.4,
+      "maxHeight": 0.5,
+      "label": "Cartons",
+      "colorScheme": null,
+      "triggerBinding": null,
+      "intervalBinding": null,
+      "minMass": 1.0,
+      "maxMass": 1.0,
+      "level": 0,
+      "destinations": [],
+      "destinationWeights": [],
+      "noReadRate": 0.0,
+      "barcodeStart": 1000001
+    },
+    {
+      "id": "induct",
+      "x": 0.6,
+      "y": 0.0,
+      "rotation": 0.0,
+      "interval": 1.6,
+      "minWidth": 0.3,
+      "maxWidth": 0.5,
+      "minHeight": 0.3,
+      "maxHeight": 0.45,
+      "label": "Induct",
+      "colorScheme": null,
+      "triggerBinding": null,
+      "intervalBinding": null,
+      "minMass": 0.5,
+      "maxMass": 12.0,
+      "level": 0,
+      "destinations": [
+        1,
+        2,
+        3
+      ],
+      "destinationWeights": [
+        0.4,
+        0.35,
+        0.25
+      ],
+      "noReadRate": 0.08,
+      "barcodeStart": 1000001
+    },
+    {
+      "id": "totes",
+      "x": 0.6,
+      "y": 8.0,
+      "rotation": 0.0,
+      "interval": 6.0,
+      "minWidth": 0.5,
+      "maxWidth": 0.5,
+      "minHeight": 0.4,
+      "maxHeight": 0.4,
+      "label": "Totes",
+      "colorScheme": null,
+      "triggerBinding": null,
+      "intervalBinding": null,
+      "minMass": 1.0,
+      "maxMass": 1.0,
+      "level": 0,
+      "destinations": [],
+      "destinationWeights": [],
+      "noReadRate": 0.0,
+      "barcodeStart": 500000
+    }
+  ],
+  "sinks": [
+    {
+      "id": "unload",
+      "x": 3.0,
+      "y": -8.0,
+      "width": 1.0,
+      "height": 1.2,
+      "label": "Unload",
+      "capacity": 0,
+      "emptyTime": 0.0,
+      "control": "plc",
+      "empty": false
+    },
+    {
+      "id": "upstairs",
+      "x": 21.5,
+      "y": -12.0,
+      "width": 0.8,
+      "height": 1.2,
+      "label": "Level 1 out",
+      "capacity": 0,
+      "emptyTime": 0.0,
+      "control": "plc",
+      "empty": false
+    },
+    {
+      "id": "chute_1",
+      "x": 14.5,
+      "y": -4.1,
+      "width": 1.2,
+      "height": 1.0,
+      "label": "Chute 1",
+      "capacity": 8,
+      "emptyTime": 6.0,
+      "control": "plc",
+      "empty": false
+    },
+    {
+      "id": "chute_2",
+      "x": 18.0,
+      "y": 4.1,
+      "width": 1.2,
+      "height": 1.0,
+      "label": "Chute 2",
+      "capacity": 8,
+      "emptyTime": 6.0,
+      "control": "plc",
+      "empty": false
+    },
+    {
+      "id": "chute_3",
+      "x": 21.5,
+      "y": -4.1,
+      "width": 1.2,
+      "height": 1.0,
+      "label": "Chute 3",
+      "capacity": 8,
+      "emptyTime": 6.0,
+      "control": "plc",
+      "empty": false
+    },
+    {
+      "id": "reject_bin",
+      "x": 24.75,
+      "y": 4.3,
+      "width": 1.2,
+      "height": 1.0,
+      "label": "No-read",
+      "capacity": 0,
+      "emptyTime": 0.0,
+      "control": "plc",
+      "empty": false
+    },
+    {
+      "id": "tote_store",
+      "x": 10.5,
+      "y": 14.0,
+      "width": 1.0,
+      "height": 1.2,
+      "label": "Tote store",
+      "capacity": 0,
+      "emptyTime": 0.0,
+      "control": "plc",
+      "empty": false
+    }
+  ],
+  "buttons": [
+    {
+      "id": "estop",
+      "x": 2.0,
+      "y": -2.2,
+      "width": 0.4,
+      "height": 0.4,
+      "rotation": 0.0,
+      "label": "SORT E-STOP",
+      "color": "#dc2626",
+      "sensor_states": null,
+      "stateBinding": null,
+      "packFormat": "bit",
+      "buttonType": "latching",
+      "normallyClosed": true,
+      "key": null,
+      "panel": null
+    },
+    {
+      "id": "reset",
+      "x": 2.5,
+      "y": -2.2,
+      "width": 0.4,
+      "height": 0.4,
+      "rotation": 0.0,
+      "label": "SORT RESET",
+      "color": "#3b82f6",
+      "sensor_states": null,
+      "stateBinding": null,
+      "packFormat": "bit",
+      "buttonType": "momentary",
+      "normallyClosed": false,
+      "key": null,
+      "panel": null
+    }
+  ],
+  "leds": [],
+  "pallets": [
+    {
+      "id": "pal_1",
+      "x": 2.0,
+      "y": -12.0,
+      "rotation": 0.0,
+      "width": 0.8,
+      "height": 0.6,
+      "mass": 8.0,
+      "capacity": 1,
+      "label": "",
+      "color": "#b45309",
+      "level": 0
+    },
+    {
+      "id": "pal_2",
+      "x": 8.0,
+      "y": -8.0,
+      "rotation": 180.0,
+      "width": 0.8,
+      "height": 0.6,
+      "mass": 8.0,
+      "capacity": 1,
+      "label": "",
+      "color": "#b45309",
+      "level": 0
+    },
+    {
+      "id": "pal_3",
+      "x": 0.0,
+      "y": -10.0,
+      "rotation": -90.0,
+      "width": 0.8,
+      "height": 0.6,
+      "mass": 8.0,
+      "capacity": 1,
+      "label": "",
+      "color": "#b45309",
+      "level": 0
+    }
+  ],
+  "stoppers": [
+    {
+      "id": "st_feed",
+      "x": 5.0,
+      "y": -14.5,
+      "rotation": 0.0,
+      "width": 1.0,
+      "depth": 0.05,
+      "label": "Feed stop",
+      "color": "#dc2626",
+      "level": 0,
+      "control": "plc",
+      "actuationTime": 0.15,
+      "holdTime": 60.0,
+      "releaseTime": 1.0,
+      "release": false
+    },
+    {
+      "id": "st_load",
+      "x": 6.0,
+      "y": -12.0,
+      "rotation": 0.0,
+      "width": 1.0,
+      "depth": 0.05,
+      "label": "Load stop",
+      "color": "#dc2626",
+      "level": 0,
+      "control": "plc",
+      "actuationTime": 0.15,
+      "holdTime": 6.0,
+      "releaseTime": 1.5,
+      "release": false
+    }
+  ],
+  "robots": [
+    {
+      "id": "robot_1",
+      "x": 5.075,
+      "y": -13.0,
+      "pickX": 4.775,
+      "pickY": -14.5,
+      "placeX": 5.575,
+      "placeY": -12.0,
+      "reach": 2.0,
+      "cycleTime": 3.0,
+      "pickRadius": 0.4,
+      "pickSensorId": "s_pick",
+      "label": "Robot",
+      "color": "#7c3aed",
+      "level": 0,
+      "pickLevel": 0,
+      "placeLevel": 0,
+      "placeTarget": "pallet",
+      "control": "plc",
+      "mountHeight": 0.3,
+      "toolLength": 0.18,
+      "start": false,
+      "enable": true,
+      "hold": false,
+      "faultReset": false,
+      "gripperClose": false,
+      "program": 1,
+      "speedOverride": 100,
+      "targetX": 0.0,
+      "targetY": 0.0,
+      "targetZ": 1.2,
+      "targetYaw": 0.0
+    }
+  ],
+  "elevators": [
+    {
+      "id": "lift_1",
+      "x": 16.7,
+      "y": -12.0,
+      "rotation": 0.0,
+      "width": 1.4,
+      "height": 1.0,
+      "beltId": "lift",
+      "levels": 2,
+      "levelHeight": 1.2,
+      "liftSpeed": 0.6,
+      "label": "Lift",
+      "color": "#0891b2",
+      "control": "plc",
+      "autoFrom": 0,
+      "autoTo": 1,
+      "targetLevel": 0,
+      "drive": {
+        "accel": 2.0,
+        "decel": 2.0,
+        "tau": 0.05,
+        "speedMax": 5.0,
+        "countsPerM": 10000.0,
+        "maxLoad": null,
+        "overloadTime": 1.0,
+        "atSpeedTolerance": 0.05,
+        "runningThreshold": 0.01,
+        "motorRatedSpeed": 1450.0,
+        "motorRatedFrequency": 50.0,
+        "gearRatio": null,
+        "transmissionRatio": 1.0,
+        "drumDiameter": 0.2,
+        "maxFrequency": 50.0,
+        "rampUpTime": 1.0,
+        "rampDownTime": 1.0,
+        "encoderCountsPerRev": null
+      }
+    }
+  ],
+  "scanners": [
+    {
+      "id": "dws_1",
+      "x": 11.25,
+      "y": 0.0,
+      "rotation": 0.0,
+      "width": 0.4,
+      "height": 1.2,
+      "scannerType": "dws",
+      "label": "DWS",
+      "color": "#0ea5e9",
+      "level": 0
+    },
+    {
+      "id": "bcr_1",
+      "x": 4.5,
+      "y": 0.0,
+      "rotation": 0.0,
+      "width": 0.4,
+      "height": 1.2,
+      "scannerType": "barcode",
+      "label": "Barcode",
+      "color": "#0ea5e9",
+      "level": 0
+    },
+    {
+      "id": "rfid_1",
+      "x": 2.5,
+      "y": 8.0,
+      "rotation": 0.0,
+      "width": 0.4,
+      "height": 1.2,
+      "scannerType": "rfid",
+      "label": "RFID",
+      "color": "#0ea5e9",
+      "level": 0
+    }
+  ],
+  "diverters": [
+    {
+      "id": "div_1",
+      "x": 14.5,
+      "y": 0.0,
+      "rotation": 0.0,
+      "width": 1.0,
+      "height": 1.0,
+      "diverterType": "pusher",
+      "divertAngle": -90.0,
+      "speed": 1.0,
+      "destination": 1,
+      "label": "Divert 1",
+      "color": "#f97316",
+      "level": 0,
+      "control": "plc",
+      "divert": false
+    },
+    {
+      "id": "div_2",
+      "x": 18.0,
+      "y": 0.0,
+      "rotation": 0.0,
+      "width": 1.0,
+      "height": 1.0,
+      "diverterType": "wheels",
+      "divertAngle": 60.0,
+      "speed": 1.2,
+      "destination": 2,
+      "label": "Divert 2",
+      "color": "#f97316",
+      "level": 0,
+      "control": "plc",
+      "divert": false
+    },
+    {
+      "id": "div_3",
+      "x": 21.5,
+      "y": 0.0,
+      "rotation": 0.0,
+      "width": 1.0,
+      "height": 1.0,
+      "diverterType": "pusher",
+      "divertAngle": -90.0,
+      "speed": 1.0,
+      "destination": 3,
+      "label": "Divert 3",
+      "color": "#f97316",
+      "level": 0,
+      "control": "plc",
+      "divert": false
+    }
+  ],
+  "turntables": [
+    {
+      "id": "tt_1",
+      "x": 24.75,
+      "y": 0.0,
+      "radius": 0.85,
+      "beltId": "tt_belt",
+      "angles": [
+        0.0,
+        90.0
+      ],
+      "turnSpeed": 120.0,
+      "label": "Turntable",
+      "color": "#64748b",
+      "level": 0,
+      "control": "plc",
+      "autoFrom": 0,
+      "autoTo": 1,
+      "targetIndex": 0,
+      "drive": {
+        "accel": 2.0,
+        "decel": 2.0,
+        "tau": 0.05,
+        "speedMax": 5.0,
+        "countsPerM": 10000.0,
+        "maxLoad": null,
+        "overloadTime": 1.0,
+        "atSpeedTolerance": 0.05,
+        "runningThreshold": 0.01,
+        "motorRatedSpeed": 1450.0,
+        "motorRatedFrequency": 50.0,
+        "gearRatio": null,
+        "transmissionRatio": 8.0,
+        "drumDiameter": null,
+        "maxFrequency": 50.0,
+        "rampUpTime": 0.5,
+        "rampDownTime": 0.5,
+        "encoderCountsPerRev": null
+      }
+    }
+  ],
+  "accumulators": [
+    {
+      "id": "acc",
+      "x": 8.25,
+      "y": -1.2,
+      "beltIds": [
+        "acc_1",
+        "acc_2",
+        "acc_3"
+      ],
+      "mode": "singulation",
+      "label": "Accumulation",
+      "color": "#22c55e",
+      "control": "plc",
+      "release": true
+    }
+  ],
+  "transfers": [
+    {
+      "id": "rat_se",
+      "x": 10.0,
+      "y": -12.0,
+      "rotation": 0.0,
+      "width": 1.0,
+      "height": 1.0,
+      "crossAngle": 90.0,
+      "speed": 0.5,
+      "liftTime": 0.4,
+      "stop": true,
+      "label": "Transfer SE",
+      "color": "#a3a3a3",
+      "level": 0,
+      "control": "plc",
+      "transfer": false,
+      "drive": {
+        "accel": 2.0,
+        "decel": 2.0,
+        "tau": 0.05,
+        "speedMax": 5.0,
+        "countsPerM": 10000.0,
+        "maxLoad": null,
+        "overloadTime": 1.0,
+        "atSpeedTolerance": 0.05,
+        "runningThreshold": 0.01,
+        "motorRatedSpeed": 1450.0,
+        "motorRatedFrequency": 50.0,
+        "gearRatio": null,
+        "transmissionRatio": 1.0,
+        "drumDiameter": 0.08,
+        "maxFrequency": 50.0,
+        "rampUpTime": 0.3,
+        "rampDownTime": 0.3,
+        "encoderCountsPerRev": null
+      }
+    },
+    {
+      "id": "rat_ne",
+      "x": 10.0,
+      "y": -8.0,
+      "rotation": 90.0,
+      "width": 1.0,
+      "height": 1.0,
+      "crossAngle": 90.0,
+      "speed": 0.5,
+      "liftTime": 0.4,
+      "stop": true,
+      "label": "Transfer NE",
+      "color": "#a3a3a3",
+      "level": 0,
+      "control": "plc",
+      "transfer": false,
+      "drive": {
+        "accel": 2.0,
+        "decel": 2.0,
+        "tau": 0.05,
+        "speedMax": 5.0,
+        "countsPerM": 10000.0,
+        "maxLoad": null,
+        "overloadTime": 1.0,
+        "atSpeedTolerance": 0.05,
+        "runningThreshold": 0.01,
+        "motorRatedSpeed": 1450.0,
+        "motorRatedFrequency": 50.0,
+        "gearRatio": null,
+        "transmissionRatio": 1.0,
+        "drumDiameter": 0.08,
+        "maxFrequency": 50.0,
+        "rampUpTime": 0.3,
+        "rampDownTime": 0.3,
+        "encoderCountsPerRev": null
+      }
+    },
+    {
+      "id": "rat_nw",
+      "x": 0.0,
+      "y": -8.0,
+      "rotation": 180.0,
+      "width": 1.0,
+      "height": 1.0,
+      "crossAngle": 90.0,
+      "speed": 0.5,
+      "liftTime": 0.4,
+      "stop": true,
+      "label": "Transfer NW",
+      "color": "#a3a3a3",
+      "level": 0,
+      "control": "plc",
+      "transfer": false,
+      "drive": {
+        "accel": 2.0,
+        "decel": 2.0,
+        "tau": 0.05,
+        "speedMax": 5.0,
+        "countsPerM": 10000.0,
+        "maxLoad": null,
+        "overloadTime": 1.0,
+        "atSpeedTolerance": 0.05,
+        "runningThreshold": 0.01,
+        "motorRatedSpeed": 1450.0,
+        "motorRatedFrequency": 50.0,
+        "gearRatio": null,
+        "transmissionRatio": 1.0,
+        "drumDiameter": 0.08,
+        "maxFrequency": 50.0,
+        "rampUpTime": 0.3,
+        "rampDownTime": 0.3,
+        "encoderCountsPerRev": null
+      }
+    },
+    {
+      "id": "rat_sw",
+      "x": 0.0,
+      "y": -12.0,
+      "rotation": -90.0,
+      "width": 1.0,
+      "height": 1.0,
+      "crossAngle": 90.0,
+      "speed": 0.5,
+      "liftTime": 0.4,
+      "stop": true,
+      "label": "Transfer SW",
+      "color": "#a3a3a3",
+      "level": 0,
+      "control": "plc",
+      "transfer": false,
+      "drive": {
+        "accel": 2.0,
+        "decel": 2.0,
+        "tau": 0.05,
+        "speedMax": 5.0,
+        "countsPerM": 10000.0,
+        "maxLoad": null,
+        "overloadTime": 1.0,
+        "atSpeedTolerance": 0.05,
+        "runningThreshold": 0.01,
+        "motorRatedSpeed": 1450.0,
+        "motorRatedFrequency": 50.0,
+        "gearRatio": null,
+        "transmissionRatio": 1.0,
+        "drumDiameter": 0.08,
+        "maxFrequency": 50.0,
+        "rampUpTime": 0.3,
+        "rampDownTime": 0.3,
+        "encoderCountsPerRev": null
+      }
+    }
+  ],
+  "doors": [
+    {
+      "id": "door_1",
+      "x": 16.25,
+      "y": 1.6,
+      "rotation": 0.0,
+      "width": 1.2,
+      "label": "Guard door",
+      "color": "#facc15",
+      "control": "plc",
+      "lock": false
+    }
+  ],
+  "safety": [
+    {
+      "id": "safety_1",
+      "x": 2.0,
+      "y": 3.2,
+      "stopButtonIds": [
+        "estop"
+      ],
+      "doorIds": [
+        "door_1"
+      ],
+      "curtainIds": [
+        "curtain_1"
+      ],
+      "beltIds": [],
+      "resetButtonId": "reset",
+      "label": "Safety relay",
+      "color": "#eab308",
+      "control": "plc",
+      "reset": false
+    }
+  ],
+  "controlPanels": [
+    {
+      "id": "op_panel",
+      "x": 0.9,
+      "y": -2.6,
+      "width": 1.6,
+      "height": 0.9,
+      "rotation": 0.0,
+      "label": "OPERATOR",
+      "color": "#475569",
+      "control": "plc",
+      "elements": [
+        {
+          "kind": "button",
+          "name": "start",
+          "label": "START",
+          "color": "#16a34a",
+          "buttonType": "momentary",
+          "normallyClosed": false,
+          "key": null,
+          "packFormat": "bit"
+        },
+        {
+          "kind": "button",
+          "name": "stop",
+          "label": "STOP",
+          "color": "#dc2626",
+          "buttonType": "momentary",
+          "normallyClosed": true,
+          "key": null,
+          "packFormat": "bit"
+        },
+        {
+          "kind": "button",
+          "name": "reset",
+          "label": "RESET",
+          "color": "#2563eb",
+          "buttonType": "momentary",
+          "normallyClosed": false,
+          "key": null,
+          "packFormat": "bit"
+        },
+        {
+          "kind": "lamp",
+          "name": "run",
+          "label": "RUN",
+          "color": "#22c55e",
+          "buttonType": "momentary",
+          "normallyClosed": false,
+          "key": null,
+          "packFormat": "bit"
+        },
+        {
+          "kind": "lamp",
+          "name": "fault",
+          "label": "FAULT",
+          "color": "#ef4444",
+          "buttonType": "momentary",
+          "normallyClosed": false,
+          "key": null,
+          "packFormat": "bit"
+        },
+        {
+          "kind": "buzzer",
+          "name": "horn",
+          "label": "HORN",
+          "color": "#f59e0b",
+          "buttonType": "momentary",
+          "normallyClosed": false,
+          "key": null,
+          "packFormat": "bit"
+        }
+      ]
+    }
+  ],
+  "mqttSettings": {
+    "enabled": true,
+    "transport": "tcp",
+    "brokerUrl": "ws://localhost",
+    "port": 5000,
+    "topicPrefix": "",
+    "tcpBindHost": "127.0.0.1",
+    "tcpServerHost": "127.0.0.1",
+    "tcpPort": 5001,
+    "endianness": "LE",
+    "topics": [],
+    "nodeId": 0,
+    "beltFeedback": false,
+    "beltFeedbackIntervalMs": 10,
+    "tcpLengthEndianness": null,
+    "tcpRxTimeoutMs": 0,
+    "tcpMaxPayload": 0,
+    "tcpOutputOwner": null,
+    "tcpRequireLayoutCheck": false
+  },
+  "connections": [],
+  "plcTags": [
+    {
+      "key": "estop/sensor_states",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "reset/sensor_states",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "op_panel_start/sensor_states",
+      "name": "",
+      "table": "Operator panel",
+      "comment": ""
+    },
+    {
+      "key": "op_panel_stop/sensor_states",
+      "name": "",
+      "table": "Operator panel",
+      "comment": ""
+    },
+    {
+      "key": "op_panel_reset/sensor_states",
+      "name": "",
+      "table": "Operator panel",
+      "comment": ""
+    },
+    {
+      "key": "s_high/sensor_states",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "s_pick/sensor_states",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "s_tote/sensor_states",
+      "name": "",
+      "table": "Tote line",
+      "comment": ""
+    },
+    {
+      "key": "st_feed/isUp",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "st_feed/occupied",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "st_load/isUp",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "st_load/occupied",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "robot_1/busy",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "robot_1/holding",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "robot_1/partAtPick",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "robot_1/placeReady",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "robot_1/ready",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "robot_1/atHome",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "robot_1/inPosition",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "robot_1/fault",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "lift_1/moving",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "lift_1/atLevel",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "lift_1/occupied",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "dws_1/noRead",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "dws_1/present",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "bcr_1/noRead",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "bcr_1/present",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "rfid_1/noRead",
+      "name": "",
+      "table": "Tote line",
+      "comment": ""
+    },
+    {
+      "key": "rfid_1/present",
+      "name": "",
+      "table": "Tote line",
+      "comment": ""
+    },
+    {
+      "key": "div_1/active",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "div_1/present",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "div_2/active",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "div_2/present",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "div_3/active",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "div_3/present",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "tt_1/turning",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "tt_1/inPosition",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "tt_1/occupied",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "rat_se/present",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "rat_se/centered",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "rat_se/up",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "rat_ne/present",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "rat_ne/centered",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "rat_ne/up",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "rat_nw/present",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "rat_nw/centered",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "rat_nw/up",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "rat_sw/present",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "rat_sw/centered",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "rat_sw/up",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "acc/full",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "door_1/closed",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "door_1/locked",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "safety_1/ok",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "safety_1/tripped",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "chute_1/full",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "chute_2/full",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "chute_3/full",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "banner_1/sensor_states",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "curtain_1/sensor_states",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "robot_1/cycles",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "robot_1/faultCode",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "robot_1/j1",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "robot_1/j2",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "robot_1/j3",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "robot_1/j4",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "robot_1/j5",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "robot_1/j6",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "robot_1/tcpX",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "robot_1/tcpY",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "robot_1/tcpZ",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "lift_1/level",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "dws_1/code",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "dws_1/destination",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "dws_1/readCount",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "dws_1/weight",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "dws_1/measuredLength",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "dws_1/measuredWidth",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "dws_1/measuredHeight",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "bcr_1/code",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "bcr_1/destination",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "bcr_1/readCount",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "bcr_1/weight",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "bcr_1/measuredLength",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "bcr_1/measuredWidth",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "bcr_1/measuredHeight",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "rfid_1/code",
+      "name": "",
+      "table": "Tote line",
+      "comment": ""
+    },
+    {
+      "key": "rfid_1/destination",
+      "name": "",
+      "table": "Tote line",
+      "comment": ""
+    },
+    {
+      "key": "rfid_1/readCount",
+      "name": "",
+      "table": "Tote line",
+      "comment": ""
+    },
+    {
+      "key": "rfid_1/weight",
+      "name": "",
+      "table": "Tote line",
+      "comment": ""
+    },
+    {
+      "key": "rfid_1/measuredLength",
+      "name": "",
+      "table": "Tote line",
+      "comment": ""
+    },
+    {
+      "key": "rfid_1/measuredWidth",
+      "name": "",
+      "table": "Tote line",
+      "comment": ""
+    },
+    {
+      "key": "rfid_1/measuredHeight",
+      "name": "",
+      "table": "Tote line",
+      "comment": ""
+    },
+    {
+      "key": "div_1/presentCode",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "div_1/diverted",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "div_2/presentCode",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "div_2/diverted",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "div_3/presentCode",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "div_3/diverted",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "tt_1/index",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "rat_se/transferred",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "rat_ne/transferred",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "rat_nw/transferred",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "rat_sw/transferred",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "acc/zones",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "chute_1/count",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "chute_2/count",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "chute_3/count",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "clock/nanoseconds",
+      "name": "",
+      "table": "System",
+      "comment": ""
+    },
+    {
+      "key": "op_panel_run/isOn",
+      "name": "",
+      "table": "Operator panel",
+      "comment": ""
+    },
+    {
+      "key": "op_panel_fault/isOn",
+      "name": "",
+      "table": "Operator panel",
+      "comment": ""
+    },
+    {
+      "key": "op_panel_horn/isOn",
+      "name": "",
+      "table": "Operator panel",
+      "comment": ""
+    },
+    {
+      "key": "infeed/run",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "infeed/reverse",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "sorter/run",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "sorter/reverse",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "st_feed/release",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "st_load/release",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "robot_1/start",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "robot_1/enable",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "robot_1/hold",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "robot_1/faultReset",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "robot_1/gripperClose",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "div_1/divert",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "div_2/divert",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "div_3/divert",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "rat_se/transfer",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "rat_ne/transfer",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "rat_nw/transfer",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "rat_sw/transfer",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "acc/release",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "door_1/lock",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "safety_1/reset",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "chute_1/empty",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "chute_2/empty",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "chute_3/empty",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "loop_s/speed",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "loop_s/directionAngle",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "loop_e/speed",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "loop_e/directionAngle",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "loop_n/speed",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "loop_n/directionAngle",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "loop_w/speed",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "loop_w/directionAngle",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "feed/speed",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "feed/directionAngle",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "low/speed",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "low/directionAngle",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "lift/speed",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "lift/directionAngle",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "high/speed",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "high/directionAngle",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "under/speed",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "under/directionAngle",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "infeed/frequency",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "acc_1/speed",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "acc_1/directionAngle",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "acc_2/speed",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "acc_2/directionAngle",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "acc_3/speed",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "acc_3/directionAngle",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "scan/speed",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "scan/directionAngle",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "sorter/frequency",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "branch_1/speed",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "branch_1/directionAngle",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "branch_2/speed",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "branch_2/directionAngle",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "branch_3/speed",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "branch_3/directionAngle",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "tt_belt/speed",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "tt_belt/directionAngle",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "reject/speed",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "reject/directionAngle",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "tote_in/speed",
+      "name": "",
+      "table": "Tote line",
+      "comment": ""
+    },
+    {
+      "key": "tote_in/directionAngle",
+      "name": "",
+      "table": "Tote line",
+      "comment": ""
+    },
+    {
+      "key": "tote_curve/speed",
+      "name": "",
+      "table": "Tote line",
+      "comment": ""
+    },
+    {
+      "key": "tote_curve/directionAngle",
+      "name": "",
+      "table": "Tote line",
+      "comment": ""
+    },
+    {
+      "key": "tote_up/speed",
+      "name": "",
+      "table": "Tote line",
+      "comment": ""
+    },
+    {
+      "key": "tote_up/directionAngle",
+      "name": "",
+      "table": "Tote line",
+      "comment": ""
+    },
+    {
+      "key": "tote_turn/speed",
+      "name": "",
+      "table": "Tote line",
+      "comment": ""
+    },
+    {
+      "key": "tote_turn/directionAngle",
+      "name": "",
+      "table": "Tote line",
+      "comment": ""
+    },
+    {
+      "key": "tote_out/speed",
+      "name": "",
+      "table": "Tote line",
+      "comment": ""
+    },
+    {
+      "key": "tote_out/directionAngle",
+      "name": "",
+      "table": "Tote line",
+      "comment": ""
+    },
+    {
+      "key": "robot_1/program",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "robot_1/speedOverride",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "robot_1/targetX",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "robot_1/targetY",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "robot_1/targetZ",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "robot_1/targetYaw",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "lift_1/targetLevel",
+      "name": "",
+      "table": "Pallet loop",
+      "comment": ""
+    },
+    {
+      "key": "div_1/commandSpeed",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "div_1/commandAngle",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "div_2/commandSpeed",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "div_2/commandAngle",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "div_3/commandSpeed",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "div_3/commandAngle",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    },
+    {
+      "key": "tt_1/targetIndex",
+      "name": "",
+      "table": "Sorting",
+      "comment": ""
+    }
+  ],
+  "sketch": [],
+  "background": null,
+  "simulatorBackend": "matter",
+  "simulationSteps": 4,
+  "kineticFriction": false,
+  "collisionEnabled": true,
+  "gridSnap": true,
+  "gridSize": 0.5,
+  "useSurfaceVelocity": true,
+  "tractionModel": "kinematic",
+  "floorFriction": 0.6,
+  "physicsDt": 0.004,
+  "maxStepsPerAdvance": 50
+}

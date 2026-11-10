@@ -296,7 +296,7 @@ class CompiledKernelTest(unittest.TestCase):
         import random
         from config_parser import Belt, load_config
         from surface import belt_contains
-        config = load_config("test_config.json")
+        config = load_config("station_1.json")
         # plus a curved belt (wrapping its angles) and a drawn path belt
         config.belts.append(Belt(id="curve", type="curved", shape="arc", x=18.0, y=-3.0, radius=2.0, beltWidth=1.0,
                                  rotation=0.0, startAngle=300.0, endAngle=60.0, speed=1.0, directionAngle=90.0,
@@ -351,7 +351,7 @@ class CompiledKernelTest(unittest.TestCase):
 
         def run():
             random.seed(99)
-            config = load_config("test_config.json")
+            config = load_config("station_1.json")
             for belt in config.belts:
                 belt.speed = 1.5
             engine = PhysicsEngine(config)
@@ -383,7 +383,7 @@ class CrowdedLineSpeedupTest(unittest.TestCase):
         import random
         from config_parser import load_config
         from surface import BeltGrid, belt_contains, geometry_frame
-        config = load_config("test_config.json")
+        config = load_config("station_1.json")
         engine = PhysicsEngine(config)
         rng = random.Random(7)
         points = [(rng.uniform(14.0, 22.0), rng.uniform(-21.0, 16.0)) for _ in range(3000)]
@@ -438,7 +438,7 @@ class CrowdedLineSpeedupTest(unittest.TestCase):
 
     def test_a_crowded_line_still_delivers(self):
         from config_parser import load_config
-        config = load_config("test_config.json")
+        config = load_config("station_1.json")
         for belt in config.belts:
             belt.speed = 2.0
         engine = PhysicsEngine(config)

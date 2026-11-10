@@ -123,7 +123,7 @@ class DeliveryControllerTest(unittest.TestCase):
 
 class IoTopicsTest(unittest.TestCase):
     def test_test_config_keeps_its_wire_layout(self):
-        publish, subscribe = io_topics(load_config("test_config.json"))
+        publish, subscribe = io_topics(load_config("station_1.json"))
         self.assertIs(publish, PUBLISH_TOPICS)
         self.assertIs(subscribe, SUBSCRIBE_TOPICS)
 

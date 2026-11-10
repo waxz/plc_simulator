@@ -901,7 +901,15 @@ the line is stopped, every stopper stays up.
 python main.py machines_demo.json
 ```
 
-`test_config.json` is Station_1 of the SIMATIC AX project: three lanes (an IR
+`station_1.json` is Station_1 of the SIMATIC AX project, kept as it is: the
+tests and the AX project's generated `sim_io.st` use it. `test_config.json`
+started as the same layout and is yours to change; it is now a small sorter:
+the three lanes below, a barcode scanner after the merges, and two pop-up
+wheel diverters (45 degrees, destinations 1 and 2) onto angled take-away
+belts into `chute_1` / `chute_2`, destination 3 to the outfeed; its sources
+draw destinations 1-3, each from its own barcode range, every 6 s (a wheel
+diverter steers every parcel in its 1.5 m zone, so parcels need that much
+gap). Station_1: three lanes (an IR
 sensor on lane 1, 32-beam laser banners on lanes 2 and 3) merging into lane 1
 and the outfeed to `sink_4`; START / STOP / RESET buttons and AUTO / MANUAL /
 ERROR LEDs per lane, with keys `1 2 3` (START), `q w e` (STOP), `a s d`
@@ -1097,6 +1105,38 @@ speed from the layout file (1 m/s where it is 0).
 
 How the frames are built, and how to read and write them in `plc_mock.py`
 and in a SIMATIC AX PLC (ST): [docs/plc-data-exchange-guide.md](docs/plc-data-exchange-guide.md).
+
+### The complete plant (`complete_plant.json`)
+
+`logistics_full.json` (below) with the designer's newer layers, built by
+`tools/build_complete_plant.py`:
+
+- **Operator panel:** a control panel (one enclosure) with START, STOP (NC)
+  and RESET, RUN and FAULT lamps and a horn, instead of loose buttons.
+- **Drive trains:** the infeed and the sorter are commanded in Hz (the PLC
+  sends 50 Hz for 1 m/s through inverter, motor, gearbox and drum); the
+  elevator, the turntable and the four transfers move on their drives with
+  inverter ramps.
+- **PLC tags:** a tag table per area - Sorting, Pallet loop, Tote line,
+  Operator panel, System - in the PLC Tags dock and the AX generator's
+  `Sim_Tags`.
+
+Under the mock PLC each chute gets only parcels for its destination, only
+no-reads reach the reject bin, the robot loads pallets, the transfers and
+the elevator move them, and the totes reach their store
+(`test_complete_plant.py`).
+
+```bash
+python tools/build_complete_plant.py
+```
+
+```bash
+python main.py complete_plant.json
+```
+
+```bash
+python plc_mock.py complete_plant.json --autostart
+```
 
 ### Complete logistics system (`logistics_full.json`)
 

@@ -47,7 +47,7 @@ class EditorClicksTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.layout = os.path.join(self.tmp.name, "station.json")
-        shutil.copy(os.path.join(HERE, "test_config.json"), self.layout)
+        shutil.copy(os.path.join(HERE, "station_1.json"), self.layout)
         self.window = MainWindow(config=load_config(self.layout), config_path=self.layout,
                                  library_path=os.path.join(self.tmp.name, "lib.json"))
         self.window.resize(1500, 950)
@@ -282,7 +282,7 @@ class EditorClicksTest(unittest.TestCase):
         self.window.io_dock.show()
         self.window.io_table.refresh()
         table = self.window.io_table
-        self.assertEqual(table.table.rowCount(), 52)                           # test_config.json's frames
+        self.assertEqual(table.table.rowCount(), 52)                           # station_1.json's frames
         self.assertIn("Sim_Input 18 B", table.summary.text())
         table.filter.setText("led_1_1_1")
         (row,) = table.visible_rows()
@@ -428,7 +428,7 @@ class SimulatorClicksTest(unittest.TestCase):
     def setUp(self):
         hmi.set_theme("dark")
         hmi.save_settings(theme="dark")
-        self.config = load_config("test_config.json")
+        self.config = load_config("station_1.json")
         self.r = Renderer(self.config)
         self.addCleanup(self._close)
         self.physics = PhysicsEngine(self.config)
@@ -554,23 +554,23 @@ class SimulatorClicksTest(unittest.TestCase):
         self.assertGreaterEqual(time.monotonic() - t, 0.25)
 
     def test_edit_in_designer_opens_the_layout_editor(self):
-        self.r.config_path = "test_config.json"
+        self.r.config_path = "station_1.json"
         with mock.patch("visualizer.subprocess.Popen") as popen:
             self.click(self.r.editor_ui.designer_btn)
         args = popen.call_args[0][0]
         self.assertTrue(args[1].endswith("layout_editor.py"))
-        self.assertEqual(args[2], "test_config.json")
+        self.assertEqual(args[2], "station_1.json")
 
     def test_edit_in_designer_reuses_the_running_designer(self):
         from sim_link import InstanceLink
-        self.r.config_path = "test_config.json"
+        self.r.config_path = "station_1.json"
         link = InstanceLink("designer")                              # a designer is open
         self.addCleanup(link.close)
         with mock.patch("visualizer.subprocess.Popen") as popen:
             self.click(self.r.editor_ui.designer_btn)
             self.click(self.r.editor_ui.designer_btn)
         popen.assert_not_called()                                   # no second designer
-        self.assertEqual(os.path.normcase(link.take()), os.path.normcase(os.path.abspath("test_config.json")))
+        self.assertEqual(os.path.normcase(link.take()), os.path.normcase(os.path.abspath("station_1.json")))
         link.close()
         with mock.patch("visualizer.subprocess.Popen") as popen:    # none running: start one, once
             popen.return_value.poll.return_value = None

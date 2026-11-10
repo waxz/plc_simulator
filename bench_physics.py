@@ -1,7 +1,7 @@
 """
 bench_physics.py - physics cost per step vs parcel count, without a window.
 
-A synthetic plant with test_config.json's physics settings (belts driving
+A synthetic plant with station_1.json's physics settings (belts driving
 parcels, the same drive model on every belt, a laser banner and an IR sensor
 per belt, sinks): parallel 50 m belts, parcels about 1 m apart, ~40 per
 belt. Prints ms per physics step and the real-time factor it allows.
@@ -18,7 +18,7 @@ import time
 from config_parser import Belt, Sensor, Sink, SimulatorConfig, load_config
 from physics import PhysicsEngine
 
-DRIVE = load_config("test_config.json").belts[0].drive   # the plant's drive model (VFD ramp, maxLoad)
+DRIVE = load_config("station_1.json").belts[0].drive   # the plant's drive model (VFD ramp, maxLoad)
 
 
 def plant(n_parcels: int, dt: float):
@@ -36,7 +36,7 @@ def plant(n_parcels: int, dt: float):
         sinks.append(Sink(id=f"sink_{i}", x=51.0, y=y, width=1.0, height=1.5, label=""))
     cfg = SimulatorConfig(belts=belts, sensors=sensors, sinks=sinks)
     cfg.physicsDt = dt
-    cfg.useSurfaceVelocity = True      # as test_config.json: belts drive the parcels
+    cfg.useSurfaceVelocity = True      # as station_1.json: belts drive the parcels
     cfg.kineticFriction = True
     e = PhysicsEngine(cfg)
     for k in range(n_parcels):

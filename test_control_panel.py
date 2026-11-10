@@ -52,7 +52,7 @@ class ChildrenTest(unittest.TestCase):
 
 class LayoutFileTest(unittest.TestCase):
     def test_saved_with_the_panel_only_and_rebuilt_on_load(self):
-        config = load_config("test_config.json")
+        config = load_config("station_1.json")
         own_buttons, own_lamps = len(config.buttons), len(config.leds)
         config.controlPanels.append(panel())
         control_panel.refresh(config)
@@ -66,7 +66,7 @@ class LayoutFileTest(unittest.TestCase):
         self.assertEqual([l.id for l in loaded.leds], [l.id for l in config.leds])
 
     def test_refresh_follows_edits_and_keeps_runtime_state(self):
-        config = load_config("test_config.json")
+        config = load_config("station_1.json")
         config.controlPanels.append(panel())
         control_panel.refresh(config)
         start = next(b for b in config.buttons if b.id == "op1_start")

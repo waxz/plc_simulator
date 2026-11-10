@@ -337,8 +337,8 @@ def dynamic_state(config: SimulatorConfig, views: Sequence, sim_time: float = 0.
         "elevators": {e.id: [_r(e.position * lh), bool(e.moving)] for e in config.elevators},
         "scanners": {s.id: [bool(s.present), s.code, bool(s.noRead), s.readCount] for s in config.scanners},
         # Active, and the angle it steers at now (commands can change it).
-        # active, the angle it is told to steer at, where its wheels point now
-        "diverters": {d.id: [bool(d.active), _r(logistics.divert_angle(d)), _r(d.wheelAngle)]
+        # active, the angle it is told to steer at, where its wheels point now, parcels diverted
+        "diverters": {d.id: [bool(d.active), _r(logistics.divert_angle(d)), _r(d.wheelAngle), d.diverted]
                       for d in config.diverters},
         "turntables": {t.id: _r(t.angle) for t in config.turntables},
         "transfers": {t.id: [_r(t.lift), bool(t.up)] for t in config.transfers},

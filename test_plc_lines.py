@@ -3,7 +3,7 @@ test_plc_lines.py - the line-based PLC program (plc_logic.LineController):
 lines found from names, per-line Start/Stop/Reset and lamps, the start
 interlock (a feeder runs only while the line it feeds runs), feeders holding
 parcels at the merge, per-line jams and drive faults - first on signals,
-then closed loop with the physics engine on test_config.json (L1 main line,
+then closed loop with the physics engine on station_1.json (L1 main line,
 L2 / L3 feeders).
 """
 import unittest
@@ -18,7 +18,7 @@ class Signals:
     """Drive the controller like the I/O image would: buttons and sensors by label."""
 
     def __init__(self, test, jam_time=5.0):
-        self.config = load_config("test_config.json")
+        self.config = load_config("station_1.json")
         self.c = LineController(self.config, jam_time=jam_time)
         self.t = 0.0
         self.test = test
@@ -51,7 +51,7 @@ class Signals:
 
 class StructureTest(unittest.TestCase):
     def test_lines_main_line_and_merges_from_the_layout(self):
-        config = load_config("test_config.json")
+        config = load_config("station_1.json")
         self.assertEqual(line_of(next(b for b in config.buttons if b.label == "L2 START")), "L2")
         self.assertEqual(line_of(config.belts[0]), "L1")                      # belt_1_1_1
         lines = find_lines(config)
@@ -63,7 +63,7 @@ class StructureTest(unittest.TestCase):
         self.assertEqual(c.lines["L3"].hold_sensor, "sensor_1_3_1")
 
     def test_make_controller_picks_by_layout(self):
-        self.assertIsInstance(make_controller(load_config("test_config.json")), LineController)
+        self.assertIsInstance(make_controller(load_config("station_1.json")), LineController)
         self.assertIsInstance(make_controller(SimulatorConfig()), DeliveryController)
 
 
@@ -161,7 +161,7 @@ class ClosedLoopTest(unittest.TestCase):
     """The program against the simulated plant (no network)."""
 
     def test_parcels_are_delivered_and_feeders_hold_when_the_main_line_stops(self):
-        config = load_config("test_config.json")
+        config = load_config("station_1.json")
         # Quicker than the plant: belts at 2 m/s (the program's design speed),
         # a third of the parcels - same behaviour, a fraction of the run time.
         for belt in config.belts:

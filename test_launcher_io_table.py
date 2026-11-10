@@ -68,7 +68,7 @@ class LauncherCommandsTest(unittest.TestCase):
         self.assertEqual(mock.args[mock.args.index("--bridge") + 1], launcher.BRIDGE_ADDRESS)
 
     def test_recent_layouts(self):
-        first, second = os.path.join(HERE, "test_config.json"), os.path.join(HERE, "logistics_full.json")
+        first, second = os.path.join(HERE, "station_1.json"), os.path.join(HERE, "logistics_full.json")
         launcher.remember_layout(first)
         launcher.remember_layout(second)
         launcher.remember_layout(first)                                   # again: back to the top, once
@@ -130,7 +130,7 @@ class PlcTagsTest(unittest.TestCase):
         self.assertEqual(len({t.name for t in tags}), len(tags))               # names are unique
 
     def test_a_banner_is_one_array_tag_a_button_a_bool(self):
-        tags, _ = io_table.tags_of(load_config("test_config.json"))
+        tags, _ = io_table.tags_of(load_config("station_1.json"))
         rows = {t.component: t.cells() for t in tags}
         self.assertEqual(rows["sensor_1_2_1"], ["sensor_1_2_1", "Default tag table", "Array[0..31] of Bool",
                                                 "%I2.0..%I5.7", "L2 BANNER", "sensor_1_2_1", "sensor_states[0..31]",
@@ -148,7 +148,7 @@ class PlcTagsTest(unittest.TestCase):
                          ["op1_start", "op1_stop", "op1_reset", "op1_run", "op1_fault", "op1_horn"])
 
     def test_your_names_tables_and_comments_are_kept_in_the_layout(self):
-        config = load_config("test_config.json")
+        config = load_config("station_1.json")
         config.plcTags = [PlcTag(key="button_1_1_1/sensor_states", name="L1_Start_PB", table="Line 1",
                                  comment="start push button")]
         tags, _ = io_table.tags_of(config)
@@ -156,7 +156,7 @@ class PlcTagsTest(unittest.TestCase):
         self.assertEqual((start.name, start.table, start.comment), ("L1_Start_PB", "Line 1", "start push button"))
         saved = json.loads(config.model_dump_json())
         self.assertEqual(saved["plcTags"][0]["name"], "L1_Start_PB")
-        self.assertNotIn("plcTags", json.loads(load_config("test_config.json").model_dump_json()))
+        self.assertNotIn("plcTags", json.loads(load_config("station_1.json").model_dump_json()))
         self.assertIn("already", io_table.check_name("led_1_1_1", tags, start.key))
         self.assertIn("quote", io_table.check_name('a"b', tags, start.key))
         self.assertIn("name", io_table.check_name("  ", tags, start.key))
@@ -168,7 +168,7 @@ class PlcTagsTest(unittest.TestCase):
         self.assertEqual(plc_tags.st_name("1st lamp"), "_1st_lamp")
         self.assertEqual(plc_tags.st_name("Type"), "Type_")                     # a keyword, any case
         self.assertEqual(plc_tags.st_name("ok_name"), "ok_name")
-        config = load_config("test_config.json")
+        config = load_config("station_1.json")
         config.plcTags = [PlcTag(key="button_1_1_1/sensor_states", name="L1 Start PB"),
                           PlcTag(key="led_1_1_2/isOn", name="l1_start_pb")]       # the same in ST, ignoring case
         data = {t["key"]: t for t in plc_tags.tags_json(config)}
@@ -183,14 +183,14 @@ class PlcTagsTest(unittest.TestCase):
         import st_export
         out = os.path.join(_SETTINGS_DIR, "st")
         tags_file = os.path.join(out, "tags.json")
-        st_export.main(["test_config.json", "--out", out, "--tags", tags_file])
+        st_export.main(["station_1.json", "--out", out, "--tags", tags_file])
         with open(tags_file, encoding="utf-8") as f:
             tags = json.load(f)
         self.assertEqual(len(tags), 13 + 39)
         self.assertEqual(tags[0]["stName"], "button_1_1_1")
 
     def test_tia_portal_export(self):
-        tags, _ = io_table.tags_of(load_config("test_config.json"))
+        tags, _ = io_table.tags_of(load_config("station_1.json"))
         rows, skipped = io_table.tia_rows(tags)
         self.assertEqual(rows[0][:5], ["Name", "Path", "Data Type", "Logical Address", "Comment"])
         self.assertEqual(skipped, 1)                                             # the clock: 64 bits
@@ -210,7 +210,7 @@ class PlcTagsTest(unittest.TestCase):
 
 class PlcTagsPanelTest(unittest.TestCase):
     def setUp(self):
-        self.config = load_config("test_config.json")
+        self.config = load_config("station_1.json")
         self.stack = QUndoStack()
         self.selected = []
         self.message = ""

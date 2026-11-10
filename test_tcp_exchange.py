@@ -32,10 +32,10 @@ BELT = "belt_1_1_1"
 
 
 def make_config(port: int, belt_feedback: bool = False):
-    """test_config.json has every component PUBLISH_TOPICS/SUBSCRIBE_TOPICS
+    """station_1.json has every component PUBLISH_TOPICS/SUBSCRIBE_TOPICS
     reference. Sources are cleared so no parcels spawn - these tests are
     about the wire, not the flow."""
-    config = load_config("test_config.json")
+    config = load_config("station_1.json")
     config.sources = []
     settings = config.mqttSettings
     settings.enabled = True
@@ -119,7 +119,7 @@ class ExchangeFixture(unittest.TestCase):
     def send_belt_setpoint(self, client, speed: float, plc_config=None):
         """Build the PLC's output frame the way a PLC would: its own copy of
         the I/O image, with one belt's speed command set."""
-        plc_config = plc_config or load_config("test_config.json")
+        plc_config = plc_config or load_config("station_1.json")
         next(b for b in plc_config.belts if b.id == BELT).speed = speed
         payload = self.output_message().serialize(plc_config)
         self.assertTrue(client.send(payload, frame_type=FrameType.IO_MAPPING, node_id=7))
@@ -140,7 +140,7 @@ class ClosedLoopBeltSpeedTest(ExchangeFixture):
         self.send_belt_setpoint(client, 2.0)
         self.assertTrue(wait_for(lambda: belt.speed == 2.0), "setpoint never applied")
 
-        decoder_config = load_config("test_config.json")
+        decoder_config = load_config("station_1.json")
         decoder = ComponentMessage(belt_feedback_mapping(decoder_config), endianness=endian(self.config))
         self.assertTrue(wait_for(lambda: len(recorder.of(FrameType.BELT_FEEDBACK)) > 0))
 
@@ -256,7 +256,7 @@ class InboundRobustnessTest(ExchangeFixture):
 
     def test_frame_split_into_single_bytes_is_reassembled_and_applied(self):
         belt = next(b for b in self.config.belts if b.id == BELT)
-        plc_config = load_config("test_config.json")
+        plc_config = load_config("station_1.json")
         next(b for b in plc_config.belts if b.id == BELT).speed = 1.75
         payload = self.output_message().serialize(plc_config)
         packet = TcpFrameCodec.pack(payload, frame_type=FrameType.IO_MAPPING,
@@ -276,7 +276,7 @@ class InboundRobustnessTest(ExchangeFixture):
         client = self.plc_client(recorder)
         # The PLC's frame layout is fixed - build it while the belt exists.
         output_message = self.output_message()
-        plc_config = load_config("test_config.json")
+        plc_config = load_config("station_1.json")
         # A component the output mapping references disappears at runtime
         # (e.g. deleted in the editor) -> deserialize() raises.
         with self.lock:
@@ -323,7 +323,7 @@ class BeltFeedbackOptInTest(unittest.TestCase):
         self.assertEqual(feedback, [(len(config.belts) * 4 + 7) // 8 + len(config.belts) * (4 + 4)])
 
     def test_feedback_mapping_types(self):
-        config = load_config("test_config.json")
+        config = load_config("station_1.json")
         mapping = belt_feedback_mapping(config, [BELT])
         self.assertEqual(mapping, [(ByteType.BIT, f"{BELT}/running"), (ByteType.BIT, f"{BELT}/atSpeed"),
                                    (ByteType.BIT, f"{BELT}/reversing"), (ByteType.BIT, f"{BELT}/fault"),
@@ -333,7 +333,7 @@ class BeltFeedbackOptInTest(unittest.TestCase):
                                    (ByteType.UINT32, f"{BELT}/encoderCount")])
 
     def test_sim_clock_is_serialized_from_simulated_time(self):
-        config = load_config("test_config.json")
+        config = load_config("station_1.json")
         config.simTimeNs = 1_234_567_890
         msg = ComponentMessage([(ByteType.UINT64, "clock/simNanoseconds")], endianness="<")
         self.assertEqual(int.from_bytes(msg.serialize(config), "little"), 1_234_567_890)

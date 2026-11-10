@@ -107,7 +107,7 @@ class EditorWindowTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.window = MainWindow(config=load_config("test_config.json"), config_path="test_config.json",
+        self.window = MainWindow(config=load_config("station_1.json"), config_path="station_1.json",
                                  library_path=os.path.join(self.tmp.name, "lib.json"))
         self.window.resize(1400, 900)
         self.window.show()

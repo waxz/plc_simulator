@@ -46,7 +46,7 @@ def wait_until(predicate, timeout=5.0):
 
 class BridgeTest(unittest.TestCase):
     def setUp(self):
-        self.config = load_config(os.path.join(HERE, "test_config.json"))
+        self.config = load_config(os.path.join(HERE, "station_1.json"))
         apply_exchange_config(self.config, os.path.join(HERE, "tcp_exchange_config.json"))
         self.tcp_port, self.ws_port = free_port(), free_port()
         self.bridge = PlcFoxgloveBridge(copy.deepcopy(self.config), listen=("127.0.0.1", self.tcp_port),
@@ -209,7 +209,7 @@ class PlcMockToBridgeTest(unittest.TestCase):
     """Step 3: plc_mock.py reporting to the bridge, no simulator running."""
 
     def test_plc_mock_reports_without_a_simulator(self):
-        config = load_config(os.path.join(HERE, "test_config.json"))
+        config = load_config(os.path.join(HERE, "station_1.json"))
         apply_exchange_config(config, os.path.join(HERE, "tcp_exchange_config.json"))
         tcp_port, ws_port, sim_port = free_port(), free_port(), free_port()
         bridge = PlcFoxgloveBridge(config, listen=("127.0.0.1", tcp_port), foxglove_at=("127.0.0.1", ws_port))
@@ -220,7 +220,7 @@ class PlcMockToBridgeTest(unittest.TestCase):
             f.write(f'{{"transport": "tcp", "enabled": true, "tcpServerHost": "127.0.0.1", "tcpPort": {sim_port}, '
                     f'"endianness": "LE"}}')
         self.addCleanup(os.remove, exchange)
-        proc = subprocess.Popen([sys.executable, os.path.join(HERE, "plc_mock.py"), os.path.join(HERE, "test_config.json"),
+        proc = subprocess.Popen([sys.executable, os.path.join(HERE, "plc_mock.py"), os.path.join(HERE, "station_1.json"),
                                  "--exchange-config", exchange, "--bridge", f"127.0.0.1:{tcp_port}", "--autostart",
                                  "--send-interval", "0.5"],
                                 cwd=HERE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,

@@ -18,7 +18,7 @@ from config_parser import load_config
 from sim_process import PhysicsProxy, wait_for
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-LAYOUT = os.path.join(HERE, "test_config.json")
+LAYOUT = os.path.join(HERE, "station_1.json")
 
 
 def free_port() -> int:

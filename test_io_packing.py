@@ -149,7 +149,7 @@ class PlcStructTest(unittest.TestCase):
     (ax_dev/src/project/site_1/types.st)."""
 
     def test_test_config_matches_station_1_input_and_output(self):
-        config = load_config("test_config.json")
+        config = load_config("station_1.json")
         publish, subscribe = io_topics(config)
         inp = custom_component_mapping(config, publish["input"]["custom_ids"], direction="out")
         out = custom_component_mapping(config, subscribe["output"]["custom_ids"], direction="in")

@@ -190,7 +190,7 @@ class ChecksTest(unittest.TestCase):
         self.assertIn("source off belt", kinds)
 
     def test_existing_project_layouts_only_report_real_problems(self):
-        issues = check_layout(load_config("test_config.json"))
+        issues = check_layout(load_config("station_1.json"))
         self.assertFalse([i for i in issues if i.severity == "error"], [i.message for i in issues])
 
 
@@ -201,7 +201,7 @@ class DxfTest(unittest.TestCase):
 
     def test_export_writes_a_valid_metre_drawing_with_layers(self):
         path = os.path.join(self.tmp.name, "out.dxf")
-        config = load_config("test_config.json")
+        config = load_config("station_1.json")
         dxf_io.export_layout(config, path)
         doc = ezdxf.readfile(path)
         self.assertEqual(doc.units, ezdxf.units.M)

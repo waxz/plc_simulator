@@ -79,7 +79,7 @@ class BuildWebAppTest(unittest.TestCase):
     def test_shares_the_given_metrics_store(self):
         store = MetricsStore()
         store.add_sample(name="x", value=1.0, group="g")
-        app = main.build_web_app("test_config.json", None, store)
+        app = main.build_web_app("station_1.json", None, store)
         client = app.test_client()
         tree = client.get("/api/metrics/tree").get_json()
         self.assertEqual(tree, {"g": {"x": "scalar"}})
@@ -89,7 +89,7 @@ class BuildWebAppTest(unittest.TestCase):
         config = make_tcp_config(19503)
         with tempfile.TemporaryDirectory() as tmp_dir:
             registry_path = write_default_registry(tmp_dir, config)
-            app = main.build_web_app("test_config.json", registry_path, MetricsStore())
+            app = main.build_web_app("station_1.json", registry_path, MetricsStore())
             client = app.test_client()
             body = client.get("/api/registry").get_json()
             self.assertEqual({c["name"] for c in body["channels"]}, {"input", "output", "metrics"})
@@ -122,7 +122,7 @@ class EndToEndWiringTest(unittest.TestCase):
                     time.sleep(0.05)
                 self.assertIsNotNone(store.latest("node0/perf", "sample_count"))
 
-                web_app = main.build_web_app("test_config.json", registry_path, store)
+                web_app = main.build_web_app("station_1.json", registry_path, store)
                 web_client = web_app.test_client()
                 latest = web_client.get("/api/metrics/latest").get_json()
                 row = next(r for r in latest if r["name"] == "sample_count")

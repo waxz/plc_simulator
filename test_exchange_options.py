@@ -51,7 +51,7 @@ class ExchangeOptionsTest(unittest.TestCase):
 
     def output_frame(self, speed: float) -> bytes:
         from config_parser import load_config
-        plc = load_config("test_config.json")
+        plc = load_config("station_1.json")
         next(b for b in plc.belts if b.id == BELT).speed = speed
         return ComponentMessage(self.mappings()[1], endianness=endian(self.config)).serialize(plc)
 

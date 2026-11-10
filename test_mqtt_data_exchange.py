@@ -30,11 +30,11 @@ from tcp_framed_transport import FrameType, TcpFramedClient
 
 
 def make_tcp_config(port: int):
-    """test_config.json already has every component PUBLISH_TOPICS/
+    """station_1.json already has every component PUBLISH_TOPICS/
     SUBSCRIBE_TOPICS reference (MQTTSyncEngine.__init__ raises via
     verify_component_list() otherwise) - reused here rather than hand-
     building a matching config from scratch."""
-    config = load_config("test_config.json")
+    config = load_config("station_1.json")
     config.mqttSettings.enabled = True
     config.mqttSettings.transport = "tcp"
     config.mqttSettings.tcpBindHost = "127.0.0.1"

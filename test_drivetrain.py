@@ -172,7 +172,7 @@ class ExchangeTest(unittest.TestCase):
     def test_hz_from_the_plc_drive_the_simulated_belt(self):
         """A PLC packs run + Hz; the simulator unpacks them, its drive train
         turns them into surface speed, and the feedback packs back."""
-        plant = load_config("test_config.json")
+        plant = load_config("station_1.json")
         belt = plant.belts[0]
         belt.commandFormat = "frequency"
         belt.drive = DriveConfig(gearRatio=20.0, drumDiameter=0.1, tau=0.0, accel=1e9, decel=1e9)
@@ -192,7 +192,7 @@ class ExchangeTest(unittest.TestCase):
 
 class MockPlcTest(unittest.TestCase):
     def test_the_mock_plc_commands_hz_that_give_the_design_speed(self):
-        config = load_config("test_config.json")
+        config = load_config("station_1.json")
         line_belts = [b for b in config.belts if b.id.startswith("belt_1_1_")]
         for i, b in enumerate(line_belts):
             b.commandFormat = "frequency"
@@ -215,7 +215,7 @@ class MockPlcTest(unittest.TestCase):
 
 
     def test_a_design_speed_beyond_the_max_frequency_is_capped_by_the_inverter(self):
-        config = load_config("test_config.json")
+        config = load_config("station_1.json")
         belt = next(b for b in config.belts if b.id.startswith("belt_1_1_"))
         belt.commandFormat, belt.speed = "frequency", 0.6
         belt.drive = DriveConfig(gearRatio=13.0, drumDiameter=0.08, tau=0.0, accel=1e9, decel=1e9)
