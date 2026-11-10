@@ -96,7 +96,7 @@ class EditorClicksTest(unittest.TestCase):
         self.assertTrue(panel.tree.isVisible())
         self.assertIn("button_1_1_2", panel.header.text())
         groups = [panel.tree.topLevelItem(i).text(0) for i in range(panel.tree.topLevelItemCount())]
-        self.assertEqual(groups, ["Identity", "Position", "Geometry", "Operation", "Display",
+        self.assertEqual(groups, ["Identity", "Layout", "Operation", "Display",
                                   "Feedback (simulator -> PLC)"])        # a button: its contact, to the PLC
 
         # Click the NC contact box: the model changes, undo puts it back.
@@ -120,17 +120,18 @@ class EditorClicksTest(unittest.TestCase):
         self.click_on_canvas("belt_1_1_1")
         panel = self.window.properties_panel
         self.assertNotIn("drive.gearRatio", panel.spins)
-        panel.combos["commandFormat"].setCurrentText("frequency")
+        panel.combos["commandFormat"].setCurrentText(hmi.combo_label("commandFormat", "frequency"))
         QTest.qWait(50)                                  # the rows are rebuilt on the next tick
         panel = self.window.properties_panel
         belt = self.item("belt_1_1_1").model
         self.assertEqual(belt.commandFormat, "frequency")
         groups = [panel.tree.topLevelItem(i).text(0) for i in range(panel.tree.topLevelItemCount())]
-        self.assertIn("Drive", groups)
+        self.assertEqual([g for g in groups if g in hmi.PROPERTY_GROUP_ORDER],
+                         ["Identity", "Layout", "Mechanics", "Drive", "Motion", "Display"])   # by layer
         self.assertEqual(panel.spins["drive.motorRatedSpeed"].suffix(), " rpm")
         self.assertEqual(panel.spins["drive.maxFrequency"].suffix(), " Hz")
         # not set yet: the grid shows the gear ratio the simulation derives
-        self.assertAlmostEqual(panel.spins["drive.gearRatio"].value(), drivetrain.train_of(belt).gear_ratio, places=3)
+        self.assertAlmostEqual(panel.spins["drive.gearRatio"].value(), drivetrain.train_of(belt).gear_ratio, places=2)   # shown with 2 decimals
         self.assertIsNone(belt.drive.gearRatio if belt.drive is not None else None)
 
         panel.spins["drive.gearRatio"].setValue(20.0)
@@ -139,7 +140,20 @@ class EditorClicksTest(unittest.TestCase):
         self.window.undo_stack.undo()
         self.assertIsNone(belt.drive.gearRatio)
 
-        panel.combos["commandFormat"].setCurrentText("speed")
+        # a motor preset sets both nameplate values, one undo step
+        panel.motor_preset.setCurrentText("2900 rpm, 50 Hz")
+        self.assertEqual((belt.drive.motorRatedSpeed, belt.drive.motorRatedFrequency), (2900.0, 50.0))
+        self.window.undo_stack.undo()
+        self.assertEqual((belt.drive.motorRatedSpeed, belt.drive.motorRatedFrequency), (1450.0, 50.0))
+        # the result follows every edit, and warns when the design speed is out of reach
+        belt.speed = 0.5
+        panel.spins["drive.drumDiameter"].setValue(0.2)       # a real drum: no longer derived
+        panel.spins["drive.gearRatio"].setValue(200.0)
+        self.assertIn("needs", panel.drive_summary.text())
+        panel.spins["drive.gearRatio"].setValue(5.0)
+        self.assertIn("rpm at the drum", panel.drive_summary.text())
+
+        panel.combos["commandFormat"].setCurrentText(hmi.combo_label("commandFormat", "speed"))
         QTest.qWait(50)
         self.assertNotIn("drive.gearRatio", self.window.properties_panel.spins)
 

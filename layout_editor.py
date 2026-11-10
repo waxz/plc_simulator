@@ -4020,13 +4020,13 @@ def _field_specs_for(item: PlacedItem):
         # instead of showing a control that can't do anything.
         specs.append(("float", "rotation", "Rotation", -360.0, 360.0, 1.0))
     if isinstance(item, BeltItem):
-        specs.append(("combo", "commandFormat", "Command", ["speed", "vfd", "frequency"]))
-        if item.model.commandFormat == "frequency":
-            specs += _DRIVE_TRAIN_SPECS
+        specs.append(("combo", "commandFormat", "Drive type", ["speed", "vfd", "frequency"]))
         if item.model.type in ("linear", "curved") and not item.is_custom_shape():
             specs.append(("combo", "surface", "Surface", ["belt", "roller"]))
             if item.model.surface == "roller":
                 specs.append(("float", "rollerPitch", "Roller pitch", 0.03, 1.0, 0.005))
+        if item.model.commandFormat == "frequency":
+            specs += _DRIVE_TRAIN_SPECS              # after the surface: the train runs from it to the motor
         specs.append(("float", "directionAngle", "Direction", -360.0, 360.0, 1.0))
         if item.is_path():
             specs.append(("float", "beltWidth", "Width", 0.05, 100.0, 0.05))
@@ -4182,15 +4182,18 @@ _FIELD_UNITS = hmi.PROPERTY_UNITS
 # A belt's drive train (DriveConfig), shown for a belt commanded in Hz. The
 # rows edit "drive.<field>": the belt gets a DriveConfig on the first edit.
 _DRIVE_TRAIN_SPECS = [
+    ("motor", "drive.motorPreset", "Motor"),
     ("float", "drive.motorRatedSpeed", "Motor speed", 100.0, 10000.0, 10.0),
     ("float", "drive.motorRatedFrequency", "Rated frequency", 1.0, 400.0, 1.0),
-    ("float", "drive.gearRatio", "Gear ratio", 1.0, 1000.0, 0.5),
+    # Mechanics, from the surface back to the motor: drum / roller, chain, gearbox.
+    ("float", "drive.drumDiameter", "Drum Ø", 0.01, 2.0, 0.005),
     ("float", "drive.transmissionRatio", "Chain ratio", 0.1, 100.0, 0.1),
-    ("float", "drive.drumDiameter", "Drum / roller dia.", 0.01, 2.0, 0.005),
+    ("float", "drive.gearRatio", "Gear ratio", 1.0, 1000.0, 0.5),
     ("float", "drive.maxFrequency", "Max frequency", 1.0, 400.0, 1.0),
     ("float", "drive.rampUpTime", "Ramp up", 0.0, 60.0, 0.1),
     ("float", "drive.rampDownTime", "Ramp down", 0.0, 60.0, 0.1),
-    ("int", "drive.encoderCountsPerRev", "Encoder counts/rev", 0, 1000000),
+    ("int", "drive.encoderCountsPerRev", "Encoder/rev", 0, 1000000),
+    ("summary", "drive.summary", "Result"),
 ]
 # Drive fields where 0 in the grid means "not set" (None in the model).
 _DRIVE_ZERO_IS_NONE = {"rampUpTime", "rampDownTime", "encoderCountsPerRev"}
@@ -4338,6 +4341,8 @@ class PropertiesPanel(QWidget):
         self.id_edit = None
         self.color_btn = None
         self.io_rows = {}
+        self.motor_preset = None
+        self.drive_summary = None
 
     def _update_header(self):
         item = self.current
@@ -4349,7 +4354,7 @@ class PropertiesPanel(QWidget):
                             f"<br><b style='font-size:11pt'>{item.model.id}</b>"
                             f"<br><span style='color:{dim}'>{details}</span>")
 
-    def _add_row(self, group: str, label: str, widget: QWidget):
+    def _add_row(self, group: str, label: str, widget: QWidget, span: bool = False):
         groups = self.__dict__.setdefault("_group_items", {})
         parent = groups.get(group)
         if parent is None:
@@ -4362,10 +4367,14 @@ class PropertiesPanel(QWidget):
             self.tree.addTopLevelItem(parent)
             parent.setFirstColumnSpanned(True)
             groups[group] = parent
-        row = QTreeWidgetItem([label])
+        row = QTreeWidgetItem(["" if span else label])
         row.setFlags(Qt.ItemIsEnabled)
         parent.addChild(row)
-        self.tree.setItemWidget(row, 1, widget)
+        if span:
+            row.setFirstColumnSpanned(True)
+            self.tree.setItemWidget(row, 0, widget)
+        else:
+            self.tree.setItemWidget(row, 1, widget)
         return row
 
     def _rebuild_fields(self):
@@ -4384,7 +4393,7 @@ class PropertiesPanel(QWidget):
                 _, _, _, lo, hi, step = spec
                 widget = QDoubleSpinBox()
                 widget.setRange(lo, hi)
-                widget.setDecimals(3)
+                widget.setDecimals(hmi.PROPERTY_DECIMALS.get(attr, 3))
                 widget.setSingleStep(step)
                 widget.setSuffix(_FIELD_UNITS.get(attr, ""))
                 widget.valueChanged.connect(lambda v, a=attr: self._apply_field(a, v))
@@ -4402,9 +4411,21 @@ class PropertiesPanel(QWidget):
             elif field_kind == "combo":
                 _, _, _, options = spec
                 widget = QComboBox()
-                widget.addItems(options)
-                widget.currentTextChanged.connect(lambda text, a=attr: self._apply_combo_field(a, text))
+                widget.addItems([hmi.combo_label(attr, option) for option in options])
+                widget.currentTextChanged.connect(
+                    lambda text, a=attr: self._apply_combo_field(a, hmi.combo_value(a, text)))
                 self.combos[attr] = widget
+            elif field_kind == "motor":
+                widget = QComboBox()
+                widget.addItems([name for name, _rpm, _hz in drivetrain.MOTOR_PRESETS] + [drivetrain.CUSTOM_MOTOR])
+                widget.currentTextChanged.connect(self._apply_motor_preset)
+                self.motor_preset = widget
+            elif field_kind == "summary":
+                widget = QLabel()
+                widget.setWordWrap(True)
+                widget.setContentsMargins(8, 4, 8, 6)
+                widget.setMinimumHeight(widget.fontMetrics().lineSpacing() * 4 + 10)
+                self.drive_summary = widget
             elif field_kind == "bool":
                 widget = QCheckBox()
                 widget.toggled.connect(lambda checked, a=attr: self._apply_bool_field(a, checked))
@@ -4412,7 +4433,10 @@ class PropertiesPanel(QWidget):
             else:
                 continue
             widget.setToolTip(attr)
-            self._add_row(hmi.property_group(attr), label, widget)
+            if field_kind in ("float", "int") and attr[len("drive."):] in _DRIVE_ZERO_IS_NONE:
+                widget.setSpecialValueText("not set")      # 0 = None: the drive's accel / surface encoder
+            # The result has several lines: the whole width, no label.
+            self._add_row(hmi.property_group(attr), label, widget, span=field_kind == "summary")
         if hasattr(item.model, "color"):
             self.color_btn = QPushButton("-")
             self.color_btn.clicked.connect(self._pick_color)
@@ -4454,13 +4478,47 @@ class PropertiesPanel(QWidget):
         for attr, widget in self.texts.items():
             widget.setText(_field_text(attr, getattr(item.model, attr)))
         for attr, widget in self.combos.items():
-            widget.setCurrentText(str(getattr(item.model, attr)))
+            widget.setCurrentText(hmi.combo_label(attr, getattr(item.model, attr)))
         for attr, widget in self.checkboxes.items():
             widget.setChecked(bool(getattr(item.model, attr)))
 
         for widget in (*self.spins.values(), *self.texts.values(), *self.combos.values(), *self.checkboxes.values()):
             widget.blockSignals(False)
         self._update_color_swatch()
+        self._refresh_drive_rows()
+
+    def _refresh_drive_rows(self):
+        """The motor preset matching the nameplate, and the drive train's
+        result in words (with a warning when the design speed is out of
+        reach) - after any edit, since speed and every train value count."""
+        item = self.current
+        preset = getattr(self, "motor_preset", None)
+        summary = getattr(self, "drive_summary", None)
+        if item is None or not isinstance(item.model, Belt):
+            return
+        if preset is not None:
+            preset.blockSignals(True)
+            preset.setCurrentText(drivetrain.motor_preset(_shown_value(item.model, "drive.motorRatedSpeed"),
+                                                          _shown_value(item.model, "drive.motorRatedFrequency")))
+            preset.blockSignals(False)
+        if summary is not None:
+            text, warning = drivetrain.summary(item.model)
+            colour = hmi.hex_(hmi.ALARM) if warning else hmi.hex_(hmi.TEXT_DIM)
+            summary.setText(warning or text)
+            summary.setStyleSheet(f"color: {colour}")
+            summary.setToolTip(text)
+
+    def _apply_motor_preset(self, name: str):
+        """A nameplate from the list: rated speed and frequency, one undo step."""
+        match = next(((rpm, hz) for preset, rpm, hz in drivetrain.MOTOR_PRESETS if preset == name), None)
+        if match is None or self.current is None:
+            return
+        if self.undo_stack is not None:
+            self.undo_stack.beginMacro(f"Motor {name}")
+        self._apply_field("drive.motorRatedSpeed", match[0])
+        self._apply_field("drive.motorRatedFrequency", match[1])
+        if self.undo_stack is not None:
+            self.undo_stack.endMacro()
 
     def _push_property_change(self, item, attr: str, old_value, new_value, do_apply, text=None):
         """Route a property edit through the undo stack (if attached),
@@ -4484,7 +4542,7 @@ class PropertiesPanel(QWidget):
         for widgets, setter in (
             (self.spins, lambda w, v: w.setValue(v if v is not None else self._OPTIONAL_FIELD_DEFAULTS.get(attr, 0))),
             (self.texts, lambda w, v: w.setText(_field_text(attr, v))),
-            (self.combos, lambda w, v: w.setCurrentText(str(v))),
+            (self.combos, lambda w, v: w.setCurrentText(hmi.combo_label(attr, v))),
             (self.checkboxes, lambda w, v: w.setChecked(bool(v))),
         ):
             widget = widgets.get(attr)
@@ -4540,6 +4598,8 @@ class PropertiesPanel(QWidget):
                 if hasattr(view, "invalidate_points_edges_cache"):
                     view.invalidate_points_edges_cache()
         self._resync_widget(item, attr)
+        if item is self.current:
+            self._refresh_drive_rows()
 
     def _apply_text_field(self, attr: str):
         item = self.current

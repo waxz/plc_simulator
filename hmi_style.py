@@ -123,33 +123,71 @@ def apply_saved_theme() -> str:
 
 # -- property panels: one grouping for both windows -------------------------------
 
-PROPERTY_GROUP_ORDER = ("Identity", "Position", "Geometry", "Motion", "Drive", "Signal", "Operation", "Display")
+# The groups follow how a machine is built, layer by layer (as virtual
+# commissioning tools split a digital twin into its physical, electrical and
+# automation layers): where it stands, its mechanics, its drive (motor and
+# inverter), how it moves, its signals, what it does, how it looks - and
+# last, its PLC I/O (the editor's own section).
+PROPERTY_GROUP_ORDER = ("Identity", "Layout", "Mechanics", "Drive", "Motion", "Signal", "Operation", "Display")
 PROPERTY_GROUPS = {
-    "id": "Identity", "label": "Identity", "sensorType": "Identity", "commandFormat": "Identity",
-    "x": "Position", "y": "Position", "rotation": "Position",
-    "length": "Geometry", "beltWidth": "Geometry", "cornerRadius": "Geometry", "width": "Geometry", "height": "Geometry",
-    "radius": "Geometry", "startAngle": "Geometry", "endAngle": "Geometry", "beltShape": "Geometry",
-    "beltVertexs": "Geometry", "laserCount": "Geometry", "beamDistance": "Geometry",
-    "minWidth": "Geometry", "maxWidth": "Geometry", "minHeight": "Geometry", "maxHeight": "Geometry",
+    # What it is.
+    "id": "Identity", "label": "Identity", "sensorType": "Identity",
+    # Where it stands and its footprint.
+    "x": "Layout", "y": "Layout", "rotation": "Layout", "level": "Layout",
+    "length": "Layout", "beltWidth": "Layout", "cornerRadius": "Layout", "width": "Layout", "height": "Layout",
+    "radius": "Layout", "startAngle": "Layout", "endAngle": "Layout", "beltShape": "Layout",
+    "beltVertexs": "Layout", "depth": "Layout",
+    # The mechanical design: carrying surface, transmission, lift, arm.
+    "surface": "Mechanics", "rollerPitch": "Mechanics",
+    "drive.gearRatio": "Mechanics", "drive.transmissionRatio": "Mechanics", "drive.drumDiameter": "Mechanics",
+    "mass": "Mechanics", "capacity": "Mechanics", "levels": "Mechanics", "levelHeight": "Mechanics",
+    "reach": "Mechanics", "pickRadius": "Mechanics", "mountHeight": "Mechanics", "toolLength": "Mechanics",
+    # The drive: how it is commanded, the motor, the inverter, the encoder.
+    "commandFormat": "Drive", "drive.motorPreset": "Drive", "drive.motorRatedSpeed": "Drive",
+    "drive.motorRatedFrequency": "Drive", "drive.maxFrequency": "Drive", "drive.rampUpTime": "Drive",
+    "drive.rampDownTime": "Drive", "drive.encoderCountsPerRev": "Drive", "drive.summary": "Drive",
+    # How it moves.
     "speed": "Motion", "directionAngle": "Motion", "transition_momentum_duration": "Motion",
-    "interval": "Motion",
-    "onDelay": "Signal", "offDelay": "Signal", "invert": "Signal", "packFormat": "Signal",
-    "buttonType": "Operation", "normallyClosed": "Operation", "key": "Operation", "isOn": "Operation",
-    "color": "Display",
-    # Machines (machines.py) and floor levels.
-    "level": "Position", "depth": "Geometry", "reach": "Geometry", "pickRadius": "Geometry",
-    "mass": "Geometry", "capacity": "Geometry", "levels": "Geometry", "levelHeight": "Geometry",
     "liftSpeed": "Motion", "cycleTime": "Motion", "actuationTime": "Motion", "speedOverride": "Motion",
-    "mountHeight": "Geometry", "toolLength": "Geometry",
+    # Its signals: what a sensor sees and how it reports it.
+    "laserCount": "Signal", "beamDistance": "Signal",
+    "onDelay": "Signal", "offDelay": "Signal", "invert": "Signal", "packFormat": "Signal",
+    # What it does: production, operator controls, the machine's program and links.
+    "interval": "Operation", "minWidth": "Operation", "maxWidth": "Operation", "minHeight": "Operation",
+    "maxHeight": "Operation",
+    "buttonType": "Operation", "normallyClosed": "Operation", "key": "Operation", "isOn": "Operation",
     "pickX": "Operation", "pickY": "Operation", "placeX": "Operation", "placeY": "Operation",
     "pickLevel": "Operation", "placeLevel": "Operation", "placeTarget": "Operation", "control": "Operation",
-    "holdTime": "Operation", "releaseTime": "Operation", "beltId": "Operation", "pickSensorId": "Operation", "autoFrom": "Operation",
-    "autoTo": "Operation",
-    # A belt's drive train (DriveConfig, edited as "drive.<field>").
-    "drive.motorRatedSpeed": "Drive", "drive.motorRatedFrequency": "Drive", "drive.gearRatio": "Drive",
-    "drive.transmissionRatio": "Drive", "drive.drumDiameter": "Drive", "drive.maxFrequency": "Drive",
-    "drive.rampUpTime": "Drive", "drive.rampDownTime": "Drive", "drive.encoderCountsPerRev": "Drive",
+    "holdTime": "Operation", "releaseTime": "Operation", "beltId": "Operation", "pickSensorId": "Operation",
+    "autoFrom": "Operation", "autoTo": "Operation",
+    "color": "Display",
 }
+
+# Choices shown with words instead of the stored value: {field: {value: text}}.
+COMBO_LABELS = {
+    "commandFormat": {
+        "speed": "Setpoint m/s",
+        "vfd": "VFD, m/s",
+        "frequency": "Inverter, Hz",
+    },
+}
+
+
+# Decimals a number box shows, where 3 (mm) would be noise.
+PROPERTY_DECIMALS = {"drive.motorRatedSpeed": 0, "drive.motorRatedFrequency": 1, "drive.maxFrequency": 1,
+                     "drive.gearRatio": 2, "drive.transmissionRatio": 2, "drive.rampUpTime": 1,
+                     "drive.rampDownTime": 1}
+
+
+def combo_label(attr: str, value) -> str:
+    return COMBO_LABELS.get(attr, {}).get(value, str(value))
+
+
+def combo_value(attr: str, label: str):
+    for value, text in COMBO_LABELS.get(attr, {}).items():
+        if text == label:
+            return value
+    return label
 
 
 # Row labels the simulator's panel shares with the editor's property grid.
@@ -167,10 +205,12 @@ PROPERTY_LABELS = {
     "placeX": "Place X", "placeY": "Place Y", "pickLevel": "Pick level", "placeLevel": "Place level",
     "placeTarget": "Place on", "control": "Control", "holdTime": "Hold time", "releaseTime": "Release time",
     "beltId": "Platform belt", "pickSensorId": "Pick sensor", "autoFrom": "Auto from", "autoTo": "Auto to",
+    "commandFormat": "Drive type", "drive.motorPreset": "Motor", "drive.summary": "Result",
+    "surface": "Surface", "rollerPitch": "Roller pitch",
     "drive.motorRatedSpeed": "Motor speed", "drive.motorRatedFrequency": "Rated frequency",
-    "drive.gearRatio": "Gear ratio", "drive.transmissionRatio": "Chain ratio", "drive.drumDiameter": "Drum / roller dia.",
+    "drive.gearRatio": "Gear ratio", "drive.transmissionRatio": "Chain ratio", "drive.drumDiameter": "Drum Ø",
     "drive.maxFrequency": "Max frequency", "drive.rampUpTime": "Ramp up", "drive.rampDownTime": "Ramp down",
-    "drive.encoderCountsPerRev": "Encoder counts/rev",
+    "drive.encoderCountsPerRev": "Encoder/rev",
 }
 
 

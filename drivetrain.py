@@ -93,3 +93,48 @@ def train_of(belt) -> Optional[Train]:
         drum_rpm = design / (math.pi * diameter) * 60.0
         gear = rated_speed / transmission / drum_rpm
     return Train(rated_speed, rated_frequency, gear, transmission, diameter, max_frequency)
+
+
+# Common induction-motor nameplates (rated speed at rated frequency, with
+# rated slip): (name, rpm, Hz). The designer offers them for a drive.
+MOTOR_PRESETS = [
+    ("1450 rpm, 50 Hz", 1450.0, 50.0),    # 4-pole
+    ("2900 rpm, 50 Hz", 2900.0, 50.0),    # 2-pole
+    ("960 rpm, 50 Hz", 960.0, 50.0),      # 6-pole
+    ("1750 rpm, 60 Hz", 1750.0, 60.0),    # 4-pole
+    ("3500 rpm, 60 Hz", 3500.0, 60.0),    # 2-pole
+]
+CUSTOM_MOTOR = "Custom"
+
+
+def motor_preset(rated_speed: float, rated_frequency: float) -> str:
+    """The preset with this nameplate, or CUSTOM_MOTOR."""
+    for name, rpm, hz in MOTOR_PRESETS:
+        if abs(rpm - rated_speed) < 1e-6 and abs(hz - rated_frequency) < 1e-6:
+            return name
+    return CUSTOM_MOTOR
+
+
+def summary(belt) -> tuple:
+    """(text, warning) describing the belt's drive train in words, for the
+    designer: the chain from the inverter to the surface at the rated
+    frequency, the reach at the max frequency, and the design speed in Hz.
+    warning is "" or why the design speed is out of reach."""
+    train = train_of(belt)
+    if train is None:
+        return "", ""
+    rated = train.motor_rated_frequency
+    carrier = "rollers" if getattr(belt, "surface", "belt") == "roller" else "drum"
+    text = (f"{rated:g} Hz → motor {train.motor_speed(rated):.0f} rpm → "
+            f"{train.output_speed(rated) / train.transmission_ratio:.1f} rpm at the {carrier} → "
+            f"{train.speed_for_frequency(rated):.3f} m/s\n"
+            f"max {train.max_speed:.3f} m/s at {train.max_frequency:g} Hz")
+    design = abs(float(getattr(belt, "speed", 0.0) or 0.0))
+    warning = ""
+    if design > 0.0:
+        needed = train.frequency_for_speed(design)
+        text += f"; design {design:g} m/s = {needed:.1f} Hz"
+        if needed > train.max_frequency + 1e-9:
+            warning = (f"The design speed {design:g} m/s needs {needed:.1f} Hz, above the inverter's "
+                       f"max {train.max_frequency:g} Hz: the belt only reaches {train.max_speed:.3f} m/s.")
+    return text, warning

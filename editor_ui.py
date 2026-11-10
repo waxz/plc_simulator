@@ -89,6 +89,8 @@ def _kind_name(item) -> str:
 
 def format_value(attr: str, value) -> str:
     """A property value as the editor shows it: rounded, with its unit."""
+    if attr in hmi.COMBO_LABELS:
+        return hmi.combo_label(attr, value)
     if isinstance(value, bool):
         return "yes" if value else "no"
     if isinstance(value, float):
