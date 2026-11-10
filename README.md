@@ -238,13 +238,18 @@ The Qt layout editor is where belt shapes and positions are designed:
     frame: the frames the PLC reads are inputs (`%I0.3`, `%IW126`, `%ID122`),
     the frame it writes is outputs (`%Q1.1`, `%QD222`). A green tag is an
     input, an orange one an output. Sorted by address at first; click a
-    header to sort by that column.
+    header to sort by that column. Clicking a tag (or moving to it with the
+    arrow keys) selects its component on the canvas, zooms to it and flashes
+    a ring around it.
   - Edit **Name**, **Tag table** and **Comment** in place (double-click or
     F2). A name must be unique, not empty, without `"`, at most 128
     characters. Untouched tags have a generated name (the component id,
     plus the signal when the component has more than one), the Default tag
     table and the component's label as comment. Your edits are kept in the
-    layout (`plcTags`, by signal), each one undoable.
+    layout (`plcTags`, by signal), each one undoable. A name that is not an
+    ST identifier (a space, a leading digit, a keyword, a clash ignoring
+    case) is shown in orange; its tooltip gives the name it has in the
+    generated AX ST (`L1 Start PB` -> `L1_Start_PB`).
   - Right-click: **Move to Tag Table** (an existing one or **New Tag
     Table...**), **Reset to Generated Name**, **Go to** the component (also a
     double-click on a column you can't edit).
@@ -256,7 +261,10 @@ The Qt layout editor is where belt shapes and positions are designed:
     elementary, so an array becomes one Bool tag per bit (`<name>_<i>`) and
     the 64-bit clock is left out.
   - The tags come from the exchange contract the generated ST uses, so they
-    are what is on the wire.
+    are what is on the wire. `st_export.py --tags tags.json` writes them for
+    the AX generator (`tools/generate_st_serde.py --sim-config`), which makes
+    a `Sim_Tags` STRUCT with a variable per tag, named as the tag, and
+    `ReadTags` / `WriteTags` to copy between it and the frames.
 - **Control Panel** (library, Operator Panel): an operator panel whose push
   buttons, pilot lamps and buzzers are its properties - the **Devices**
   table (type, name, legend, colour, NC contact, key; + Button / + Lamp /

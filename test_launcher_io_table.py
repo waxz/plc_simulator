@@ -162,6 +162,33 @@ class PlcTagsTest(unittest.TestCase):
         self.assertIn("name", io_table.check_name("  ", tags, start.key))
         self.assertEqual(io_table.check_name("L1_Start_PB", tags, start.key), "")
 
+    def test_st_names_for_the_generated_ax_code(self):
+        import plc_tags
+        self.assertEqual(plc_tags.st_name("L1 Start PB"), "L1_Start_PB")
+        self.assertEqual(plc_tags.st_name("1st lamp"), "_1st_lamp")
+        self.assertEqual(plc_tags.st_name("Type"), "Type_")                     # a keyword, any case
+        self.assertEqual(plc_tags.st_name("ok_name"), "ok_name")
+        config = load_config("test_config.json")
+        config.plcTags = [PlcTag(key="button_1_1_1/sensor_states", name="L1 Start PB"),
+                          PlcTag(key="led_1_1_2/isOn", name="l1_start_pb")]       # the same in ST, ignoring case
+        data = {t["key"]: t for t in plc_tags.tags_json(config)}
+        self.assertEqual(data["button_1_1_1/sensor_states"]["stName"], "L1_Start_PB")
+        self.assertEqual(data["led_1_1_2/isOn"]["stName"], "l1_start_pb_2")
+        belt = data["belt_1_1_1/speed"]
+        self.assertEqual((belt["member"], belt["frame"], belt["input"], belt["address"]),
+                         ("belt_1_1_1.speed", "Sim_Output", False, "%QD2"))
+        self.assertEqual(data["sensor_1_2_1/sensor_states"]["member"], "sensor_1_2_1")
+
+    def test_st_export_writes_the_tags_for_the_ax_generator(self):
+        import st_export
+        out = os.path.join(_SETTINGS_DIR, "st")
+        tags_file = os.path.join(out, "tags.json")
+        st_export.main(["test_config.json", "--out", out, "--tags", tags_file])
+        with open(tags_file, encoding="utf-8") as f:
+            tags = json.load(f)
+        self.assertEqual(len(tags), 13 + 39)
+        self.assertEqual(tags[0]["stName"], "button_1_1_1")
+
     def test_tia_portal_export(self):
         tags, _ = io_table.tags_of(load_config("test_config.json"))
         rows, skipped = io_table.tia_rows(tags)

@@ -24,10 +24,8 @@ PLC tags are elementary, so an array becomes one Bool tag per bit
 (<name>_<i>); a 64-bit signal (the clock) is left out.
 """
 import csv
-import re
 import zipfile
-from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional
 from xml.sax.saxutils import escape
 
 from PySide6.QtCore import Qt, QTimer
@@ -36,181 +34,11 @@ from PySide6.QtWidgets import (QAbstractItemView, QFileDialog, QHBoxLayout, QHea
                                QLineEdit, QMenu, QPushButton, QSplitter, QTableWidget, QTableWidgetItem,
                                QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 
-import control_panel
-import st_export
 from config_parser import PlcTag
-
-COLUMNS = ("Name", "Tag table", "Data type", "Address", "Comment", "Component", "Signal", "ST member")
-NAME, TABLE, DATA_TYPE, ADDRESS, COMMENT, COMPONENT, SIGNAL, MEMBER = range(len(COLUMNS))
-EDITABLE = (NAME, TABLE, COMMENT)
-DEFAULT_TABLE = "Default tag table"
-ALL_TAGS = "Show all tags"
-# The frames the PLC exchanges I/O in, and their area seen from the PLC.
-FRAMES = {"Sim_Input": "I", "Sim_Output": "Q", "Belt_Feedback": "I"}
-INDEX = re.compile(r"\[(\d+)\]$")
-# Contract type -> (TIA data type, size in bytes, address width letter).
-TYPES = {"bit": ("Bool", 0, ""), "byte": ("Byte", 1, "B"), "uint16": ("UInt", 2, "W"), "uint32": ("UDInt", 4, "D"),
-         "uint64": ("ULInt", 8, ""), "float": ("Real", 4, "D")}
-MAX_NAME = 128
-
-
-@dataclass
-class Tag:
-    key: str                # "<component>/<signal>": what an edit is kept by
-    component: str
-    signal: str
-    area: str               # "I" (the PLC reads it) or "Q" (the PLC writes it)
-    data_type: str          # TIA: Bool, Byte, UInt, UDInt, ULInt / LInt, Real, Array[0..n] of Bool
-    byte: int               # in the PLC's area (frames of one area one after the other)
-    bit: Optional[int]
-    count: int = 1          # bits of an array
-    member: str = ""        # the ST member, Sim_Input.<...>
-    frame: str = ""
-    name: str = ""
-    table: str = DEFAULT_TABLE
-    comment: str = ""
-
-    @property
-    def is_input(self) -> bool:
-        return self.area == "I"
-
-    @property
-    def size(self) -> int:
-        for tia, size, _w in TYPES.values():
-            if tia == self.data_type:
-                return size
-        return 8 if self.data_type == "LInt" else 0
-
-    @property
-    def address(self) -> str:
-        a = self.area
-        if self.data_type == "Bool":
-            return f"%{a}{self.byte}.{self.bit}"
-        if self.count > 1:                          # an array of bits
-            last = self.byte * 8 + self.bit + self.count - 1
-            return f"%{a}{self.byte}.{self.bit}..%{a}{last // 8}.{last % 8}"
-        width = {1: "B", 2: "W", 4: "D"}.get(self.size)
-        if width is None:                           # 64 bits: no I/O address width in TIA
-            return f"%{a}B{self.byte}..%{a}B{self.byte + self.size - 1}"
-        return f"%{a}{width}{self.byte}"
-
-    def cells(self) -> List[str]:
-        return [self.name, self.table, self.data_type, self.address, self.comment, self.component, self.signal,
-                self.member]
-
-
-def _labels(config) -> Dict[str, str]:
-    labels = {}
-    for attr in ("belts", "sensors", "sources", "sinks", "buttons", "leds", "pallets", "stoppers", "robots",
-                 "elevators", "scanners", "diverters", "turntables", "accumulators", "transfers", "doors",
-                 "safety", "controlPanels"):
-        for model in getattr(config, attr, []):
-            label = getattr(model, "label", "")
-            if label:
-                labels.setdefault(model.id, str(label))
-    return labels
-
-
-def tags_of(config) -> Tuple[List[Tag], str]:
-    """(tags, summary) for a layout: every PLC signal as a tag, with your
-    names / tables / comments (config.plcTags) or the generated ones, and a
-    one-line summary of the frames (sizes, fingerprints)."""
-    control_panel.refresh(config)
-    contract = st_export.contract(config)
-    tags: List[Tag] = []
-    parts = []
-    base = {"I": 0, "Q": 0}
-    for frame in contract["frames"]:
-        area = FRAMES.get(frame["name"])
-        if area is None:
-            continue                                    # metric layouts: not I/O
-        offset = base[area]
-        base[area] += frame["size"]
-        parts.append(f"{frame['name']} {frame['size']} B ({frame['fingerprint']:08X}) at %{area}{offset}")
-        arrays: Dict[tuple, Tag] = {}
-        for field in frame["fields"]:
-            component, _sep, signal = field["path"].partition("/")
-            tia, _size, _w = TYPES.get(field["type"], (field["type"], 0, ""))
-            if component == "clock":
-                tia = "LInt"
-            member = field["member"]
-            signal_base = INDEX.sub("", signal)
-            byte, bit = offset + field["byte"], field["bit"]
-            # An array in the PLC (its ST member is indexed, e.g. a laser
-            # banner's beams): one tag for the whole run of bits. A single
-            # bit (a button's sensor_states[0]) is a plain Bool.
-            indexed = INDEX.search(member) if field["type"] == "bit" else None
-            if indexed:
-                key = (component, signal_base)
-                tag = arrays.get(key)
-                if tag is not None:
-                    tag.count += 1
-                    continue
-                tag = arrays[key] = Tag(f"{component}/{signal_base}", component, signal_base, area, "Bool", byte,
-                                        bit, member=f"{frame['name']}.{INDEX.sub('', member)}", frame=frame["name"])
-                tags.append(tag)
-                continue
-            if field["type"] == "bit":
-                signal = signal_base
-            tags.append(Tag(f"{component}/{signal}", component, signal, area, tia, byte, bit,
-                            member=f"{frame['name']}.{member}", frame=frame["name"]))
-        for tag in arrays.values():
-            tag.data_type = f"Array[0..{tag.count - 1}] of Bool"
-            tag.signal = f"{tag.signal}[0..{tag.count - 1}]"
-    _name(tags, config)
-    return tags, "  ·  ".join(parts)
-
-
-def _name(tags: List[Tag], config) -> None:
-    """Your names / tables / comments, else the generated ones (unique)."""
-    per_component: Dict[str, int] = {}
-    for tag in tags:
-        per_component[tag.component] = per_component.get(tag.component, 0) + 1
-    labels = _labels(config)
-    edits = {t.key: t for t in getattr(config, "plcTags", [])}
-    taken = {e.name for e in edits.values() if e.name}
-    for tag in tags:
-        edit = edits.get(tag.key)
-        tag.table = (edit.table if edit is not None and edit.table else DEFAULT_TABLE)
-        default = "Simulated time (ns)" if tag.component == "clock" else labels.get(tag.component, "")
-        tag.comment = edit.comment if edit is not None and edit.comment else default
-        if edit is not None and edit.name:
-            tag.name = edit.name
-            continue
-        signal = INDEX.sub("", tag.signal.split("[")[0])
-        name = tag.component if per_component[tag.component] == 1 else f"{tag.component}_{signal}"
-        unique, n = name, 2
-        while unique in taken:
-            unique, n = f"{name}_{n}", n + 1
-        tag.name = unique
-        taken.add(unique)
-
-
-def rows_of(config) -> Tuple[List[list], str]:
-    """(rows, summary): the tags as rows of strings in COLUMNS order."""
-    tags, summary = tags_of(config)
-    return [t.cells() for t in tags], summary
-
-
-def check_name(name: str, tags: List[Tag], key: str) -> str:
-    """"" when `name` can be the tag's name (TIA's rules: not empty, no
-    quote, at most 128 characters, unique), else why not."""
-    if not name.strip():
-        return "A tag needs a name."
-    if '"' in name:
-        return "A tag name can't contain a double quote."
-    if len(name) > MAX_NAME:
-        return f"A tag name has at most {MAX_NAME} characters."
-    if any(t.name == name and t.key != key for t in tags):
-        return f"There is already a tag named '{name}'."
-    return ""
-
-
-def set_tag(config, key: str, edit: Optional[PlcTag]) -> None:
-    """Your entry for one tag in the layout: `edit`, or none (generated)."""
-    rest = [t for t in config.plcTags if t.key != key]
-    config.plcTags = rest + ([edit] if edit is not None and (edit.name or edit.table or edit.comment) else [])
-
+from plc_tags import (  # noqa: F401 - the tag data lives in plc_tags.py (no Qt); re-exported for callers
+    ADDRESS, ALL_TAGS, COLUMNS, COMMENT, COMPONENT, DATA_TYPE, DEFAULT_TABLE, EDITABLE, MEMBER, NAME, SIGNAL,
+    TABLE, Tag, check_name, rows_of, set_tag, st_names, tags_of, tia_rows,
+)
 
 class TagEditCommand(QUndoCommand):
     """One tag's name / table / comment changed: undoable like any edit."""
@@ -229,27 +57,6 @@ class TagEditCommand(QUndoCommand):
     def undo(self):
         set_tag(self.config, self.key, self.before)
         self.on_change()
-
-
-def tia_rows(tags: List[Tag]) -> Tuple[List[list], int]:
-    """(rows, skipped): the "PLC Tags" sheet of TIA Portal's tag export,
-    header first - arrays as one Bool per bit, 64-bit signals skipped."""
-    rows = [["Name", "Path", "Data Type", "Logical Address", "Comment", "Hmi Visible", "Hmi Accessible",
-             "Hmi Writeable", "Typeobject ID", "Version ID"]]
-    skipped = 0
-    for tag in tags:
-        writeable = "False" if tag.is_input else "True"
-        if tag.count > 1:
-            for i in range(tag.count):
-                bit = tag.byte * 8 + tag.bit + i
-                rows.append([f"{tag.name}_{i}", tag.table, "Bool", f"%{tag.area}{bit // 8}.{bit % 8}",
-                             f"{tag.comment} [{i}]".strip(), "True", "True", writeable, "", ""])
-        elif tag.size == 8:
-            skipped += 1
-        else:
-            rows.append([tag.name, tag.table, tag.data_type, tag.address, tag.comment, "True", "True", writeable,
-                         "", ""])
-    return rows, skipped
 
 
 def _column(n: int) -> str:
@@ -422,6 +229,7 @@ class IoTablePanel(QWidget):
         self.summary.setText(f"{len(self.tags)} tags ({inputs} inputs %I, {len(self.tags) - inputs} outputs %Q)  "
                              f"·  {summary}")
         self._fill_tables()
+        st = st_names(self.tags)          # the names in the generated AX ST
         self._filling = True
         self.table.setSortingEnabled(False)
         self.table.setRowCount(len(self.tags))
@@ -431,7 +239,12 @@ class IoTablePanel(QWidget):
                 cell.setData(Qt.UserRole, tag.key)
                 if c == NAME:
                     cell.setIcon(_tag_icon(tag.area))
-                    cell.setToolTip(f"{'Input' if tag.is_input else 'Output'} {tag.address} - {tag.member}")
+                    tip = f"{'Input' if tag.is_input else 'Output'} {tag.address} - {tag.member}"
+                    if st[tag.key] != tag.name:     # not an ST identifier as it is: say what it becomes
+                        cell.setForeground(QColor(232, 140, 40))
+                        tip += (f"\nIn the generated ST: {st[tag.key]} (an ST name has only letters, digits "
+                                f"and _, starts with a letter or _, and is unique ignoring case)")
+                    cell.setToolTip(tip)
                 if c == ADDRESS:
                     cell.setData(Qt.UserRole + 1, [0 if tag.is_input else 1, tag.byte, tag.bit or 0])
                 if c not in EDITABLE:

@@ -444,6 +444,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--out", required=True, help="directory for the .st files (e.g. <AX>/src/generated)")
     parser.add_argument("--tests-out", help="directory for SimIoVectorsTest.st (default: --out)")
     parser.add_argument("--contract", help="also write the contract as JSON here")
+    parser.add_argument("--tags", help="also write the PLC tags as JSON here (plc_tags.tags_json: names, ST "
+                                       "names, frame members) - the AX generator's tag STRUCT is named by them")
     parser.add_argument("--namespace", default="Simulator.Io")
     parser.add_argument("--check", action="store_true", help="write nothing; exit 1 if any file is out of date")
     args = parser.parse_args(argv)
@@ -457,6 +459,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
              os.path.join(args.out, name): text for name, text in generate(config, source, args.namespace).items()}
     if args.contract:
         files[args.contract] = json.dumps(contract(config, source), indent=2) + "\n"
+    if args.tags:
+        import plc_tags
+        files[args.tags] = json.dumps(plc_tags.tags_json(config), indent=2) + "\n"
 
     stale = []
     for path, text in files.items():
