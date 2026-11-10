@@ -113,6 +113,87 @@ class DiverterTest(unittest.TestCase):
         self.assertEqual(e.delivered.get("side"), 1)
 
 
+class WheelDiverterTest(unittest.TestCase):
+    """Pop-up wheel diverters: the angle command is relative to the layout's
+    divert angle, the wheels swivel to it, and the parcels go the way the
+    wheels point - under the PLC program (plc_logic, what plc_mock.py runs)
+    each destination to its own branch belt."""
+
+    def layout(self, angle=45.0):
+        c = SimulatorConfig(
+            useSurfaceVelocity=True,
+            belts=[belt("main", 8.0, 0.0, 16.0), belt("left", 6.0, 2.0, 3.0, rotation=90.0, speed=0.8),
+                   belt("right", 11.0, -2.0, 3.0, rotation=-90.0, speed=0.8)],
+            sources=[source(interval=1.6, maxWidth=0.4, maxHeight=0.4, destinations=[1, 2, 3])],
+            scanners=[Scanner(id="scan", x=2.5, y=0.0)],
+            diverters=[Diverter(id="d1", x=6.0, y=0.0, width=1.5, diverterType="wheels", divertAngle=angle,
+                                speed=1.2, destination=1, control="plc"),
+                       Diverter(id="d2", x=11.0, y=0.0, width=1.5, diverterType="wheels", divertAngle=-angle,
+                                speed=1.2, destination=2, control="plc")],
+            sinks=[Sink(id="left_end", x=6.0, y=4.1, width=1.4, height=1.0, label="L"),
+                   Sink(id="right_end", x=11.0, y=-4.1, width=1.4, height=1.0, label="R"),
+                   Sink(id="line_end", x=16.5, y=0.0, width=1.0, height=1.4, label="E")])
+        return c
+
+    def routes(self, engine, config):
+        """(destination, sink) of every parcel a sink takes."""
+        routes, take = [], engine.handle_sinks
+
+        def tracked():
+            before = [(p, p.destination, tuple(p.body.position)) for p in engine.parcels]
+            take()
+            alive = {id(p) for p in engine.parcels}
+            for p, destination, (x, y) in before:
+                if id(p) not in alive:
+                    routes.append((destination, next((s.id for s in config.sinks if abs(x - s.x) <= s.width / 2
+                                                      and abs(y - s.y) <= s.height / 2), "lost")))
+        engine.handle_sinks = tracked
+        return routes
+
+    def test_the_plc_mock_sends_each_destination_to_its_branch(self):
+        random.seed(5)
+        c = self.layout()
+        e = PhysicsEngine(c)
+        routes = self.routes(e, c)
+        plc = plc_for(c)
+        steered = 0.0
+        while e.sim_time < 60.0:
+            plc.step(now=e.sim_time)
+            e.run_for(0.02)
+            steered = max(steered, c.diverters[0].wheelAngle)
+        self.assertEqual(c.diverters[0].commandAngle, 0.0)                # the mock: as designed
+        self.assertAlmostEqual(steered, 45.0)                               # the wheels turned to it
+        expected = {1: "left_end", 2: "right_end", 3: "line_end"}
+        self.assertGreater(len(routes), 25)
+        self.assertEqual([r for r in routes if expected[r[0]] != r[1]], [])
+        self.assertEqual({d for d, _s in routes}, {1, 2, 3})
+
+    def test_the_wheels_swivel_to_divert_angle_plus_command_and_back(self):
+        import logistics
+        c = self.layout(angle=30.0)
+        e = PhysicsEngine(c)
+        d = c.diverters[0]
+        d.control = "manual"
+        d.divert, d.commandAngle = True, 20.0
+        self.assertEqual(logistics.divert_angle(d), 50.0)
+        e.run_for(0.05)
+        self.assertGreater(d.wheelAngle, 0.0)
+        self.assertLess(d.wheelAngle, 50.0)                                 # swivelling, not there yet
+        e.run_for(0.3)
+        self.assertAlmostEqual(d.wheelAngle, 50.0)
+        d.commandAngle = 60.0                                               # 90: more than wheels steer
+        e.run_for(0.3)
+        self.assertAlmostEqual(d.wheelAngle, 60.0)
+        self.assertEqual(logistics.diverter_motion(d)[1], 60.0)            # the parcels go where they point
+        d.divert = False
+        e.run_for(0.3)
+        self.assertAlmostEqual(d.wheelAngle, 0.0)                           # down and straight again
+        p = e.add_parcel(5.0, 0.0, 0.3, 0.3)
+        d.divert, d.commandAngle = True, -60.0                              # 30 - 60: to the right
+        e.run_for(0.8)
+        self.assertLess(p.body.position.y, -0.1)
+
+
 class ChuteTest(unittest.TestCase):
     def test_full_chute_backs_up_until_emptied(self):
         c = line(sinks=[Sink(id="chute", x=10.3, y=0.0, width=0.6, height=1.0, label="c", capacity=2)])

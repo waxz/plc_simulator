@@ -228,7 +228,9 @@ def station_from_models(name: str, components: Iterable[Tuple[str, BaseModel]],
     name = name.strip()
     if not name:
         raise ValueError("A library station needs a name.")
-    components = [(kind, model) for kind, model in components if not is_panel_child(kind, model)]
+    # In a fixed order (a canvas selection has none): the same station, the same fresh ids when placed.
+    components = sorted(((kind, model) for kind, model in components if not is_panel_child(kind, model)),
+                        key=lambda c: (c[0], c[1].id))
     if len(components) < 2:
         raise ValueError("A station needs two or more components.")
     for kind, _ in components:

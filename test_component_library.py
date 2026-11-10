@@ -276,6 +276,18 @@ class LibraryPanelTest(unittest.TestCase):
         reloaded, _ = load_library(self.library_file)
         self.assertTrue(reloaded[0].is_station)
 
+    def test_a_diverter_dropped_on_a_belt_takes_its_travel_direction(self):
+        self.window.view.place_template("Linear Belt", 30.0, 0.0, rotation=90.0, directionAngle=180.0)
+        on_belt = self.window.view.place_template("Wheel Diverter", 30.0, 1.0)       # runs 90 + 180: -y
+        self.assertAlmostEqual(on_belt.model.rotation, -90.0)
+        scanner = self.window.view.place_template("Barcode Scanner", 30.0, -1.0)
+        self.assertAlmostEqual(scanner.model.rotation, -90.0)
+        polygon = self.window.view.place_template("Wheel Diverter", 12.0, -3.0)      # belt_7: an outline
+        self.assertEqual(polygon.model.rotation, 0.0)
+        off = self.window.view.place_template("Wheel Diverter", 40.0, 40.0)
+        self.assertEqual(off.model.rotation, 0.0)
+        self.window.undo_stack.setClean()
+
     def test_paste_points_links_to_the_copies(self):
         window = self._turn_cell_window()
         window.scene.clearSelection()

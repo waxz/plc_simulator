@@ -3765,8 +3765,26 @@ class CanvasView(QGraphicsView):
         for key, value in overrides.items():
             setattr(model, key, value)
         move_model(model, x - model.x, y - model.y)
+        if template.kind in ("diverter", "scanner") and "rotation" not in overrides:
+            heading = self._travel_heading_at(x, y)
+            if heading is not None:         # on a belt: its zone along the travel, the divert angle to it
+                model.rotation = heading
         item_cls = ITEM_CLASS_FOR_KIND[template.kind]
         return self._add_item(item_cls(model), text=f"Add {template.kind}")
+
+    def _travel_heading_at(self, x: float, y: float) -> Optional[float]:
+        """The travel direction (deg) of the straight belt under (x, y), or
+        None: rotation + directionAngle, as the physics moves parcels."""
+        for item in self.items_list:
+            m = item.model
+            if item.kind != "belt" or getattr(m, "type", "linear") != "linear" or getattr(m, "vertexs", None):
+                continue
+            a = math.radians(m.rotation)
+            u = (x - m.x) * math.cos(a) + (y - m.y) * math.sin(a)
+            v = -(x - m.x) * math.sin(a) + (y - m.y) * math.cos(a)
+            if abs(u) <= m.length / 2 and abs(v) <= m.beltWidth / 2:
+                return round((m.rotation + m.directionAngle + 180.0) % 360.0 - 180.0, 6)
+        return None
 
     def _fresh_id(self) -> Callable[[str, str], str]:
         """new_id(kind, old id): an id not yet used by that kind - also not

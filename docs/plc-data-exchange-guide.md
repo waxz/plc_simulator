@@ -236,7 +236,7 @@ there. The current kinds, in frame order:
 | 6-axis robot, FANUC UOP style (`robots`) | `Robot_Command`, `Robot_Feedback` | `start`, `enable`, `hold`, `faultReset`, `gripperClose` BOOL; `program`, `speedOverride` BYTE; `targetX`, `targetY`, `targetZ`, `targetYaw` REAL | `busy`, `holding`, `partAtPick`, `placeReady`, `ready`, `atHome`, `inPosition`, `fault` BOOL; `cycles` UINT; `faultCode` BYTE; `j1`..`j6`, `tcpX`, `tcpY`, `tcpZ` REAL |
 | Elevator (`elevators`) | `Elevator_Command`, `Elevator_Feedback` | `targetLevel` BYTE | `moving`, `atLevel`, `occupied` BOOL; `level` BYTE |
 | Barcode / RFID / DWS scanner (`scanners`) | `Scanner_Feedback` | - | `noRead`, `present` BOOL; `code` UDINT; `destination` BYTE; `readCount` UINT; `weight`, `measuredLength`, `measuredWidth`, `measuredHeight` REAL |
-| Pusher / wheel diverter (`diverters`) | `Diverter_Command`, `Diverter_Feedback` | `divert` BOOL; `commandSpeed`, `commandAngle` REAL | `active`, `present` BOOL; `presentCode` UDINT; `diverted` UINT |
+| Pusher / wheel diverter (`diverters`) | `Diverter_Command`, `Diverter_Feedback` | `divert` BOOL; `commandSpeed` REAL (m/s), `commandAngle` REAL (deg added to `divertAngle`, 0 = as designed) | `active`, `present` BOOL; `presentCode` UDINT; `diverted` UINT |
 | Turntable (`turntables`) | `Turntable_Command`, `Turntable_Feedback` | `targetIndex` BYTE | `turning`, `inPosition`, `occupied` BOOL; `index` BYTE |
 | 90-degree transfer (`transfers`) | `Transfer_Command`, `Transfer_Feedback` | `transfer` BOOL | `present`, `centered`, `up` BOOL; `transferred` UINT |
 | Accumulation conveyor (`accumulators`) | `Accumulator_Command`, `Accumulator_Feedback` | `release` BOOL | `full` BOOL; `zones` UINT (bit i = zone i occupied) |
@@ -345,7 +345,7 @@ infeed, div_1 = find_component_by_id("infeed", config), find_component_by_id("di
 while True:                                            # the scan
     with lock:
         infeed.speed = 1.0                             # compose
-        div_1.commandSpeed, div_1.commandAngle = div_1.speed, div_1.divertAngle
+        div_1.commandSpeed, div_1.commandAngle = div_1.speed, 0.0   # 0: its divertAngle, as designed
         div_1.divert = div_1.presentCode != 0          # divert everything, for the demo
         payload = tx.serialize(config)
     link.send(payload, frame_type=FrameType.IO_MAPPING, node_id=0)
@@ -373,7 +373,7 @@ Each kind has one function in `plc_logic.py`:
 @device_program("diverters")
 def _diverter(control, d, scan: Scan) -> None:
     """Fire when the code in its zone is tracked to its destination."""
-    d.commandSpeed, d.commandAngle = d.speed, d.divertAngle
+    d.commandSpeed, d.commandAngle = d.speed, 0.0     # commandAngle: a correction to divertAngle
     fire = scan.running and d.presentCode != 0 and control.track.get(d.presentCode) == d.destination
     d.divert = fire
 ```
@@ -505,7 +505,7 @@ USING Ax.Communication;
     simOut.robot_1.start := simIn.s_pick AND simIn.robot_1.ready AND simIn.robot_1.placeReady;
     simOut.div_1.divert := fireDiverter1;
     simOut.div_1.commandSpeed := REAL#1.2;           // m/s
-    simOut.div_1.commandAngle := REAL#-90.0;         // deg to the travel: -90 right, +90 left
+    simOut.div_1.commandAngle := REAL#0.0;           // deg added to its divertAngle: 0 = as designed
 
     outLen := SerializeToBytes(startOffset := UDINT#0, value := simOut, dest := outBuffer);
     magicCodec.SendFrameType := contract.FRAME_TYPE_IO_MAPPING;
@@ -580,7 +580,7 @@ CLASS DiverterControl
             cmd : Diverter_Command;
         END_VAR
         cmd.commandSpeed := REAL#1.2;
-        cmd.commandAngle := REAL#-90.0;
+        cmd.commandAngle := REAL#0.0;          // a correction to the layout's divertAngle
         cmd.divert := running AND fb.present AND fb.presentCode <> UDINT#0
                       AND destinationOfCode = Destination;
     END_METHOD

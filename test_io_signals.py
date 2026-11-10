@@ -179,10 +179,10 @@ class ManualModeTest(unittest.TestCase):
 
     def test_a_diverter_runs_at_its_commanded_speed_and_direction(self):
         d = Diverter(id="d", x=5.0, y=0.0, divertAngle=-90.0, speed=1.0, control="manual")
-        d.commandSpeed, d.commandAngle = 0.4, 90.0
-        self.assertEqual(logistics.diverter_motion(d), (0.4, 90.0))
+        d.commandSpeed, d.commandAngle = 0.4, 15.0
+        self.assertEqual(logistics.diverter_motion(d), (0.4, -75.0))       # relative to its divertAngle
         d.commandSpeed = d.commandAngle = 0.0
-        self.assertEqual(logistics.diverter_motion(d), (0.0, 0.0))         # what it is told, 0 too
+        self.assertEqual(logistics.diverter_motion(d), (0.0, -90.0))       # 0: as designed
         commands = [s.name for s in io_signals.signals(d) if s.direction == "command"]
         self.assertEqual(commands, ["divert", "commandSpeed", "commandAngle"])
 
@@ -192,16 +192,16 @@ class ManualModeTest(unittest.TestCase):
                                                      control="manual")])
         engine = PhysicsEngine(config)
         d = config.diverters[0]
-        self.assertEqual((d.commandSpeed, d.commandAngle), (1.2, 30.0))   # shown as they act
+        self.assertEqual((d.commandSpeed, d.commandAngle), (1.2, 0.0))    # the layout's speed, no correction
         self.assertNotIn("commandSpeed", d.model_dump())                  # runtime, not layout
         parcel = engine.add_parcel(4.0, 0.0, 0.3, 0.3)
         d.divert, d.commandSpeed = True, 0.0
         engine.run_for(1.5)
         self.assertAlmostEqual(parcel.body.position.y, 0.0, places=2)      # speed 0: held, not pushed
         held = parcel.body.position.x
-        d.commandSpeed, d.commandAngle = 1.0, -45.0
+        d.commandSpeed, d.commandAngle = 1.0, -75.0
         engine.run_for(0.3)
-        self.assertLess(parcel.body.position.y, -0.05)                    # -45: to the right,
+        self.assertLess(parcel.body.position.y, -0.05)                    # 30 - 75 = -45: to the right,
         self.assertGreater(parcel.body.position.x, held + 0.05)           # and on
 
     def test_manual_machines_follow_their_commands(self):
@@ -311,7 +311,7 @@ class SimulatorInspectorTest(unittest.TestCase):
         self.assertEqual(d.commandAngle, 45.0)
         self.engine.run_for(0.1)
         self.assertTrue(d.active)
-        self.assertEqual(logistics.diverter_motion(d)[1], 45.0)
+        self.assertEqual(logistics.diverter_motion(d)[1], d.divertAngle + 45.0)   # relative: -90 + 45
         self.press(self.source_button("plc"))                             # back: readouts again
         self.assertEqual(d.control, "plc")
         self.assertIsInstance(self.ui.io_rows["divert"][1], pygame_gui.elements.UILabel)

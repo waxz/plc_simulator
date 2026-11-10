@@ -650,8 +650,9 @@ scrolls with the mouse wheel when they don't fit.
 - In `manual` the commands become controls: an ON / OFF toggle for a BOOL,
   a text box for a number (type it, then Enter). PLC frames leave that
   component alone, so you can drive one machine by hand while the PLC runs
-  the rest. For example, run a wheel diverter (`divert`) at the speed and
-  direction you type (`commandSpeed`, `commandAngle`), run a belt, or
+  the rest. For example, run a wheel diverter (`divert`) at the speed you
+  type (`commandSpeed`) and an angle correction to its divert angle
+  (`commandAngle`, 0 = as designed), run a belt, or
   release a stopper. A sensor in `manual` is forced: its output is what you
   set, parcels or not.
 - Shortcuts (Space, R, C, ...) pause while a text box has the keyboard.
@@ -956,7 +957,7 @@ the source's mass range.
 | Equipment | Set up | Does | PLC signals (in / out) |
 |---|---|---|---|
 | Scanner | zone over the belt, `scannerType` "barcode" / "rfid" / "dws" | Reads each parcel once as it enters. A barcode scanner gives a no-read on an unreadable label, RFID always reads, and a DWS (dimension-weight-scan) also measures the parcel | - / `code` UDINT, `destination` BYTE (as a warehouse system would answer), `readCount` UINT (+1 per parcel), `noRead`, `present`; DWS: `weight`, `measuredLength`, `measuredWidth`, `measuredHeight` REALs |
-| Diverter | zone on the belt, `diverterType` "pusher" / "wheels", `divertAngle` (+-90 pusher, ~30 wheels), `speed`, `destination` | Steers the parcels in its zone onto the branch while active. The PLC program: active while a readable parcel for its destination is there. Following commands: active while `divert` is on, at `commandSpeed` m/s and `commandAngle` degrees exactly as commanded (both start at the layout's `speed` / `divertAngle`; `plc_mock.py` sends those) | `divert` BOOL, `commandSpeed` REAL, `commandAngle` REAL / `active`, `present`, `presentCode` UDINT, `diverted` UINT |
+| Diverter | zone on the belt, `diverterType` "pusher" / "wheels", `divertAngle` (+-90 pusher, ~30 wheels), `speed`, `destination` | Steers the parcels in its zone onto the branch while active. The PLC program: active while a readable parcel for its destination is there. Following commands: active while `divert` is on, at `commandSpeed` m/s, steering at `divertAngle` + `commandAngle` degrees - the command corrects the layout's angle, 0 = as designed (`commandSpeed` starts at the layout's `speed`, `commandAngle` at 0; `plc_mock.py` sends those). Pop-up wheels steer at most 60 degrees each way: they swivel to the angle while active (400 deg/s) and back to straight when not, and move the parcels the way they point | `divert` BOOL, `commandSpeed` REAL, `commandAngle` REAL / `active`, `present`, `presentCode` UDINT, `diverted` UINT |
 | 90° transfer | zone (`width` along the travel, `height` across), `crossAngle` (+90 left / -90 right), `speed`, `liftTime`, `stop` | The chain transfer of a pallet line, at a corner or junction of roller conveyors. A pallet stops centred on it (`stop`). Chain strands then lift it off the rollers and carry it sideways onto the crossing conveyor, without turning it, and drop. The PLC program: transfers whatever arrives (a corner) | `transfer` / `present`, `centered` (stopped on it, ready), `up`, `transferred` UINT |
 | Turntable | `radius`, `beltId` (its platform belt), `angles`, `turnSpeed` | Turns its belt, and what is on it, between positions. The PLC program: loads at `autoFrom`, turns to `autoTo`, unloads, turns back | `targetIndex` BYTE / `index` BYTE, `turning`, `inPosition`, `occupied` |
 | Accumulation conveyor | `beltIds` (its zones, in flow order), `mode` "singulation" / "train" | Zero-pressure accumulation, with a photo-eye at each zone's end. A full zone holds its belt while the next zone is occupied ("train": unless the next one is moving). The last zone discharges while released | `release` / `zones` UINT (bit mask), `full` |

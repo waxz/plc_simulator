@@ -26,6 +26,7 @@ import zlib
 from typing import Dict, List, Optional, Tuple
 
 import drivetrain
+import equipment_geometry as geo
 from config_parser import Accumulator, Diverter, SimulatorConfig, Transfer, Turntable
 from math_utils import get_rect_vertices, point_in_polygon
 
@@ -82,10 +83,24 @@ def _in_rect(x: float, y: float, cx: float, cy: float, along: float, across: flo
     return abs(u) <= along / 2.0 and abs(v) <= across / 2.0
 
 
+WHEEL_SWIVEL = 400.0     # deg/s a pop-up wheel module's wheels turn at (60 deg in 0.15 s)
+
+
+def divert_angle(d: Diverter) -> float:
+    """The angle (deg to the travel) the diverter is told to steer at: its
+    divertAngle plus the commanded correction (commandAngle, 0 = as
+    designed); pop-up wheels steer at most 60 degrees each way."""
+    angle = d.divertAngle + d.commandAngle
+    return geo.wheel_steer(angle) if d.diverterType == "wheels" else angle
+
+
 def diverter_motion(d: Diverter):
-    """(speed m/s, angle deg to the travel) a diverter steers parcels at:
-    its commands (the PLC's, or set by hand)."""
-    return d.commandSpeed, d.commandAngle
+    """(speed m/s, angle deg to the travel) the parcels in an active
+    diverter's zone go at: a pusher's divert_angle; pop-up wheels move them
+    the way the wheels point now (wheelAngle, swivelling to divert_angle)."""
+    if d.diverterType == "wheels":
+        return d.commandSpeed, d.wheelAngle
+    return d.commandSpeed, divert_angle(d)
 
 
 class LogisticsRuntime:
@@ -121,7 +136,8 @@ class LogisticsRuntime:
             s.weight = s.measuredLength = s.measuredWidth = s.measuredHeight = 0.0
         for d in c.diverters:
             d.active = d.present = False
-            d.commandSpeed, d.commandAngle = d.speed, d.divertAngle   # until commanded otherwise
+            d.commandSpeed, d.commandAngle = d.speed, 0.0              # as designed, until commanded otherwise
+            d.wheelAngle = 0.0
             d.presentCode = d.diverted = 0
         belts = {b.id: b for b in c.belts}
         for state in self._tables.values():                  # put the platform belts back
@@ -202,7 +218,7 @@ class LogisticsRuntime:
             self._step_table(table, h)
         self._diverting = []
         for d in c.diverters:
-            self._step_diverter(d)
+            self._step_diverter(d, h)
         self._moves = []
         for t in c.transfers:
             self._step_transfer(t, h)
@@ -278,12 +294,16 @@ class LogisticsRuntime:
 
     # -- diverters ----------------------------------------------------------------------------
 
-    def _step_diverter(self, d: Diverter) -> None:
+    def _step_diverter(self, d: Diverter, h: float) -> None:
         inside = self._parcels_in(d.x, d.y, d.width, d.height, d.rotation, d.level)
         d.present = bool(inside)
         first = inside[0] if inside else None
         d.presentCode = getattr(first, "barcode", 0) if first is not None and getattr(first, "readable", True) else 0
         d.active = bool(d.divert)
+        if d.diverterType == "wheels":          # the wheels swivel to the divert angle, back to straight
+            target = divert_angle(d) if d.active else 0.0
+            turn = WHEEL_SWIVEL * h
+            d.wheelAngle += max(-turn, min(turn, target - d.wheelAngle))
         if d.active:
             speed, angle = diverter_motion(d)
             a = math.radians(d.rotation + angle)

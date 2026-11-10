@@ -135,9 +135,9 @@ steer a wheel diverter, or force a sensor, and watch the PLC's reaction in
 the feedback rows.
 
 Note: diverters now take `commandSpeed` (m/s) and `commandAngle` (deg)
-REALs after `divert`, applied exactly as sent: the PLC sends the speed and
-direction to divert at (`plc_mock.py` sends the layout's `speed` /
-`divertAngle`). Layouts with diverters get a longer input frame, so
+REALs after `divert`: the speed to divert at, and a correction added to the
+layout's `divertAngle` (0 = as designed; `plc_mock.py` sends the layout's
+`speed` and 0). Layouts with diverters get a longer input frame, so
 regenerate the AX side (`apax gen_io`). A robot's pick trigger is an IR
 sensor at its pick point (`pickSensorId`), an ordinary sensor in the input
 frame: the PLC starts the robot when it is blocked.

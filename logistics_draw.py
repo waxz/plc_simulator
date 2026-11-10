@@ -11,7 +11,7 @@ import pygame
 
 import equipment_geometry as geo
 import hmi_style as hmi
-from logistics import diverter_motion
+from logistics import divert_angle
 from math_utils import get_rect_vertices, point_in_polygon
 
 
@@ -151,7 +151,7 @@ def _draw_scanner(r, s) -> None:
 def _draw_diverter(r, d) -> None:
     color = _color(r, d.color)
     pts = r._rect_screen(d.x, d.y, d.width, d.height, d.rotation)
-    angle = diverter_motion(d)[1]           # the commanded direction, when it follows commands
+    angle = divert_angle(d)                 # where it is told to send them: divertAngle + commandAngle
     if d.active:
         overlay = pygame.Surface(r.screen.get_size(), pygame.SRCALPHA)
         pygame.draw.polygon(overlay, (*color, 70), pts)
@@ -160,8 +160,8 @@ def _draw_diverter(r, d) -> None:
     else:
         _polygon_dashed(r.screen, color, pts)
     # The machine itself (equipment_geometry.py): the pusher beside the belt,
-    # its plate across while active; or the wheel module's wheels, turned
-    # to the divert angle while active.
+    # its plate across while active; or the wheel module's wheels, where
+    # they point now (swivelling to the divert angle while active).
     rot = math.radians(d.rotation)
     ca, sa = math.cos(rot), math.sin(rot)
 
@@ -183,7 +183,7 @@ def _draw_diverter(r, d) -> None:
         pygame.draw.polygon(r.screen, color, plate)
         pygame.draw.polygon(r.screen, hmi.shade(color, 0.5), plate, 1)
     elif px_per_m >= 25:                                   # wheels too small to see further out
-        steer = math.radians(geo.wheel_steer(angle) if d.active else 0.0)
+        steer = math.radians(d.wheelAngle)
         dx, dy = geo.WHEEL_R * math.cos(steer), geo.WHEEL_R * math.sin(steer)
         wheel = color if d.active else (43, 48, 56)
         width = max(1, int(geo.WHEEL_T * px_per_m))

@@ -548,12 +548,14 @@ export function buildDiverter(d) {
   return unit;
 }
 
-// Live: [active, the angle it steers at] (wheels follow a commanded direction).
-export function setDiverter(unit, [active, angle]) {
+// Live: [active, the angle it is told to steer at (divertAngle + commandAngle),
+// where its wheels point now] - the wheels swivel in the simulation.
+export function setDiverter(unit, [active, angle, wheel]) {
   unit.target = active ? 1 : 0;
   if (unit.wheels && angle != null) {
-    unit.steer = deg(Math.max(-60, Math.min(60, angle)));
-    unit.paint.rotation.z = deg(angle);                 // the arrow shows where it sends them now
+    unit.paint.rotation.z = deg(angle);                 // the arrow shows where it sends them
+    unit.live = wheel != null;
+    unit.steer = deg(unit.live ? wheel : Math.max(-60, Math.min(60, angle)));
   }
 }
 
@@ -567,7 +569,7 @@ export function stepDiverter(unit, dt) {
   }
   // Wheels: tops just showing through the deck, lifted 12 mm and steered when active.
   const z = 0.009 - DIV.wheelR + 0.012 * unit.stroke;
-  _wq.setFromAxisAngle(_zAxis, unit.steer * unit.stroke);
+  _wq.setFromAxisAngle(_zAxis, unit.live ? unit.steer : unit.steer * unit.stroke);
   unit.centres.forEach(([x, y], i) => {
     _p.set(x, y, z);
     unit.wheels.setMatrixAt(i, _m.compose(_p, _wq, _s));

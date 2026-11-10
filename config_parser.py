@@ -592,10 +592,16 @@ class Diverter(BaseModel):
     travel) are steered at `divertAngle` degrees to the travel - +90 / -90
     for a pusher (left / right), about +-30 for pop-up wheels - at `speed`.
 
-    Active while `divert` is on, at `commandSpeed` m/s and `commandAngle` degrees
-    (logistics.diverter_motion). Both start at the layout's `speed` /
-    `divertAngle` (the simulation's start / reset), and plc_mock.py's
-    program sends those (it fires for a code tracked to `destination`).
+    Active while `divert` is on, at `commandSpeed` m/s, steering at
+    `divertAngle` + `commandAngle` degrees: the command is relative to the
+    layout's divert angle, so 0 sends parcels the designed way and the PLC
+    trims it (logistics.divert_angle). Pop-up wheels steer at most 60
+    degrees each way; they swivel to the angle while active and back to
+    straight when not (`wheelAngle`, where they point now), and the parcels
+    in the zone go the way the wheels point (logistics.diverter_motion).
+    `commandSpeed` starts at the layout's `speed`, `commandAngle` at 0 (the
+    simulation's start / reset), and plc_mock.py's program sends those (it
+    fires for a code tracked to `destination`).
     Feedback: `active`, `present` (a parcel in the zone), `presentCode`
     (UDINT, its barcode; 0 for a no-read) and `diverted` (UINT count)."""
     id: str
@@ -614,7 +620,8 @@ class Diverter(BaseModel):
     control: ControlMode = "plc"
     divert: bool = False                                     # command: run
     commandSpeed: float = Field(default=0.0, exclude=True)   # command: m/s
-    commandAngle: float = Field(default=0.0, exclude=True)   # command: deg to the travel
+    commandAngle: float = Field(default=0.0, exclude=True)   # command: deg added to divertAngle
+    wheelAngle: float = Field(default=0.0, exclude=True)     # runtime: where pop-up wheels point (deg)
     active: bool = Field(default=False, exclude=True)        # feedback
     present: bool = Field(default=False, exclude=True)
     presentCode: int = Field(default=0, exclude=True)

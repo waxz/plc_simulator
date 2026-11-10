@@ -228,8 +228,9 @@ def _scanner(control, scanner, scan: Scan) -> None:
 @device_program("diverters")
 def _diverter(control, d, scan: Scan) -> None:
     """Fire when the code in its zone is tracked to its destination, at the
-    layout's speed and direction."""
-    d.commandSpeed, d.commandAngle = d.speed, d.divertAngle
+    layout's speed and direction (commandAngle 0: no correction to its
+    divertAngle)."""
+    d.commandSpeed, d.commandAngle = d.speed, 0.0
     fire = scan.running and d.presentCode != 0 and control.track.get(d.presentCode) == d.destination
     if fire and not d.divert:
         scan.events.append(f"diverter {d.id}: {d.presentCode} -> destination {d.destination}")

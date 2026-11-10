@@ -134,12 +134,14 @@ class LogisticsSceneTest(unittest.TestCase):
         self.assertEqual(state["doors"]["door_1"], [True, False])
         self.assertTrue(any(row[10] > 1000000 for row in state["bodies"]))   # barcodes on the parcels
         self.assertEqual(len(state["belts"]["tt_belt"]), 3)              # speed, z, table angle
-        # A diverter: active, and the angle it steers at - a commanded one when it follows commands.
+        # A diverter: active, the angle it is told to steer at (divertAngle +
+        # commandAngle) and where its wheels point now.
         wheels = next(d for d in config.diverters if d.diverterType == "wheels")
         self.assertEqual(state["diverters"][wheels.id][1], wheels.divertAngle)
         wheels.control, wheels.commandAngle = "manual", -30.0
+        wheels.wheelAngle = 12.5
         state = scene3d.dynamic_state(config, engine.parcel_views(), engine.sim_time)
-        self.assertEqual(state["diverters"][wheels.id][1], -30.0)
+        self.assertEqual(state["diverters"][wheels.id][1:], [wheels.divertAngle - 30.0, 12.5])
 
 
 class ServerTest(unittest.TestCase):
