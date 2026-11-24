@@ -117,6 +117,9 @@ def value_of(component, signal: Signal) -> Any:
     """A signal's value as the PLC sees it: a bool, a number, or a banner's
     beams as a "0101..." string (beam 0 first)."""
     raw = getattr(component, signal.name, None)
+    if signal.indexed and signal.byte_type == ByteType.FLOAT:     # a REAL array: "1.000, 2.000, ..."
+        values = (list(raw or []) + [0.0] * signal.count)[:signal.count]
+        return ", ".join(f"{float(v):.3f}" for v in values)
     if signal.indexed:
         if signal.count == 1:
             return _read_bit(raw, 0)
@@ -150,6 +153,13 @@ def apply(config, component_id: str, name: str, value: Any) -> Optional[str]:
         component = find_component_by_id(component_id, config)
     except ValueError:
         return f"no component {component_id!r}"
+    if name == "fillMode":
+        if not (isinstance(component, cp.Sink) and component.capacity):
+            return f"{component_id} is not a chute"
+        if value not in FILL_MODES:
+            return f"fillMode is one of {', '.join(FILL_MODES)}"
+        component.fillMode = value
+        return None
     if name == "control":
         options = control_options(component)
         if value not in options:
@@ -163,7 +173,15 @@ def apply(config, component_id: str, name: str, value: Any) -> Optional[str]:
         return f"{component_id} is not in manual (control {getattr(component, 'control', None)!r})"
     current = getattr(component, name, None)
     try:
-        if signal.indexed:
+        if signal.indexed and signal.byte_type == ByteType.FLOAT:     # a REAL array: "1.0, 2.0, ..." or a list
+            items = value if isinstance(value, (list, tuple)) else str(value).replace(";", ",").split(",")
+            numbers = [float(v) for v in items if str(v).strip() != ""]
+            if not numbers:
+                raise ValueError(value)
+            if len(numbers) == 1:                                    # one value: every entry
+                numbers *= signal.count
+            new = (numbers + list(current or [])[len(numbers):] + [0.0] * signal.count)[:signal.count]
+        elif signal.indexed:
             bits = [bool(value)] if signal.count == 1 else [ch == "1" for ch in str(value).ljust(signal.count, "0")]
             for i, bit in enumerate(bits[:signal.count]):
                 current = _write_bit(current, i, bit)
@@ -179,6 +197,9 @@ def apply(config, component_id: str, name: str, value: Any) -> Optional[str]:
         return f"{value!r} is not a {signal.plc_type}"
     setattr(component, name, new)
     return None
+
+
+FILL_MODES = ("count", "keep", "delete")      # a chute's (config_parser.Sink.fillMode)
 
 
 def at_rest(config) -> None:

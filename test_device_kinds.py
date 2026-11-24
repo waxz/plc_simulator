@@ -87,6 +87,8 @@ class FullSystemTest(unittest.TestCase):
     def test_has_every_kind(self):
         c = self.config
         for name in DEVICE_KINDS:
+            if name in ("plcValues", "watchdogs", "trackedLoads"):      # shown only, optional: a layout has them when its PLC shows values
+                continue
             self.assertTrue(getattr(c, name), name)
         self.assertEqual({s.scannerType for s in c.scanners}, {"barcode", "rfid", "dws"})
         self.assertEqual({d.diverterType for d in c.diverters}, {"pusher", "wheels"})
@@ -150,7 +152,8 @@ class FullSystemTest(unittest.TestCase):
         sent = self._loopback(pub["input"]["custom_ids"], "out")
         self.assertGreater(len(sent), 100)
         devices = {parse_path(p)[0] for p in sent}
-        self.assertLessEqual({m.id for m in exchanged_devices(self.config)}, devices)
+        self.assertLessEqual({m.id for m in exchanged_devices(self.config)
+                              if kind_of(m).feedback != device_kinds.NONE}, devices)   # a PLC value has none
 
     def test_every_field_crosses_the_output_frame(self):
         """PLC -> simulator: every belt, lamp and device command."""
@@ -178,6 +181,8 @@ class FullSystemTest(unittest.TestCase):
     def test_the_plc_structs_cover_every_kind(self):
         structs = st_export.device_structs(self.config)
         for kind in DEVICE_KINDS.values():
+            if kind.list_name in ("plcValues", "watchdogs", "trackedLoads"):                  # optional (not in this layout): shown only
+                continue
             self.assertIn(f"{kind.st_name}_Feedback", structs)
             if kind.commands != device_kinds.NONE:
                 self.assertIn(f"{kind.st_name}_Command", structs)

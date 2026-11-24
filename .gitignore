@@ -1,2 +1,5 @@
 __pycache__
 .venv*.bak
+
+# stall_watch.py: stacks of the simulator's freezes
+sim_stall.log

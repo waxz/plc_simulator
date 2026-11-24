@@ -288,6 +288,20 @@ class LibraryPanelTest(unittest.TestCase):
         self.assertEqual(off.model.rotation, 0.0)
         self.window.undo_stack.setClean()
 
+    def test_the_wheel_sorter_from_the_palette_steers_row_by_row(self):
+        from device_kinds import wheel_rows
+        item = self.window.view.place_template("Wheel Sorter (row control)", 40.0, 40.0)
+        m = item.model
+        self.assertEqual((m.diverterType, m.rowControl, m.width, m.height), ("wheels", True, 1.0, 0.5))
+        self.assertEqual(wheel_rows(m), 6)                 # a swivel motor per wheel row along the travel
+        from layout_editor import _field_specs_for
+        names = [s[1] for s in _field_specs_for(item)]
+        for name in ("rowControl", "wheelRows", "wheelColumns", "wheelPitchAlong", "wheelPitchAcross"):
+            self.assertIn(name, names)                     # the wheels chosen in the properties
+        m.wheelRows, m.wheelPitchAlong = 8, 0.12
+        self.assertEqual(wheel_rows(m), 8)
+        self.window.undo_stack.setClean()
+
     def test_paste_points_links_to_the_copies(self):
         window = self._turn_cell_window()
         window.scene.clearSelection()

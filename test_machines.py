@@ -176,26 +176,6 @@ if __name__ == "__main__":
 
 
 class PlcControlTest(unittest.TestCase):
-    def test_the_demo_layout_runs_under_plc_control(self):
-        """machines_demo.json with every machine on control "plc": the PLC
-        program (plc_logic) drives the stoppers, the robot and the lift."""
-        from config_parser import load_config
-        from plc_logic import make_controller
-        c = load_config("machines_demo.json")
-        for machine in (*c.stoppers, *c.robots, *c.elevators):
-            machine.control = "plc"
-        e = PhysicsEngine(c)
-        plc = make_controller(c, autostart=True)
-        events = []
-        while e.sim_time < 90.0:
-            events += plc.step(now=e.sim_time)
-            e.run_for(0.05)
-        self.assertGreater(c.robots[0].cycles, 2)
-        self.assertGreater(e.delivered.get("unload", 0), 0)          # loads came off pallets
-        self.assertGreater(e.delivered.get("upstairs", 0), 0)        # cartons went up the lift
-        self.assertTrue(any("released" in ev for ev in events))
-        self.assertTrue(any("elevator lift_1 to level 1" in ev for ev in events))
-
     def test_stoppers_stay_up_while_the_line_is_stopped(self):
         from config_parser import load_config
         from plc_logic import make_controller

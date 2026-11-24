@@ -39,7 +39,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Tuple
 from pydantic import BaseModel, ValidationError
 
 from config_parser import (Accumulator, Belt, BeltConnection, ControlButton, ControlPanel, Diverter, Elevator,
-                           GuardDoor, LedIndicator, Pallet, RobotArm, SafetyCircuit, Scanner, Sensor, Sink, Source,
+                           GuardDoor, LedIndicator, LinkWatchdog, Pallet, PlcValue, RobotArm, TrackedLoadView, SafetyCircuit, Scanner, Sensor, Sink, Source,
                            Stopper, Transfer, Turntable)
 
 FORMAT = "conveyor-component-library"
@@ -64,6 +64,9 @@ MODEL_FOR_KIND: Dict[str, type] = {
     "door": GuardDoor,
     "safety": SafetyCircuit,
     "panel": ControlPanel,
+    "plcvalue": PlcValue,
+    "watchdog": LinkWatchdog,
+    "trackedload": TrackedLoadView,
 }
 KIND_FOR_MODEL = {cls: kind for kind, cls in MODEL_FOR_KIND.items()}
 STATION = "station"

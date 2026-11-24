@@ -12,8 +12,7 @@
     "tcpServerHost": "localhost",
     "tcpPort": 5001,
     "endianness": "LE",
-    "topics": [],
-    "beltFeedback": false
+    "topics": []
   },
   "simulatorBackend": "matter",
   "simulationSteps": 4,

@@ -32,6 +32,8 @@ class CompletePlantTest(unittest.TestCase):
     def test_has_every_kind_and_the_newer_layers(self):
         c = self.config
         for name in DEVICE_KINDS:
+            if name in ("plcValues", "watchdogs", "trackedLoads"):      # shown only, optional: a layout has them when its PLC shows values
+                continue
             self.assertTrue(getattr(c, name), name)
         self.assertEqual({s.scannerType for s in c.scanners}, {"barcode", "rfid", "dws"})
         self.assertEqual({d.diverterType for d in c.diverters}, {"pusher", "wheels"})

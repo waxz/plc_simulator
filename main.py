@@ -22,6 +22,7 @@ def run_pygame(config, physics_engine, mqtt, headless: bool, runner=None, config
     renderer.fps = render_fps
     if sim_lock is not None and runner is not None:
         renderer.sim_lock = sim_lock   # draw the scene while the runner thread isn't mid-step
+    renderer.runner = runner           # its timing for the debug panel (F3); None with a simulation process
     renderer.exchange = mqtt  # the status bar shows the PLC link
     renderer.physics = physics_engine  # Clear Parcels / Reset
     renderer.config_path = config_path
@@ -38,6 +39,12 @@ def run_pygame(config, physics_engine, mqtt, headless: bool, runner=None, config
     # --headless, where there's no on-screen overlay to look at.
     last_timing_report = time.perf_counter()
     reload_path = None
+    # The window stuck for 2 s: every thread's stack to sim_stall.log (stall_watch.py).
+    window_watch = None
+    if not headless:
+        import stall_watch
+        window_watch = stall_watch.StallWatch("window", lambda: renderer.frames)
+        window_watch.start()
 
     try:
         while running:
@@ -97,6 +104,8 @@ def run_pygame(config, physics_engine, mqtt, headless: bool, runner=None, config
     except KeyboardInterrupt:
         print("Simulation stopped by user.")
     finally:
+        if window_watch is not None:
+            window_watch.stop()
         renderer.quit()
     return reload_path
 
@@ -255,6 +264,11 @@ def run_layout(args, speed, link=None):
     view3d.server(args.view3d_port)
     if args.view3d and not view3d.SERVER.running:
         view3d.open_view(config, args.config, browser=args.view3d == "open", port=args.view3d_port)
+    if not view3d.SERVER.running:
+        # The 3D page and the query API (sim_query.py) on 127.0.0.1, whenever the simulator runs.
+        view3d.SERVER.set_layout(config, args.config, getattr(args, "source", None))
+        view3d.SERVER.start()
+        print(f"[API] Query API at {view3d.SERVER.url}api  (python sim_query.py state)")
     if args.exchange_config:
         apply_exchange_config(config, args.exchange_config)
         print(f"Loaded exchange settings from {args.exchange_config}.")

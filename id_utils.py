@@ -47,3 +47,31 @@ def unique_incremented_id(existing_ids: Iterable[str], base_id: str) -> str:
         idx += 1
         candidate = f"{prefix}{idx}"
     return candidate
+
+
+# Placeholder labels a library template starts with: no information of their own.
+_PLACEHOLDER_LABELS = {"SENSOR", "SRC", "SNK", "BTN", "LED"}
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"[\s_\-]+", "_", (text or "").strip()).lower()
+
+
+def label_repeats_id(component_id: str, label: str) -> bool:
+    """True when a label adds nothing to the id: empty, a template's
+    placeholder, or the id again written another way ("belt_5_induct" and
+    "BELT_5 INDUCT" - case, spaces, "-" and "_" ignored)."""
+    text = (label or "").strip()
+    return not text or text.upper() in _PLACEHOLDER_LABELS or _norm(text) == _norm(component_id)
+
+
+def own_label(model) -> str:
+    """The component's label when it says something the id does not, else "":
+    where both are shown (lists, tag comments) only one of them appears."""
+    label = getattr(model, "label", "") or ""
+    return "" if label_repeats_id(model.id, label) else label.strip()
+
+
+def display_name(model) -> str:
+    """One name to show for a component: its own label, else its id."""
+    return own_label(model) or model.id

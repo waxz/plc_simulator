@@ -54,11 +54,17 @@ class AxExportDialog(QDialog):
         self.bit_arrays = QCheckBox("Laser banner beams as ARRAY OF BOOL (else ARRAY OF BYTE, 8 beams a byte)")
         self.bit_arrays.setChecked(settings.bitArrays)
         form.addRow("", self.bit_arrays)
+        self.tag_arrays = QLineEdit(", ".join(settings.tagArrays))
+        self.tag_arrays.setPlaceholderText("none - e.g. belts, trackedLoads")
+        self.tag_arrays.setToolTip("Device kinds (the layout's lists) whose PLC tags are arrays: one per wire "
+                                   "STRUCT, indexed by the device's place in its kind (<prefix>_TagIndex), so "
+                                   "a program loops over them")
+        form.addRow("Tag arrays", self.tag_arrays)
         self.max_payload = QSpinBox(minimum=0, maximum=65535, value=settings.maxPayload)
         self.max_payload.setSpecialValueText("no limit")
         self.max_payload.setSuffix(" bytes")
         self.max_payload.setToolTip("Refuse a frame bigger than the PLC's TCP buffer carries "
-                                    "(242: the AX TcpClient's 256-byte buffer)")
+                                    "(4096: the AX TcpClient's 4110-byte frames)")
         form.addRow("Max frame", self.max_payload)
         self.vectors = QLineEdit(settings.vectors)
         self.vectors.setPlaceholderText("none - an AxUnit golden-vector test file")
@@ -113,4 +119,5 @@ class AxExportDialog(QDialog):
         return AxExport(output=self.output.text().strip(), namespace=self.namespace.text().strip(),
                         prefix=self.prefix.text().strip(), frames=[] if every else checked,
                         tags=self.tags.isChecked(), bitArrays=self.bit_arrays.isChecked(),
-                        maxPayload=self.max_payload.value(), vectors=self.vectors.text().strip())
+                        maxPayload=self.max_payload.value(), vectors=self.vectors.text().strip(),
+                        tagArrays=[k.strip() for k in self.tag_arrays.text().split(",") if k.strip()])

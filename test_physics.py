@@ -186,17 +186,18 @@ class DynamicVelocityModifierTest(unittest.TestCase):
         self.assertAlmostEqual(body.angular_velocity, 1.5, places=6)
 
 
-def make_two_belt_config(transition_duration_b: float = 0.3) -> SimulatorConfig:
+def make_two_belt_config(transition_duration_b: float = 0.3, handoff: str = "blend",
+                         speed_b: float = 3.0, friction_b: float = 0.5) -> SimulatorConfig:
     belt_a = Belt(
         id="belt_a", type="linear", x=0.0, y=0.0, length=2.0, beltWidth=1.0,
         rotation=0.0, speed=1.0, directionAngle=0.0, color="#3b82f6",
     )
     belt_b = Belt(
         id="belt_b", type="linear", x=3.0, y=0.0, length=2.0, beltWidth=1.0,
-        rotation=0.0, speed=3.0, directionAngle=0.0, color="#22c55e",
-        transition_momentum_duration=transition_duration_b,
+        rotation=0.0, speed=speed_b, directionAngle=0.0, color="#22c55e",
+        transition_momentum_duration=transition_duration_b, friction=friction_b,
     )
-    return SimulatorConfig(belts=[belt_a, belt_b], useSurfaceVelocity=True)
+    return SimulatorConfig(belts=[belt_a, belt_b], useSurfaceVelocity=True, handoff=handoff)
 
 
 def spawn_parcel(engine: PhysicsEngine, x: float, y: float) -> Parcel:
@@ -215,9 +216,162 @@ def spawn_parcel(engine: PhysicsEngine, x: float, y: float) -> Parcel:
     return parcel
 
 
+class FrictionHandoffTest(unittest.TestCase):
+    """handoff "friction" (the default): a parcel's velocity follows the belt
+    it is on by at most its friction x g - Coulomb friction: it slides
+    until the speeds match. A speed step dv slips dv^2 / (2 mu g) behind the
+    belt and takes dv / (mu g); a joint between equal belts costs nothing."""
+
+    def handed_over(self, speed_b, friction_b=0.5):
+        config = make_two_belt_config(handoff="friction", speed_b=speed_b, friction_b=friction_b)
+        engine = PhysicsEngine(config)
+        parcel = spawn_parcel(engine, 0.0, 0.0)
+        engine.apply_conveyor_kinematics()
+        parcel.body.velocity = (1.0, 0.0)                   # at belt_a's speed
+        parcel.body.position = (3.0, 0.0)                   # onto belt_b
+        engine.apply_conveyor_kinematics()
+        return parcel
+
+    def run_until_matched(self, parcel, speed_b, dt=0.004):
+        """(seconds until the parcel moves at belt_b's speed, its slip behind the belt)."""
+        t = slip = 0.0
+        while parcel.body.velocity.x < speed_b - 1e-9 and t < 5.0:
+            dynamic_velocity_modifier(parcel.body, (0, 0), 1.0, dt)
+            slip += (speed_b - parcel.body.velocity.x) * dt
+            t += dt
+        return t, slip
+
+    def test_the_coefficient(self):
+        self.assertEqual(Belt(id="b", type="linear", x=0, y=0, length=1, beltWidth=1, rotation=0, speed=1,
+                              directionAngle=0, color="#000").friction, 0.5)
+
+    def test_a_speed_step_slips_as_friction_says(self):
+        parcel = self.handed_over(speed_b=1.1547)
+        self.assertIsNone(parcel.body.__dict__.get("transition_momentum_v"), "no blend window")
+        t, slip = self.run_until_matched(parcel, 1.1547)
+        mu_g = 0.5 * 9.81
+        self.assertAlmostEqual(t, 0.1547 / mu_g, delta=0.005)                 # 32 ms
+        self.assertAlmostEqual(slip, 0.1547 ** 2 / (2 * mu_g), delta=0.0005)  # 2.4 mm (the 0.6 s blend: ~46 mm)
+
+    def test_a_joint_between_equal_belts_costs_nothing(self):
+        parcel = self.handed_over(speed_b=1.0)
+        dynamic_velocity_modifier(parcel.body, (0, 0), 1.0, 0.004)
+        self.assertAlmostEqual(parcel.body.velocity.x, 1.0, places=9)
+
+    def test_more_friction_less_slip_and_none_without_limit(self):
+        _t, slip_low = self.run_until_matched(self.handed_over(3.0, friction_b=0.3), 3.0)
+        _t, slip_high = self.run_until_matched(self.handed_over(3.0, friction_b=0.9), 3.0)
+        self.assertGreater(slip_low, slip_high)
+        parcel = self.handed_over(3.0, friction_b=0.0)                       # 0: takes the belt's at once
+        dynamic_velocity_modifier(parcel.body, (0, 0), 1.0, 0.004)
+        self.assertAlmostEqual(parcel.body.velocity.x, 3.0, places=9)
+
+
+class ScaledHandoffTest(unittest.TestCase):
+    """handoff "scaled" (the default): the blend's ease, split - the momentum
+    across the new belt over its whole transition_momentum_duration (a merge
+    slides in as with "blend"), the speed along it over that x |dv along| /
+    |v_belt| (a speed step costs little slip)."""
+
+    def handed_over(self, v_before, speed_b):
+        config = make_two_belt_config(transition_duration_b=0.6, handoff="scaled", speed_b=speed_b)
+        engine = PhysicsEngine(config)
+        parcel = spawn_parcel(engine, 0.0, 0.0)
+        engine.apply_conveyor_kinematics()
+        parcel.body.velocity = v_before
+        parcel.body.position = (3.0, 0.0)
+        engine.apply_conveyor_kinematics()
+        return parcel
+
+    def test_it_is_the_default(self):
+        self.assertEqual(SimulatorConfig().handoff, "scaled")
+
+    def test_a_speed_step_is_short(self):
+        parcel = self.handed_over((1.0, 0.0), 1.1547)
+        bd = parcel.body.__dict__
+        self.assertAlmostEqual(bd["transition_momentum_duration"], 0.6 * 0.1547 / 1.1547, places=3)
+        t = slip = 0.0
+        while t < 0.6:
+            dynamic_velocity_modifier(parcel.body, (0, 0), 1.0, 0.004)
+            slip += (1.1547 - parcel.body.velocity.x) * 0.004
+            t += 0.004
+        self.assertAlmostEqual(parcel.body.velocity.x, 1.1547, places=6)
+        expected = 0.1547 * (0.6 * 0.1547 / 1.1547) / 2.0       # dv x T / 2 (a smooth ease): 6.2 mm
+        self.assertAlmostEqual(slip, expected, delta=0.001, msg="the 0.6 s blend: ~46 mm")
+
+    def test_momentum_across_eases_over_the_whole_duration(self):
+        parcel = self.handed_over((1.0, -0.577), 1.0)                # a side merge onto a belt along +x
+        bd = parcel.body.__dict__
+        self.assertAlmostEqual(bd["transition_momentum_duration"], 0.6)
+        self.assertAlmostEqual(bd["transition_speed_duration"], 0.0, places=6)   # no speed change along it
+        for _ in range(int(0.3 / 0.004)):
+            dynamic_velocity_modifier(parcel.body, (0, 0), 1.0, 0.004)
+        self.assertAlmostEqual(parcel.body.velocity.x, 1.0, places=6)            # along: at once
+        self.assertLess(parcel.body.velocity.y, -0.2, "half way: still sliding across")
+        for _ in range(int(0.31 / 0.004)):
+            dynamic_velocity_modifier(parcel.body, (0, 0), 1.0, 0.004)
+        self.assertAlmostEqual(parcel.body.velocity.y, 0.0, places=6)
+
+    def test_an_equal_belt_costs_nothing(self):
+        parcel = self.handed_over((1.0, 0.0), 1.0)
+        self.assertLess(parcel.body.__dict__["transition_momentum_duration"], 0.011)
+
+
+class StraddleAndGuideTest(unittest.TestCase):
+    """handoff "friction": a parcel on two straight belts is driven by both,
+    by the share of it on each; side guides push back a parcel reaching past
+    an open side edge, not one reaching over an adjoining belt."""
+
+    def engine(self, belts):
+        engine = PhysicsEngine(SimulatorConfig(belts=belts, useSurfaceVelocity=True))
+        engine._linear_v = {}
+        return engine
+
+    def test_half_on_each_belt_is_driven_by_both(self):
+        a = Belt(id="a", type="linear", x=0.0, y=0.0, length=2.0, beltWidth=1.0, rotation=0.0, speed=1.0,
+                 directionAngle=0.0, color="#000")
+        b = Belt(id="b", type="linear", x=0.0, y=1.0, length=2.0, beltWidth=1.0, rotation=0.0, speed=1.0,
+                 directionAngle=90.0, color="#000")                    # beside it, moving across (+y)
+        engine = self.engine([a, b])
+        parcel = spawn_parcel(engine, 0.0, 0.5)                       # on the seam: half on each
+        v = engine._straddle_velocity(parcel, parcel.body.position, engine._linear_v)
+        self.assertIsNotNone(v)
+        self.assertAlmostEqual(v[0], 0.5, delta=0.11)                   # half of a's +x
+        self.assertAlmostEqual(v[1], 0.5, delta=0.11)                   # half of b's +y
+        parcel.body.position = (0.0, 0.0)                              # wholly on a: a alone
+        self.assertIsNone(engine._straddle_velocity(parcel, parcel.body.position, engine._linear_v))
+
+    def test_a_guide_pushes_back_from_an_open_edge_only(self):
+        a = Belt(id="a", type="linear", x=0.0, y=0.0, length=4.0, beltWidth=0.5, rotation=0.0, speed=1.0,
+                 directionAngle=0.0, color="#000")
+        engine = self.engine([a])
+        parcel = spawn_parcel(engine, 0.0, 0.2)                       # 0.3 wide: 0.1 m past the left edge
+        bd = parcel.body.__dict__
+        bd["target_v"] = (1.0, 0.0)
+        engine._guide(parcel, parcel.body.position, a, bd)
+        self.assertEqual(bd["target_v"][0], 1.0)
+        self.assertLess(bd["target_v"][1], -0.4, "pushed back toward the belt (-y)")
+        side = Belt(id="side", type="linear", x=0.0, y=0.5, length=4.0, beltWidth=0.5, rotation=0.0, speed=1.0,
+                    directionAngle=0.0, color="#000")
+        engine = self.engine([a, side])                                # another belt there: supported
+        parcel = spawn_parcel(engine, 0.0, 0.2)
+        bd = parcel.body.__dict__
+        bd["target_v"] = (1.0, 0.0)
+        engine._guide(parcel, parcel.body.position, a, bd)
+        self.assertEqual(bd["target_v"], (1.0, 0.0))
+        a.guides = False                                               # no guides: it may go over
+        engine = self.engine([a])
+        parcel = spawn_parcel(engine, 0.0, 0.2)
+        bd = parcel.body.__dict__
+        bd["target_v"] = (1.0, 0.0)
+        engine._guide(parcel, parcel.body.position, a, bd)
+        self.assertEqual(bd["target_v"], (1.0, 0.0))
+
+
 class BeltHandoffWiringTest(unittest.TestCase):
     """Integration-level tests for the code in apply_conveyor_kinematics
-    that sets up a momentum-blend window on a belt-to-belt handoff."""
+    that sets up a momentum-blend window on a belt-to-belt handoff
+    (handoff "blend": make_two_belt_config's default here)."""
 
     def test_no_transition_state_on_first_contact(self):
         config = make_two_belt_config()

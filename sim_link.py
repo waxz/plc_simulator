@@ -31,6 +31,32 @@ TIMEOUT_S = 2.0
 COMMANDS = {"sim": "reload", "designer": "open"}
 
 
+def process_alive(pid: int) -> bool:
+    """Is the process still running? (Never os.kill(pid, 0) on Windows: there it terminates it.)"""
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)           # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return False
+            return code.value == 259                                # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def registry_path(role: str = "sim") -> str:
     return os.path.join(os.path.dirname(os.path.abspath(hmi.settings_path())), f"{role}_instance.json")
 

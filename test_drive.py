@@ -68,6 +68,64 @@ class RampTest(unittest.TestCase):
         self.assertEqual(belt.actualSpeed, 3.0)
 
 
+def limited(**kw):
+    """A drive with a train where 1 motor rpm is 1 mm/s on the surface (gear 1,
+    drum 60/pi mm; inverter up to 200 Hz, so the inverter never limits it)."""
+    return DriveConfig(gearRatio=1.0, drumDiameter=0.06 / math.pi, maxFrequency=200.0, tau=0.0, **kw)
+
+
+class MotorLimitTest(unittest.TestCase):
+    """motorMaxSpeed (rpm) and motorMaxAccel (rpm/s): the motor's limits, through
+    the train to the surface. A stop brakes at motorMaxAccel; no ramp is steeper."""
+
+    def test_a_stop_brakes_at_the_motor_max_accel_not_decel(self):
+        belt = make_belt(speed=2.0, drive=limited(accel=10.0, decel=1.0, motorMaxAccel=4000.0))
+        run(belt, 1.0)
+        belt.speed = 0.0
+        run(belt, 0.25)                       # 2.0 - 4 m/s^2 * 0.25
+        self.assertAlmostEqual(belt.actualSpeed, 1.0, delta=0.01)
+        run(belt, 0.252)
+        self.assertEqual(belt.actualSpeed, 0.0)
+
+    def test_slowing_to_a_lower_speed_keeps_the_normal_ramp(self):
+        belt = make_belt(speed=2.0, drive=limited(accel=10.0, decel=1.0, motorMaxAccel=4000.0))
+        run(belt, 1.0)
+        belt.speed = 0.5
+        run(belt, 0.5)                        # 2.0 - 1 * 0.5
+        self.assertAlmostEqual(belt.actualSpeed, 1.5, delta=0.01)
+
+    def test_no_ramp_steeper_than_the_motor_max_accel(self):
+        belt = make_belt(speed=2.0, drive=limited(accel=10.0, motorMaxAccel=4000.0))
+        run(belt, 0.25)
+        self.assertAlmostEqual(belt.actualSpeed, 1.0, delta=0.01)
+
+    def test_no_faster_than_the_motor_max_speed(self):
+        belt = make_belt(speed=2.0, drive=limited(accel=10.0, motorMaxSpeed=1200.0))
+        run(belt, 1.0)
+        self.assertAlmostEqual(belt.actualSpeed, 1.2, places=9)
+        self.assertAlmostEqual(belt.motorSpeed, 1200.0, places=6)
+
+    def test_a_hold_is_a_stop(self):
+        belt = make_belt(speed=1.0, drive=limited(decel=0.5, motorMaxAccel=5000.0))
+        run(belt, 1.0)
+        belt._zone_hold = True
+        run(belt, 0.202)
+        self.assertEqual(belt.actualSpeed, 0.0)
+
+    def test_without_limits_a_stop_uses_decel(self):
+        belt = make_belt(speed=2.0, drive=limited(accel=10.0, decel=1.0))
+        run(belt, 1.0)
+        belt.speed = 0.0
+        run(belt, 1.0)
+        self.assertAlmostEqual(belt.actualSpeed, 1.0, delta=0.01)
+
+    def test_without_a_train_rpm_limits_do_nothing(self):
+        belt = make_belt(speed=2.0, drive=DriveConfig(accel=10.0, decel=1.0, tau=0.0,
+                                                      motorMaxSpeed=10.0, motorMaxAccel=10.0))
+        run(belt, 1.0)
+        self.assertAlmostEqual(belt.actualSpeed, 2.0)
+
+
 class LagTest(unittest.TestCase):
     def test_first_order_lag_reaches_63_percent_at_tau(self):  # A2
         belt = make_belt(speed=1.0, drive=DriveConfig(accel=1e9, decel=1e9, tau=0.1))

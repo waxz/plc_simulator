@@ -17,6 +17,15 @@
     #hud { top: 12px; left: 12px; min-width: 210px; }
     #hud h1 { margin: 0 0 4px; font-size: 14px; font-weight: 600; }
     #hud .row { display: flex; justify-content: space-between; gap: 16px; color: var(--dim); }
+    #hud .chutes { margin-top: 6px; border-top: 1px solid var(--border); padding-top: 4px; }
+    #hud .chutes table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+    #hud .chutes th { color: var(--dim); font-weight: 500; text-align: right; padding: 0 0 0 10px; }
+    #hud .chutes th:first-child, #hud .chutes td:first-child { text-align: left; padding-left: 0; }
+    #hud .chutes td { text-align: right; padding: 0 0 0 10px; }
+    #hud .chutes .head { display: flex; justify-content: space-between; align-items: center; color: var(--dim); }
+    #hud .chutes button { background: transparent; color: var(--text); border: 1px solid var(--border);
+                          border-radius: 4px; padding: 1px 8px; font: inherit; cursor: pointer; }
+    #hud .chutes button:hover { border-color: var(--accent); }
     #hud .row b { color: var(--text); font-weight: 500; font-variant-numeric: tabular-nums; }
     #link { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--alarm);
             margin-right: 6px; vertical-align: 1px; }
@@ -30,6 +39,45 @@
     #tip { position: fixed; pointer-events: none; background: var(--panel); border: 1px solid var(--border);
            border-radius: 4px; padding: 3px 7px; display: none; white-space: nowrap; }
     #error { top: 50%; left: 50%; transform: translate(-50%, -50%); display: none; max-width: 460px; }
+    #style { top: 56px; right: 12px; width: 330px; max-height: calc(100% - 120px); overflow-y: auto; display: none; }
+    #style .stop { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+    #style .shead { margin: 10px 0 4px; color: var(--dim); font-size: 11px; text-transform: uppercase;
+                    letter-spacing: 0.06em; }
+    #style .srow { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 3px 0; }
+    #style .srow span:first-child { color: var(--text); }
+    #style input[type=number] { width: 70px; }
+    #style input, #style select { background: #2b3038; color: var(--text); border: 1px solid var(--border);
+                                  border-radius: 3px; font: inherit; }
+    #style button { background: transparent; color: var(--text); border: 1px solid var(--border);
+                    border-radius: 4px; padding: 2px 8px; font: inherit; cursor: pointer; margin: 2px 4px 2px 0; }
+    #style button:hover { border-color: var(--accent); }
+    #style .sbar { margin-top: 10px; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+    #style .shint { color: var(--dim); font-size: 12px; margin-top: 4px; }
+    #tags { left: 12px; bottom: 52px; width: min(760px, calc(100% - 24px)); height: min(62%, 640px); display: none;
+            box-sizing: border-box; display: none; flex-direction: column; }
+    #tags[style*="block"] { display: flex !important; flex-direction: column; }
+    #tags .thead { display: flex; align-items: center; gap: 10px; }
+    #tags .thead b { flex: none; }
+    #tags .thead .tstatus { flex: 1; }
+    #tags .tbar { display: flex; align-items: center; gap: 6px; margin: 6px 0; flex-wrap: wrap; color: var(--dim); }
+    #tags button { background: transparent; color: var(--text); border: 1px solid var(--border); border-radius: 4px;
+                   padding: 2px 8px; font: inherit; cursor: pointer; }
+    #tags button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+    #tags input, #tags select { background: #2b3038; color: var(--text); border: 1px solid var(--border);
+                                border-radius: 3px; font: inherit; }
+    #tags input[type=number] { width: 52px; }
+    #tags .twrap { flex: 1 1 40%; overflow-y: auto; min-height: 80px; border: 1px solid var(--border); border-radius: 4px; }
+    #tags .ttable { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+    #tags .ttable th { position: sticky; top: 0; background: #2a2f37; text-align: left; font-weight: 500;
+                       color: var(--dim); padding: 2px 6px; }
+    #tags .ttable td { padding: 1px 6px; white-space: nowrap; }
+    #tags .tdim, #tags .tstatus { color: var(--dim); }
+    #tags .tshown { color: #c4b5fd; }
+    #tags .tval { font-family: Consolas, monospace; }
+    #tags .ton { color: var(--ok); }
+    #tags tr.tchanged td { animation: tflash 1s ease-out; }
+    @keyframes tflash { from { background: rgba(226, 168, 44, 0.35); } to { background: transparent; } }
+    #tags .tchart { flex: 1 1 45%; position: relative; min-height: 140px; }
   </style>
   <!-- three.js: from the CDN, or a local copy in view3d_web/vendor/three (view3d.py swaps it in). -->
   <script type="importmap">
@@ -45,16 +93,27 @@
     <div class="row">Sim time <b id="time">-</b></div>
     <div class="row">Parcels <b id="parcels">0</b></div>
     <div class="row">Pallets <b id="pallets">0</b></div>
+    <div class="row" title="Smooth: how far behind the live stream the view plays, to even out frames arriving in bursts">Buffer <b id="buffer">-</b></div>
+    <div id="chutes" class="chutes"></div>
   </div>
   <div id="tools" class="panel">
     <button id="fit" title="Frame the whole layout (F)">Fit</button>
     <button id="top" title="Look straight down (T)">Top</button>
     <button id="drawing" class="on" title="Show / hide the floor plan (D)">Floor plan</button>
     <button id="labels" title="Show / hide names (L)">Labels</button>
+    <button id="edges" class="on" title="Show / hide each belt's outline: where one segment ends and the next begins (E)">Edges</button>
+    <button id="tracks" class="on" title="Show / hide the track boxes the PLC sends: its tracked loads, the slots on a merge line, the loads it synchronises (B)">Track boxes</button>
+    <button id="smooth" class="on" title="Smooth: keep the frames and play them back evenly, a little behind - for a slow or bursty link (a tunnel). Off: draw each frame as it comes (M; ?live in the address starts with it off)">Smooth</button>
+    <button id="tagsBtn" title="The PLC tags: values now, and charts over time or as an x/y trajectory (P)">Tags</button>
+    <button id="styleBtn" title="Colours, sizes and heights of the 3D models; Double-click a component to style it alone (S)">Style</button>
   </div>
-  <div id="hint" class="panel">Drag: orbit · Right-drag: pan · Wheel: zoom · Click an operator button to press it</div>
+  <div id="hint" class="panel">Drag: orbit · Right-drag: pan · Wheel: zoom · Click an operator button to press it · Double-click (or Alt+click): style a component</div>
+  <div id="style" class="panel"></div>
+  <div id="tags" class="panel"></div>
   <div id="tip"></div>
   <div id="error" class="panel"></div>
+  <!-- Chart.js (the tag monitor's charts): from the CDN, or view3d_web/vendor/chart.js (view3d.py swaps it in). -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <script type="module" src="viewer.js"></script>
 </body>
 </html>

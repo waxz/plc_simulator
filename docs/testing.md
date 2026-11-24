@@ -107,7 +107,7 @@ them run, then checks the exchange and the plant. Expected (about 45 s with
 
 ```
 [verify] results
-  [ok] I/O layout handshake (LAYOUT_CHECK) - I/O layout check: OK - input 165 bytes 083EBF55, output 247 bytes C5E971E0 on both sides
+  [ok] I/O layout handshake (LAYOUT_CHECK) - I/O layout check: OK - input 165 bytes 083EBF55, output 247 bytes A188665C on both sides
   [ok] PLC receives the simulator's input frames - 2516 frames
   [ok] PLC sends its output frames - 499 frames
   [ok] no malformed / wrong-size frames at the PLC - 0

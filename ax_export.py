@@ -202,7 +202,9 @@ def member_type(frame: dict, contract: dict, member: str) -> str:
         raise ExportError(f"tag member {frame['name']}.{member} is not in the frame: regenerate with a matching "
                          f"simulator")
     if field:
-        return next(f["type"] for f in contract["structs"][declared["type"]] if f["name"] == field)
+        base, bracket, _rest = field.partition("[")              # an ARRAY member's entry: its element type
+        st_type = next(f["type"] for f in contract["structs"][declared["type"]] if f["name"] == base)
+        return st_type.split(" OF ", 1)[1] if bracket and " OF " in st_type else st_type
     if declared.get("length"):
         return f"ARRAY[0..{declared['length'] - 1}] OF {declared['type']}"
     return declared["type"]
@@ -219,24 +221,59 @@ def emit_sim_tags(frames: list[dict], contract: dict, tags: list, renames: dict[
     if not tags:
         return []
     struct_name = tags_struct_name(renames)
-    tables = sorted({t["table"] for t in tags}, key=lambda name: (name != "Default tag table", name.lower()))
+    plain = [t for t in tags if "[" not in t.get("stPath", t["stName"])]
+    # the arrays (the layout's axExport.tagArrays): name -> (element STRUCT, length); per device, its index
+    arrays: dict[str, list] = {}
+    devices: dict[tuple, str] = {}                   # (frame, top member) -> "array[i]"
+    index: dict[str, int] = {}
+    for t in tags:
+        path = t.get("stPath", t["stName"])
+        if "[" not in path:
+            continue
+        name, rest = path.split("[", 1)
+        i = int(rest.split("]", 1)[0])
+        top = t["member"].split(".", 1)[0]
+        element = member_type(by_frame[t["frame"]], contract, top)
+        if arrays.setdefault(name, [element, 0])[0] != element:
+            raise ExportError(f"tag array {name} holds both {arrays[name][0]} and {element}")
+        arrays[name][1] = max(arrays[name][1], i + 1)
+        devices[(t["frame"], top)] = f"{name}[{i}]"
+        if index.setdefault(top, i) != i:
+            raise ExportError(f"{top} is at two indexes of the tag arrays")
+    tables = sorted({t["table"] for t in plain}, key=lambda name: (name != "Default tag table", name.lower()))
     lines = ["TYPE",
              "    // The PLC tags (the designer's PLC Tags table): a variable per tag, named as the tag.",
+             *([f"    // The kinds in the layout's axExport.tagArrays: arrays of their STRUCTs "
+                f"(index: {index_class_name(renames)})."] if arrays else []),
              f"    {struct_name} : STRUCT"]
     for table in tables:
         lines.append(f"        // {table}")
-        for t in (t for t in tags if t["table"] == table):
+        for t in (t for t in plain if t["table"] == table):
             comment = " ".join(f"{t['address']} {t['comment']}".split())
             if t["stName"] != t["name"]:
                 comment += f" (tag \"{t['name']}\")"
             lines.append(f"        {t['stName']} : {member_type(by_frame[t['frame']], contract, t['member'])};"
                          f" // {comment}")
+    if arrays:
+        lines.append("        // arrays: entry i is the device at index i of its kind (an unused entry: a device of"
+                     " another type)")
+    for name, (element, length) in arrays.items():
+        lines.append(f"        {name} : ARRAY[0..{length - 1}] OF {element};")
     lines += ["    END_STRUCT;", "END_TYPE", ""]
+    if index:
+        lines += [f"// Where each device of a tag array is: {struct_name}.<array>[<its index>].",
+                  f"CLASS PUBLIC {index_class_name(renames)}",
+                  "    VAR CONSTANT PUBLIC",
+                  *[f"        {re.sub(r'[^A-Za-z0-9_]', '_', top)} : INT := INT#{i};" for top, i in index.items()],
+                  "    END_VAR",
+                  "END_CLASS", ""]
     for frame in frames:
         frame_tags = [t for t in tags if t["frame"] == frame["name"]]
         if not frame_tags:
             continue
         frame_struct = renames.get(frame["name"], frame["name"])
+        frame_plain = [t for t in frame_tags if t in plain]
+        frame_devices = [(top, element) for (f, top), element in devices.items() if f == frame["name"]]
         if frame_tags[0]["input"]:
             lines += [f"// {frame_struct} -> {struct_name}: call after its DeserializeFromBytes.",
                       "FUNCTION ReadTags",
@@ -245,7 +282,8 @@ def emit_sim_tags(frames: list[dict], contract: dict, tags: list, renames: dict[
                       f"        tags : {struct_name};",
                       "    END_VAR",
                       "",
-                      *[f"    tags.{t['stName']} := source.{t['member']};" for t in frame_tags]]
+                      *[f"    tags.{t['stName']} := source.{t['member']};" for t in frame_plain],
+                      *[f"    tags.{element} := source.{top};" for top, element in frame_devices]]
         else:
             lines += [f"// {struct_name} -> {frame_struct}: call before its SerializeToBytes.",
                       "FUNCTION WriteTags",
@@ -254,9 +292,15 @@ def emit_sim_tags(frames: list[dict], contract: dict, tags: list, renames: dict[
                       f"        dest : {frame_struct};",
                       "    END_VAR",
                       "",
-                      *[f"    dest.{t['member']} := tags.{t['stName']};" for t in frame_tags]]
+                      *[f"    dest.{t['member']} := tags.{t['stName']};" for t in frame_plain],
+                      *[f"    dest.{top} := tags.{element};" for top, element in frame_devices]]
         lines += ["END_FUNCTION", ""]
     return lines
+
+
+def index_class_name(renames: dict[str, str]) -> str:
+    """Sim_TagIndex, or <prefix>_TagIndex (as the tags STRUCT)."""
+    return tags_struct_name(renames)[:-len("_Tags")] + "_TagIndex"
 
 
 # A laser banner's beams - a BOOL array of any length starting on a byte
@@ -299,10 +343,10 @@ def pack_bit_arrays(frame: dict, endianness: str = "LE") -> dict:
     return {**frame, "members": members, "fields": fields}
 
 
-# The SIMATIC AX TcpClient's send / receive buffers are 256 bytes: a frame
-# (10 bytes header, the payload, 4 bytes trailer) carries 242 payload bytes at
-# most (the simulator's mqtt_data_exchange.PLC_MAX_PAYLOAD).
-PLC_MAX_PAYLOAD = 242
+# The SIMATIC AX TcpClient sends frames of at most 4110 bytes (10 bytes header,
+# the payload, 4 bytes trailer): 4096 payload bytes at most (the simulator's
+# mqtt_data_exchange.PLC_MAX_PAYLOAD). To go bigger: ax_dev/docs/frame-size.md.
+PLC_MAX_PAYLOAD = 4096
 
 
 def check_frame_sizes(frames: list[dict], max_payload: int) -> None:

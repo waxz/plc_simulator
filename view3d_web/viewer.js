@@ -7,6 +7,10 @@
 // (scene3d.dynamic_state). Moving parts come with a full pose (x, y, z,
 // yaw) and size, so whatever lifts or carries them only changes numbers.
 import * as THREE from "three";
+import * as style from "./style.js";
+import * as tags from "./tags.js";
+import { Playout, lerp, lerpDeg, byId } from "./playout.js";
+import { applyDelta } from "./delta.js";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import {
   buildChute, buildConsole, buildDiverter, buildDoor, buildEye, buildPallet, buildRobot6, buildRollerArc,
@@ -43,7 +47,8 @@ controls.dampingFactor = 0.12;
 controls.maxPolarAngle = Math.PI * 0.495;
 controls.zoomToCursor = true;             // big floor plans: zoom where you point
 
-scene.add(new THREE.HemisphereLight(0xdfe8f2, 0x30353c, 1.4));
+const hemi = new THREE.HemisphereLight(0xdfe8f2, 0x30353c, 1.4);
+scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xffffff, 1.8);
 sun.castShadow = true;
 sun.shadow.mapSize.set(2048, 2048);
@@ -57,8 +62,9 @@ let sceneVersion = -1;
 const live = { belts: new Map(), sensors: new Map(), devices: new Map(), stoppers: new Map(), scanners: new Map(),
                transfers: new Map(), rollers: new Map(),
                diverters: new Map(), eyes: new Map(), chutes: new Map(), doors: new Map(), safety: new Map(),
-               robots: new Map(), elevators: new Map(), bodies: new Map(), drawing: null, labels: [] };
-const ui = { drawing: true, labels: false };
+               robots: new Map(), elevators: new Map(), bodies: new Map(), drawing: null, labels: [], edges: [] };
+const ui = { drawing: true, labels: false, edges: true, tracks: true,
+             smooth: !/[?&]live/.test(location.search) };   // ?live: draw frames as they come
 
 // -- small helpers ---------------------------------------------------------------------------
 
@@ -85,6 +91,17 @@ const deg = (d) => (d * Math.PI) / 180;
 function levelZ(level) { return level * sceneInfo.levelHeight; }
 function beltTopZ(level) { return levelZ(level) + sceneInfo.beltTop; }
 function tagged(obj, label) { obj.traverse((o) => { o.userData.label = label; }); return obj; }
+// The component a model draws: Alt+click styles it alone (style.js), and its own style hides it.
+function own(obj, id, kind) {
+  obj.traverse((o) => { o.userData.cid = id; o.userData.ckind = kind; });
+  if (style.item(id).hidden) obj.visible = false;
+  return obj;
+}
+// A colour: the component's own, else the kind's (style.js), else the layout's.
+function colorOf(id, kindColor, layoutColor) {
+  const mine = style.item(id).color;
+  return new THREE.Color(mine || kindColor || layoutColor || "#808080").getHex();
+}
 
 function label(text, x, y, z) {
   const canvas = document.createElement("canvas");
@@ -100,7 +117,8 @@ function label(text, x, y, z) {
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false }));
-  sprite.scale.set(canvas.width / 120, canvas.height / 120, 1);
+  const k = style.S.scene.labelSize;
+  sprite.scale.set(canvas.width / 120 * k, canvas.height / 120 * k, 1);
   sprite.position.set(x, y, z);
   sprite.renderOrder = 10;
   sprite.visible = ui.labels;
@@ -114,9 +132,9 @@ function chevronTexture() {
   const c = document.createElement("canvas");
   c.width = c.height = 64;
   const g = c.getContext("2d");
-  g.fillStyle = "#3a3f46";
+  g.fillStyle = style.S.belt.surface;          // style.js: the belt's surface and its chevrons
   g.fillRect(0, 0, 64, 64);
-  g.strokeStyle = "#50575f";
+  g.strokeStyle = style.S.belt.chevronColor;
   g.lineWidth = 7;
   g.beginPath();
   g.moveTo(16, 6); g.lineTo(40, 32); g.lineTo(16, 58);
@@ -133,12 +151,13 @@ function buildFloor(bounds) {
   const [x0, y0, x1, y1] = bounds;
   const size = Math.max(x1 - x0, y1 - y0) + 30;
   const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
-  const floor = new THREE.Mesh(new THREE.PlaneGeometry(size, size), mat(COLORS.floor, { roughness: 0.95 }));
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(size, size), mat(style.hex(style.S.scene.floor), { roughness: 0.95 }));
   floor.position.set(cx, cy, 0);
   floor.receiveShadow = true;
   floor.raycast = noPick;
   layout.add(floor);
-  const grid = new THREE.GridHelper(Math.ceil(size), Math.ceil(size), COLORS.gridMajor, COLORS.grid);
+  const grid = new THREE.GridHelper(Math.ceil(size), Math.ceil(size), style.hex(style.S.scene.gridMajor),
+                                    style.hex(style.S.scene.grid));
   grid.rotation.x = Math.PI / 2;
   grid.position.set(Math.round(cx), Math.round(cy), 0.002);
   grid.raycast = noPick;
@@ -171,38 +190,64 @@ function shapeOf(outline, holes) {
   return shape;
 }
 
+// A belt segment's edge: its outline (and holes) as a light line just above its top, so
+// segments that join end to end (or a mitred induction meeting the line) stay apart.
+const EDGE_COLOR = 0xc9d3de;
+function beltEdge(b) {
+  const loops = [b.outline, ...(b.holes || [])];
+  const pos = [];
+  for (const loop of loops) {
+    for (let i = 0; i < loop.length; i++) {
+      const [x0, y0] = loop[i], [x1, y1] = loop[(i + 1) % loop.length];
+      pos.push(x0, y0, 0.003, x1, y1, 0.003);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  const lines = new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: EDGE_COLOR }));
+  lines.visible = ui.edges;
+  lines.raycast = noPick;
+  live.edges.push(lines);
+  return lines;
+}
+
 function buildBelt(b) {
   if (b.roller && !b.table && !b.elevator) {
     // A roller conveyor: rollers and side frames, on stands.
-    const unit = (b.roller.kind === "arc" ? buildRollerArc : buildRollerConveyor)(b.roller, b.color);
+    const rollerColor = "#" + colorOf(b.id, style.S.roller.color, b.color).toString(16).padStart(6, "0");
+    const unit = (b.roller.kind === "arc" ? buildRollerArc : buildRollerConveyor)(b.roller, rollerColor);
     unit.group.position.z = beltTopZ(b.level);
+    const edge = beltEdge(b);                // rollers too: the segment's outline (world coordinates)
+    edge.position.z = unit.group.position.z;
+    layout.add(edge);
     const step = Math.max(1, Math.round(b.outline.length / 10));
     const z = unit.group.position.z;
     const stands = new THREE.Group();
-    for (let i = 0; i < b.outline.length; i += step) {
+    for (let i = 0; i < b.outline.length && style.S.belt.stands; i += step) {
       const [x, y] = b.outline[i];
-      stands.add(post(x, y, 0, z - 0.12, 0.05, mat(COLORS.metal, { metalness: 0.5 })));
+      stands.add(post(x, y, 0, z - 0.12, 0.05, mat(style.hex(style.S.belt.standColor), { metalness: 0.5 })));
     }
-    layout.add(stands);
-    layout.add(tagged(unit.group, `Roller conveyor ${b.id}`));
+    layout.add(own(stands, b.id, "belt"));
+    layout.add(own(tagged(unit.group, `Roller conveyor ${b.id}`), b.id, "belt"));
     live.belts.set(b.id, { group: unit.group, texture: null, dir: null, pivot: null, angle0: 0 });
     live.rollers.set(b.id, unit);
     return;
   }
-  const t = sceneInfo.beltThickness;
+  const t = style.item(b.id).thickness || style.S.belt.thickness || sceneInfo.beltThickness;
   const geo = new THREE.ExtrudeGeometry(shapeOf(b.outline, b.holes), { depth: t, bevelEnabled: false });
-  let top = mat(COLORS.rubber, { roughness: 0.9 });
+  let top = mat(style.hex(style.S.belt.surface), { roughness: 0.9 });
   let texture = null;
-  if (b.dir !== null && b.dir !== undefined) {
+  if (b.dir !== null && b.dir !== undefined && style.S.belt.chevrons) {
     texture = chevronTexture();
     texture.repeat.set(1 / CHEVRON_PERIOD, 1 / CHEVRON_PERIOD);
     texture.rotation = deg(b.dir);          // u runs along the belt (cap UVs are world metres)
     top = new THREE.MeshStandardMaterial({ map: texture, roughness: 0.9 });
   }
-  const mesh = new THREE.Mesh(geo, [top, mat(new THREE.Color(b.color).getHex(), { metalness: 0.2 })]);
+  const mesh = new THREE.Mesh(geo, [top, mat(colorOf(b.id, style.S.belt.frame, b.color), { metalness: 0.2 })]);
   mesh.castShadow = mesh.receiveShadow = true;
   const group = new THREE.Group();
   group.add(mesh);
+  group.add(beltEdge(b));                    // its outline on the top: where this segment ends, the next begins
   mesh.position.z = -t;                      // the group's z is the belt top
   group.position.z = beltTopZ(b.level);
   let pivot = null;
@@ -214,21 +259,21 @@ function buildBelt(b) {
     group.position.y = -b.table.y;
     pivot.add(group);
   }
-  if (!b.elevator && !b.table) {
+  if (!b.elevator && !b.table && style.S.belt.stands) {
     // Stands at some outline corners, down to the floor.
     const step = Math.max(1, Math.round(b.outline.length / 10));
     for (let i = 0; i < b.outline.length; i += step) {
       const [x, y] = b.outline[i];
-      group.add(post(x, y, -group.position.z, -t, 0.05, mat(COLORS.metal, { metalness: 0.5 })));
+      group.add(post(x, y, -group.position.z, -t, 0.05, mat(style.hex(style.S.belt.standColor), { metalness: 0.5 })));
     }
   }
-  layout.add(tagged(pivot || group, `Belt ${b.id}`));
+  layout.add(own(tagged(pivot || group, `Belt ${b.id}`), b.id, "belt"));
   live.belts.set(b.id, { group, texture, dir: b.dir, pivot, angle0: b.table ? b.table.angle : 0 });
   const [x, y] = b.outline[0];
   layout.add(label(b.id, x, y, group.position.z + 0.3));
 }
 
-const BANNER_HEAD = 0.75;      // m above the belt: the laser banner's head, its lasers shining down
+// The laser banner's head: style.S.sensor.bannerHead m above the belt, its lasers shining down.
 
 // A laser banner: a head across the belt on two posts, a laser every pitch
 // along it shining straight down (local y = along the banner, as the physics).
@@ -239,19 +284,20 @@ function buildBanner(s) {
   const span = (s.beams - 1) * s.pitch;
   const half = Math.max(span, s.h) / 2 + 0.06;
   const postMat = mat(COLORS.dark);
+  const BANNER_HEAD = style.S.sensor.bannerHead;
   for (const d of [-half, half]) g.add(post(0, d, -0.3, BANNER_HEAD + 0.06, 0.05, postMat));
   const head = box(0.09, 2 * half + 0.05, 0.06, mat(COLORS.dark, { metalness: 0.4 }));
   head.position.z = BANNER_HEAD;
   g.add(head);
   const beams = [];
   for (let i = 0; i < s.beams; i++) {
-    const beam = box(0.006, 0.006, BANNER_HEAD, new THREE.MeshBasicMaterial({ color: COLORS.sensorOff }));
+    const beam = box(0.006, 0.006, BANNER_HEAD, new THREE.MeshBasicMaterial({ color: style.hex(style.S.sensor.off) }));
     beam.position.set(0, (i - (s.beams - 1) / 2) * s.pitch, 0);
     beam.castShadow = false;
     g.add(beam);
     beams.push(beam);
   }
-  layout.add(tagged(g, `Laser banner ${s.label || s.id} (${s.beams} beams down, ${s.pitch} m apart)`));
+  layout.add(own(tagged(g, `Laser banner ${s.label || s.id} (${s.beams} beams down, ${s.pitch} m apart)`), s.id, "sensor"));
   live.sensors.set(s.id, beams);
   layout.add(label(s.label || s.id, s.x, s.y, g.position.z + BANNER_HEAD + 0.3));
 }
@@ -267,26 +313,28 @@ function buildSensor(s) {
   const at = (d) => (across ? [d, 0] : [0, d]);
   for (const d of [-half, half]) {
     const [px, py] = at(d);
-    g.add(post(px, py, -0.1, 0.35, 0.05, postMat));
+    g.add(post(px, py, -0.1, style.S.sensor.postHeight, 0.05, postMat));
   }
   const beams = [];
   const beam = box(across ? 2 * half : 0.012, across ? 0.012 : 2 * half, 0.012,
-                   new THREE.MeshBasicMaterial({ color: COLORS.sensorOff }));
-  beam.position.z = 0.12;
+                   new THREE.MeshBasicMaterial({ color: style.hex(style.S.sensor.off) }));
+  beam.position.z = Math.min(0.12, style.S.sensor.postHeight * 0.8);
   beam.castShadow = false;
   g.add(beam);
   beams.push(beam);
-  layout.add(tagged(g, `Sensor ${s.label || s.id}`));
+  layout.add(own(tagged(g, `Sensor ${s.label || s.id}`), s.id, "sensor"));
   live.sensors.set(s.id, beams);
   layout.add(label(s.label || s.id, s.x, s.y, g.position.z + 0.5));
 }
 
-function buildZone(z, color, height, floorZ, labelText) {
-  const m = box(z.w, z.h, height, mat(color, { transparent: true, opacity: 0.35 }));
+function buildZone(z, kind, floorZ, labelText) {
+  const k = style.S[kind];
+  const height = style.item(z.id).height || k.height;
+  const m = box(z.w, z.h, height, mat(colorOf(z.id, k.color), { transparent: true, opacity: 0.35 }));
   m.position.set(z.x, z.y, floorZ);
   m.rotation.z = deg(z.rot || 0);
   m.castShadow = false;
-  layout.add(tagged(m, labelText));
+  layout.add(own(tagged(m, labelText), z.id, kind));
 }
 
 // Operator buttons and lamps on control consoles (scene3d.control_panels).
@@ -348,13 +396,21 @@ function buildElevator(e) {
   layout.add(label(e.label || e.id, e.x, e.y, top + 0.3));
 }
 
-function buildLayout(info) {
+function applySceneStyle() {
+  scene.background = new THREE.Color(style.hex(style.S.scene.background));
+  sun.intensity = style.S.scene.light;
+  hemi.intensity = style.S.scene.ambient;
+}
+
+function buildLayout(info, keepCamera = false) {
+  applySceneStyle();
   if (layout) scene.remove(layout);
   for (const key of ["belts", "sensors", "devices", "stoppers", "robots", "elevators", "scanners", "diverters", "eyes",
                      "chutes", "doors", "safety", "transfers", "rollers"]) live[key].clear();
   for (const entry of live.bodies.values()) bodyGroup.remove(entry.mesh);
   live.bodies.clear();
   live.labels = [];
+  live.edges = [];
   live.drawing = null;
   sceneInfo = info;
   sceneVersion = info.version;
@@ -366,24 +422,31 @@ function buildLayout(info) {
   buildDrawing(info.drawing || []);
   info.belts.forEach(buildBelt);
   info.sensors.forEach(buildSensor);
-  info.sources.forEach((s) => buildZone(s, COLORS.source, 0.04, beltTopZ(s.level), `Source ${s.label || s.id}`));
-  info.sinks.forEach((s) => buildZone(s, COLORS.sink, 0.6, 0, `Sink ${s.label || s.id}`));
+  info.sources.forEach((s) => buildZone(s, "source", beltTopZ(s.level), `Source ${s.label || s.id}`));
+  info.sinks.filter((s) => !(info.chutes || []).some((c) => c.id === s.id))
+    .forEach((s) => buildZone(s, "sink", 0, `Sink ${s.label || s.id}`));
   (info.panels || []).forEach(buildPanel);
   info.stoppers.forEach(buildStopper);
   info.robots.forEach(buildRobot);
   info.elevators.forEach(buildElevator);
   // Logistics equipment.
-  for (const sc of info.scanners || []) { const u = buildScanner(sc); layout.add(u.group); live.scanners.set(sc.id, u); }
-  for (const d of info.diverters || []) { const u = buildDiverter(d); layout.add(u.group); live.diverters.set(d.id, u); }
-  for (const t of info.turntables || []) layout.add(buildTurntableRing(t));
-  for (const t of info.transfers || []) { const u = buildTransfer(t); layout.add(u.group); live.transfers.set(t.id, u); }
+  for (const sc of info.scanners || []) { const u = buildScanner(sc); layout.add(own(u.group, sc.id, "scanner")); live.scanners.set(sc.id, u); }
+  for (const d of info.diverters || []) { const u = buildDiverter(d); layout.add(own(u.group, d.id, "diverter")); live.diverters.set(d.id, u); }
+  for (const t of info.turntables || []) layout.add(own(buildTurntableRing(t), t.id, "turntable"));
+  for (const t of info.transfers || []) { const u = buildTransfer(t); layout.add(own(u.group, t.id, "transfer")); live.transfers.set(t.id, u); }
   for (const e of info.eyes || []) {
     const u = buildEye(e);
     layout.add(u.group);
     if (!live.eyes.has(e.acc)) live.eyes.set(e.acc, []);
     live.eyes.get(e.acc)[e.zone] = u;
   }
-  for (const c of info.chutes || []) { const u = buildChute(c); layout.add(u.group); live.chutes.set(c.id, u); }
+  for (const c of info.chutes || []) {
+    const styled = { ...c, binColor: colorOf(c.id, style.S.chute.color),
+                     wallHeight: style.item(c.id).height || style.S.chute.height };
+    const u = buildChute(styled);
+    layout.add(own(u.group, c.id, "chute"));
+    live.chutes.set(c.id, u);
+  }
   for (const d of info.doors || []) { const u = buildDoor(d); layout.add(u.group); live.doors.set(d.id, u); }
   for (const sf of info.safety || []) {
     const u = buildSafety(sf);
@@ -391,7 +454,12 @@ function buildLayout(info) {
     live.safety.set(sf.id, u);
     layout.add(label(sf.label || sf.id, sf.x, sf.y, 1.85));
   }
-  fit();
+  if (!keepCamera) fit();
+}
+
+// A style edit (style.js): the layout drawn again, the camera where it is.
+function restyle() {
+  if (sceneInfo) buildLayout(sceneInfo, true);
 }
 
 // -- live state -------------------------------------------------------------------------------
@@ -417,7 +485,7 @@ function updateBodies(rows) {
         mesh.add(pallet);
         tagged(mesh, `Pallet ${id}`);
       } else {
-        mesh = box(1, 1, 1, mat(new THREE.Color(color).getHex(), { roughness: 0.85 }));
+        mesh = box(1, 1, 1, mat(new THREE.Color(style.parcelColor(color, destination)).getHex(), { roughness: 0.85 }));
         mesh.userData.label = barcode ? `Parcel ${barcode}${destination ? ` -> ${destination}` : ""}` : `Parcel ${id}`;
       }
       bodyGroup.add(mesh);
@@ -428,7 +496,7 @@ function updateBodies(rows) {
     }
     entry.target.set(x, y, z);
     entry.yaw = deg(yaw);
-    entry.mesh.scale.set(w, l, h);
+    entry.mesh.scale.set(w, l, kind === "pallet" ? h : h * style.S.parcel.heightScale);
   }
   for (const [id, entry] of live.bodies) {
     if (!seen.has(id)) {
@@ -440,6 +508,76 @@ function updateBodies(rows) {
   document.getElementById("pallets").textContent = pallets;
 }
 
+// Track boxes (scene3d: "tracks"): where the PLC has its loads (load), the
+// slots on a merge line it asked for or was granted (slot: a flat band on the
+// belt) and the load it drives into one (sync); "Track boxes" (B) hides them.
+const TRACK_LOOK = { load: { color: 0xf472b6, h: 0.3 }, slot: { color: 0x22d3ee, h: 0.03, fill: 0.28 },
+                     sync: { color: 0xfb923c, h: 0.32 } };
+const trackGroup = new THREE.Group();
+scene.add(trackGroup);
+const trackEdges = new THREE.EdgesGeometry(unitBox);
+const trackBoxes = new Map();
+
+function updateTracks(rows) {
+  const seen = new Set();
+  for (const [id, role, x, y, z, yaw, length, width, loadId] of rows || []) {
+    seen.add(id);
+    const look = TRACK_LOOK[role] || TRACK_LOOK.load;
+    let entry = trackBoxes.get(id);
+    if (!entry || entry.role !== role) {
+      if (entry) trackGroup.remove(entry.group);
+      const group = new THREE.Group();
+      group.add(new THREE.LineSegments(trackEdges, new THREE.LineBasicMaterial({ color: look.color })));
+      if (look.fill) {
+        group.add(new THREE.Mesh(unitBox, new THREE.MeshBasicMaterial({ color: look.color, transparent: true,
+                                                                        opacity: look.fill, depthWrite: false })));
+      }
+      trackGroup.add(group);
+      entry = { group, role };
+      trackBoxes.set(id, entry);
+    }
+    tagged(entry.group, `${role === "slot" ? "Slot" : role === "sync" ? "Sync load" : "Tracked load"} ${id}` +
+                        (loadId ? ` (load ${loadId})` : ""));
+    entry.group.position.set(x, y, z + 0.002);
+    entry.group.rotation.z = deg(yaw);
+    entry.group.scale.set(length, width, look.h);     // the box's x along the travel
+  }
+  for (const [id, entry] of trackBoxes) {
+    if (!seen.has(id)) { trackGroup.remove(entry.group); trackBoxes.delete(id); }
+  }
+}
+
+// The chutes' statistics (chute_stats.py, the simulator's): total since the last reset, per minute,
+// per hour; Reset starts them again (the chutes themselves are not touched).
+let chuteIds = "";
+function updateChutes(rows) {
+  const box = document.getElementById("chutes");
+  if (!box) return;
+  rows = rows || [];
+  const ids = rows.map((r) => r.id).join(",");
+  if (ids !== chuteIds) {                  // built once per layout: the Reset button stays clickable
+    chuteIds = ids;
+    if (!rows.length) { box.innerHTML = ""; return; }
+    box.innerHTML = `<div class="head"><span id="chutesSince">Chutes</span>` +
+      `<button id="resetStats" title="Count again from now (the chutes are not emptied)">Reset</button></div>` +
+      `<table><tr><th></th><th>total</th><th>/min</th><th>/h</th></tr>` +
+      rows.map((r, i) => `<tr><td></td><td id="ct${i}"></td><td id="cm${i}"></td><td id="ch${i}"></td></tr>`).join("") +
+      `</table>`;
+    box.querySelectorAll("tr td:first-child").forEach((td, i) => { td.textContent = rows[i].id; });
+    document.getElementById("resetStats").onclick = () =>
+      fetch("reset_stats", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+  }
+  if (!rows.length) return;
+  const since = rows[0].since || 0;
+  document.getElementById("chutesSince").textContent =
+    `Chutes (${since < 120 ? since.toFixed(0) + " s" : (since / 60).toFixed(1) + " min"})`;
+  rows.forEach((r, i) => {
+    document.getElementById(`ct${i}`).textContent = r.total;
+    document.getElementById(`cm${i}`).textContent = r.perMin.toFixed(1);
+    document.getElementById(`ch${i}`).textContent = Math.round(r.perHour);
+  });
+}
+
 function applyState(state) {
   if (state.layout !== sceneVersion) {
     loadScene();
@@ -448,11 +586,13 @@ function applyState(state) {
   lastState = state;
   document.getElementById("time").textContent = `${state.t.toFixed(1)} s`;
   updateBodies(state.bodies);
+  updateTracks(state.tracks);
+  updateChutes(state.chuteStats);
   for (const [id, beams] of live.sensors) {
     const v = state.sensors[id];
     beams.forEach((beam, i) => {
       const on = typeof v === "string" ? v[i] === "1" : !!v;
-      beam.material.color.setHex(on ? COLORS.sensorOn : COLORS.sensorOff);
+      beam.material.color.setHex(style.hex(on ? style.S.sensor.on : style.S.sensor.off));
     });
   }
   for (const [id, unit] of live.devices) setDevice(unit, unit.kind === "led" ? state.leds[id] : state.buttons[id]);
@@ -470,7 +610,9 @@ function applyState(state) {
   }
   for (const [id, eyes] of live.eyes) {
     const zones = (state.accumulators || {})[id] || 0;
-    eyes.forEach((u, i) => { if (u) u.beam.material.color.setHex(zones >> i & 1 ? COLORS.sensorOn : COLORS.sensorOff); });
+    eyes.forEach((u, i) => {
+      if (u) u.beam.material.color.setHex(style.hex(zones >> i & 1 ? style.S.sensor.on : style.S.sensor.off));
+    });
   }
   for (const [id, u] of live.chutes) if (state.chutes && state.chutes[id]) setChute(u, state.chutes[id]);
   for (const [id, u] of live.doors) if (state.doors && state.doors[id]) setDoor(u, state.doors[id]);
@@ -493,6 +635,7 @@ async function loadScene() {
   if (!sceneInfo) title.textContent = "Loading layout...";
   try {
     const info = await (await fetch("scene", { cache: "no-store" })).json();
+    await style.load();                    // this layout's 3D style (<layout>.view3d.json)
     if (info.belts) buildLayout(info);
     document.getElementById("error").style.display = "none";
   } catch (err) {
@@ -510,10 +653,61 @@ let events = null;
 function connect() {
   if (events || document.hidden) return;
   const link = document.getElementById("link");
-  events = new EventSource("events");
+  // only what changed after the first frame (stream_delta.py; the server also gzips the stream)
+  events = new EventSource("events?delta=1");
+  let streamed = null;                       // this connection's state: its first message is whole
   events.onopen = () => link.classList.add("on");
   events.onerror = () => link.classList.remove("on");     // EventSource reconnects by itself
-  events.onmessage = (e) => applyState(JSON.parse(e.data));
+  playout.reset();
+  events.onmessage = (e) => {
+    streamed = applyDelta(streamed, JSON.parse(e.data));
+    receive(streamed);
+  };
+}
+
+// A frame from the stream: drawn at once (Live), or kept and played back
+// evenly a little behind (Smooth, playout.js) - over a tunnel frames come in
+// bursts, and drawn as they come the parcels would jump.
+const playout = new Playout();
+let shown = null;                          // the buffered frame applied last
+function receive(state) {
+  if (state.layout !== sceneVersion || !ui.smooth || typeof state.w !== "number") {
+    playout.reset();
+    shown = null;
+    applyState(state);
+    return;
+  }
+  playout.push(state, performance.now() / 1000);
+}
+
+// Smooth: the frame due now applied, and the moving parts placed between it and the next.
+function playBuffered() {
+  const s = playout.sample(performance.now() / 1000);
+  const buf = document.getElementById("buffer");
+  if (buf) buf.textContent = `${Math.round(playout.delay * 1000)} ms`;
+  if (!s) return;
+  if (s.a !== shown) {
+    shown = s.a;
+    applyState(s.a.state);
+  }
+  if (!s.b || s.b.state.layout !== sceneVersion) return;
+  s.a.bodies ||= byId(s.a.state.bodies);
+  s.b.bodies ||= byId(s.b.state.bodies);
+  for (const [id, entry] of live.bodies) {
+    const ra = s.a.bodies.get(id), rb = s.b.bodies.get(id);
+    if (!ra || !rb) continue;
+    entry.mesh.position.set(lerp(ra[2], rb[2], s.f), lerp(ra[3], rb[3], s.f), lerp(ra[4], rb[4], s.f));
+    entry.mesh.rotation.z = deg(lerpDeg(ra[5], rb[5], s.f));
+  }
+  s.a.tracks ||= byId(s.a.state.tracks);
+  s.b.tracks ||= byId(s.b.state.tracks);
+  for (const [id, entry] of trackBoxes) {
+    const ra = s.a.tracks.get(id), rb = s.b.tracks.get(id);
+    if (!ra || !rb) continue;
+    entry.group.position.set(lerp(ra[2], rb[2], s.f), lerp(ra[3], rb[3], s.f), lerp(ra[4], rb[4], s.f) + 0.002);
+    entry.group.rotation.z = deg(lerpDeg(ra[5], rb[5], s.f));
+  }
+  document.getElementById("time").textContent = `${lerp(s.a.state.t, s.b.state.t, s.f).toFixed(1)} s`;
 }
 
 function disconnect() {
@@ -560,15 +754,34 @@ function toggle(button, key, apply) {
 }
 const drawingBtn = document.getElementById("drawing");
 const labelsBtn = document.getElementById("labels");
+const edgesBtn = document.getElementById("edges");
+const tracksBtn = document.getElementById("tracks");
+const smoothBtn = document.getElementById("smooth");
+smoothBtn.classList.toggle("on", ui.smooth);
+smoothBtn.onclick = () => toggle(smoothBtn, "smooth", (on) => {
+  playout.reset();
+  shown = null;
+  document.getElementById("buffer").textContent = on ? "-" : "live";
+});
+tracksBtn.onclick = () => toggle(tracksBtn, "tracks", (on) => { trackGroup.visible = on; });
+edgesBtn.onclick = () => toggle(edgesBtn, "edges", (on) => live.edges.forEach((e) => { e.visible = on; }));
 document.getElementById("fit").onclick = () => fit(false);
+document.getElementById("styleBtn").onclick = () => style.openPanel(restyle);
+document.getElementById("tagsBtn").onclick = () => tags.toggle();
 document.getElementById("top").onclick = () => fit(true);
 drawingBtn.onclick = () => toggle(drawingBtn, "drawing", (on) => { if (live.drawing) live.drawing.visible = on; });
 labelsBtn.onclick = () => toggle(labelsBtn, "labels", (on) => live.labels.forEach((l) => { l.visible = on; }));
 window.addEventListener("keydown", (e) => {
+  if (e.target.closest && e.target.closest("input, select, textarea")) return;   // typing into the Style panel
   if (e.key === "f" || e.key === "F") fit(false);
   else if (e.key === "t" || e.key === "T") fit(true);
   else if (e.key === "d" || e.key === "D") drawingBtn.click();
   else if (e.key === "l" || e.key === "L") labelsBtn.click();
+  else if (e.key === "e" || e.key === "E") edgesBtn.click();
+  else if (e.key === "b" || e.key === "B") tracksBtn.click();
+  else if (e.key === "m" || e.key === "M") smoothBtn.click();
+  else if (e.key === "s" || e.key === "S") style.openPanel(restyle);
+  else if (e.key === "p" || e.key === "P") tags.toggle();
 });
 
 const raycaster = new THREE.Raycaster();
@@ -598,6 +811,11 @@ function sendButton(id, down) {
 renderer.domElement.addEventListener("pointerdown", (e) => {
   if (e.button !== 0) return;
   const hit = pick(e);
+  if (e.altKey) {                            // Alt+click: style this component alone
+    const cid = hit && hit.object.userData.cid;
+    if (cid) style.select({ id: cid, kind: hit.object.userData.ckind, label: hit.object.userData.label || cid }, restyle);
+    return;
+  }
   const door = hit && hit.object.userData.door;
   if (door) {
     fetch("door", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -610,6 +828,12 @@ renderer.domElement.addEventListener("pointerdown", (e) => {
     controls.enabled = false;
     sendButton(id, true);
   }
+});
+// Double-click (as Alt+click): style that component alone.
+renderer.domElement.addEventListener("dblclick", (e) => {
+  const hit = pick(e);
+  const cid = hit && hit.object.userData.cid;
+  if (cid) style.select({ id: cid, kind: hit.object.userData.ckind, label: hit.object.userData.label || cid }, restyle);
 });
 window.addEventListener("pointerup", () => {
   if (pressed) {
@@ -633,8 +857,9 @@ function shortestAngle(from, to) {
 function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.1);
-  const k = Math.min(1, dt * 18);            // ease toward the newest state between frames
-  for (const entry of live.bodies.values()) {
+  const k = Math.min(1, dt * 18);            // Live: ease toward the newest state between frames
+  if (ui.smooth) playBuffered();
+  else for (const entry of live.bodies.values()) {
     entry.mesh.position.lerp(entry.target, k);
     entry.mesh.rotation.z = shortestAngle(entry.mesh.rotation.z, entry.yaw) * k + entry.mesh.rotation.z * (1 - k);
   }
@@ -657,6 +882,7 @@ function animate() {
 }
 
 // For debugging and automated checks in the browser console.
-window.view3d = { THREE, scene, camera, controls, renderer, live, pick: (x, y) => pick({ clientX: x, clientY: y }) };
+window.view3d = { THREE, scene, camera, controls, renderer, live, style, restyle, tags, playout,
+                  pick: (x, y) => pick({ clientX: x, clientY: y }) };
 loadScene().then(connect);
 animate();

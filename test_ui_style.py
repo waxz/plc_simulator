@@ -76,6 +76,41 @@ class SimulatorWindowTest(unittest.TestCase):
         far = self.labels_after_render(zoom=0.05)
         self.assertNotIn("long_belt", far)
 
+    def test_label_size_follows_the_zoom_within_bounds(self):
+        r = self.r
+        sizes = {}
+        for zoom in (0.05, 0.5, 1.0, 2.0, 4.0, 40.0):
+            r.zoom = zoom
+            sizes[zoom] = r._canvas_label_font().get_height()
+        self.assertEqual(sizes[1.0], pygame.font.Font(hmi.bundled_font_path(), hmi.LABEL_PX).get_height())
+        self.assertLess(sizes[0.5], sizes[1.0])
+        self.assertGreater(sizes[2.0], sizes[1.0])
+        self.assertEqual(sizes[0.05], pygame.font.Font(hmi.bundled_font_path(), hmi.LABEL_MIN_PX).get_height())
+        self.assertEqual(sizes[40.0], pygame.font.Font(hmi.bundled_font_path(), hmi.LABEL_MAX_PX).get_height())
+
+    def test_labels_never_cover_a_button_or_a_lamp(self):
+        for zoom in (0.5, 1.0, 2.0, 4.0):
+            r = self.r
+            r.zoom = zoom
+            controls, labels = [], []
+
+            def block(rect, _orig=Renderer._block_labels):
+                controls.append(pygame.Rect(rect))
+                _orig(r, rect)
+            r._block_labels = block
+            # a label queued right on the first button: it must be skipped
+            def flush():
+                b = controls[0]
+                r._queue_label("ON_THE_BUTTON", b.center, r.PRIORITY_DEVICE)
+                placed = Renderer._flush_labels(r)
+                labels.extend(placed)
+                return placed
+            r._flush_labels = flush
+            r.render(self.physics)
+            del r._flush_labels, r._block_labels
+            self.assertTrue(controls, "buttons and lamps register their rects")
+            self.assertNotIn("ON_THE_BUTTON", labels, f"zoom {zoom}")
+
     def test_no_debug_text_by_default(self):
         self.physics.add_parcel(0, 0, 0.4, 0.4)
         self.physics.update(0.1)

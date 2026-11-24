@@ -56,7 +56,54 @@ def draw_logistics(r) -> None:
         _draw_door(r, door)
     for circuit in c.safety:
         _draw_safety(r, circuit)
+    # PLC values are not drawn: the designer's Exchange Table lists them, the tag
+    # monitors and the 3D page's charts show them
+    for w in getattr(c, "watchdogs", []):
+        _draw_watchdog(r, w)
     _ = screen
+
+
+def watchdog_text(w) -> str:
+    state = "TRIPPED" if w.tripped else ("PLC alive" if w.plcAlive else "waiting for the PLC")
+    return f"{w.label or w.id}: {state}  ({w.trips} trips)"
+
+
+def _draw_watchdog(r, w) -> None:
+    """The PLC link's watchdog: green while the PLC's heartbeat moves, red
+    while tripped (the PLC's commands at rest), grey before the first beat."""
+    color = hmi.ALARM if w.tripped else (_color(r, w.color) if w.plcAlive else hmi.TEXT_FAINT)
+    pts = [r._world_to_screen(x, y) for x, y in get_rect_vertices(w.x, w.y, w.width, w.height, 0.0)]
+    overlay = pygame.Surface(r.screen.get_size(), pygame.SRCALPHA)
+    pygame.draw.polygon(overlay, (*color, 50), pts)
+    r.screen.blit(overlay, (0, 0))
+    pygame.draw.polygon(r.screen, color, pts, 2)
+    cx = sum(p[0] for p in pts) / 4
+    cy = sum(p[1] for p in pts) / 4
+    r._queue_label(watchdog_text(w), (cx, cy), r.PRIORITY_ALARM if w.tripped else r.PRIORITY_DEVICE,
+                   hmi.ALARM if w.tripped else hmi.TEXT, force=True)
+
+
+def format_plc_value(v) -> str:
+    """A PLC value as shown: its label, the value to its decimals, its unit."""
+    try:
+        number = f"{float(v.value):.{max(0, min(6, int(v.decimals)))}f}"
+    except (TypeError, ValueError):
+        number = str(v.value)
+    return f"{v.label or v.id}  {number}{(' ' + v.unit) if v.unit else ''}"
+
+
+def _draw_plc_value(r, v) -> None:
+    """A readout of a value the PLC shows (config_parser.PlcValue): a tinted
+    box with its text; it drives nothing."""
+    color = _color(r, v.color)
+    pts = [r._world_to_screen(x, y) for x, y in get_rect_vertices(v.x, v.y, v.width, v.height, v.rotation)]
+    overlay = pygame.Surface(r.screen.get_size(), pygame.SRCALPHA)
+    pygame.draw.polygon(overlay, (*color, 45), pts)
+    r.screen.blit(overlay, (0, 0))
+    _polygon_dashed(r.screen, color, pts)
+    cx = sum(p[0] for p in pts) / 4
+    cy = sum(p[1] for p in pts) / 4
+    r._queue_label(format_plc_value(v), (cx, cy), r.PRIORITY_DEVICE, hmi.TEXT, force=True)
 
 
 def draw_rollers(r, belt) -> None:
@@ -151,7 +198,7 @@ def _draw_scanner(r, s) -> None:
 def _draw_diverter(r, d) -> None:
     color = _color(r, d.color)
     pts = r._rect_screen(d.x, d.y, d.width, d.height, d.rotation)
-    angle = divert_angle(d)                 # where it is told to send them: divertAngle + commandAngle
+    angle = divert_angle(d)                 # where it is told to send them: commandAngle
     if d.active:
         overlay = pygame.Surface(r.screen.get_size(), pygame.SRCALPHA)
         pygame.draw.polygon(overlay, (*color, 70), pts)
@@ -185,10 +232,20 @@ def _draw_diverter(r, d) -> None:
     elif px_per_m >= 25:                                   # wheels too small to see further out
         steer = math.radians(d.wheelAngle)
         dx, dy = geo.WHEEL_R * math.cos(steer), geo.WHEEL_R * math.sin(steer)
-        wheel = color if d.active else (43, 48, 56)
+        wheel = hmi.shade(color, 0.35) if d.active else (43, 48, 56)   # dark on the lit deck
         width = max(1, int(geo.WHEEL_T * px_per_m))
-        for x, y in geo.wheel_centres(d.width, d.height):
-            pygame.draw.line(r.screen, wheel, screen(x - dx, y - dy), screen(x + dx, y + dy), width)
+        rows = list(getattr(d, "rowWheelAngles", None) or [])
+        us, vs = geo.grid_of(d)
+        for i, x in enumerate(us):
+            if rows and i < len(rows):                     # a deck of rows: each row points its own way
+                a = math.radians(rows[i])
+                dx, dy = geo.WHEEL_R * math.cos(a), geo.WHEEL_R * math.sin(a)
+            for y in vs:
+                pygame.draw.line(r.screen, wheel, screen(x - dx, y - dy), screen(x + dx, y + dy), width)
+        if rows:                                           # the rows' borders
+            for lo, _hi in geo.row_bounds(d.width, us)[1:]:
+                pygame.draw.line(r.screen, hmi.shade(color, 0.6), screen(lo, -d.height / 2.0),
+                                 screen(lo, d.height / 2.0), 1)
     # The divert direction.
     a = math.radians(d.rotation + angle)
     reach = max(d.width, d.height) * 0.45
@@ -315,4 +372,10 @@ def hit_logistics(config, wx: float, wy: float) -> Optional[object]:
     for acc in config.accumulators:
         if math.hypot(wx - acc.x, wy - acc.y) <= 0.4:
             return acc
+    for v in getattr(config, "plcValues", []):
+        if point_in_polygon(wx, wy, get_rect_vertices(v.x, v.y, v.width, v.height, v.rotation)):
+            return v
+    for w in getattr(config, "watchdogs", []):
+        if point_in_polygon(wx, wy, get_rect_vertices(w.x, w.y, w.width, w.height, 0.0)):
+            return w
     return None

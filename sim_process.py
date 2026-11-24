@@ -25,6 +25,7 @@ from typing import Dict, List, Optional
 
 import devices
 import io_signals
+import tracking
 from config_parser import SimulatorConfig, load_config
 from mqtt_data_exchange import apply_exchange_config
 from device_kinds import DEVICE_KINDS
@@ -150,6 +151,9 @@ def simulation_main(conn, settings: dict) -> None:
                             "sim_time": physics.sim_time, "delivered": dict(physics.delivered),
                             "dropped_time": physics.dropped_time}
                 snap["exchange"] = exchange.stats() if getattr(exchange, "_enabled", False) else None
+                snap["health"] = runner.health()        # the window's debug panel (F3)
+                with lock:
+                    snap["tracking"] = tracking.report_of(physics)   # the PLC's tracked loads, checked
                 snap["playing"], snap["speed"] = runner.playing, runner.speed
                 conn.send(("snapshot", snap))
             elif cmd == "play":
@@ -216,6 +220,9 @@ class PhysicsProxy:
         self._playing: Optional[bool] = None
         self._speed = object()                 # nothing sent yet
         self.snapshots = 0
+        self.health: Optional[dict] = None     # the simulation loop's timing (SimulationRunner.health)
+        self.tracking: Optional[dict] = None   # tracking.report: the PLC's tracked loads against the parcels
+        self.last_snapshot_at: Optional[float] = None   # monotonic: when the last snapshot arrived
         self.process: Optional[multiprocessing.Process] = None
         self._conn = None
 
@@ -300,6 +307,9 @@ class PhysicsProxy:
         stats = snap.get("exchange")
         self.exchange._enabled = stats is not None
         self.exchange._stats = stats or {}
+        self.health = snap.get("health")
+        self.tracking = snap.get("tracking")
+        self.last_snapshot_at = time.monotonic()
         self.snapshots += 1
 
     # -- the PhysicsEngine interface the renderer uses -----------------------------

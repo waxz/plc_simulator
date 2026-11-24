@@ -21,6 +21,193 @@ from physics import PhysicsEngine  # noqa: E402
 _app = QApplication.instance() or QApplication([])
 
 
+class EveryKindSurvivesTest(unittest.TestCase):
+    """Opening a layout and running or saving it (MainWindow._build_export_config,
+    which rebuilds every list from the canvas items) keeps every device of
+    every kind the designer has - and so the PLC's I/O layout. The watchdog
+    and the tracked-load slots were once dropped (no canvas items made for
+    them): the simulator's frames then no longer matched the PLC's."""
+
+    def test_every_list_and_the_io_layout_survive(self):
+        import st_export
+        from layout_editor import CONFIG_LIST_ATTR_FOR_KIND
+        for name in ("merge_demo.json", "complete_plant.json"):
+            with self.subTest(layout=name):
+                window = MainWindow(config=load_config(name), config_path=name)
+                self.addCleanup(window.deleteLater)
+                # as a run or a save gets it: written and loaded again (a panel's buttons and lamps
+                # are not saved - they are derived from its elements on loading)
+                path = os.path.join(tempfile.mkdtemp(), name)
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(window._build_export_config().model_dump_json(indent=2))
+                out, original = load_config(path), load_config(name)
+                for attr in CONFIG_LIST_ATTR_FOR_KIND.values():
+                    self.assertEqual(len(getattr(out, attr)), len(getattr(original, attr)), f"{name}: {attr}")
+                self.assertEqual(st_export.contract(out)["fingerprint"], st_export.contract(original)["fingerprint"],
+                                 f"{name}: the I/O layout")
+
+
+class ExchangeOrderTest(unittest.TestCase):
+    """A kind's list order is the PLC exchange's order: deleting components
+    and undoing it must give back the same I/O layout (the fingerprints the
+    PLC checks), not the same components at the end of their lists."""
+
+    def test_delete_and_undo_keeps_the_exchange_layout(self):
+        import random
+        import layout_editor as le
+        import st_export
+        here = os.path.dirname(os.path.abspath(__file__))
+        window = MainWindow(config=load_config(os.path.join(here, "merge_demo.json")),
+                            config_path=os.path.join(tempfile.mkdtemp(), "layout.json"))
+        self.addCleanup(window.deleteLater)
+
+        def fingerprints():
+            frames = st_export.contract(window._build_export_config())["frames"]
+            return {f["name"]: f["fingerprint"] for f in frames}
+
+        before = fingerprints()
+        sensors = [i for i in window.items_list if i.kind == "sensor"]
+        picked = random.Random(3).sample(sensors, 7)    # as a selection gives them: in no particular order
+        window.undo_stack.push(le.DeleteItemsCommand(window.view._do_add_item, window.view._do_remove_item,
+                                                     picked))
+        self.assertEqual(len(window.config.sensors), len(sensors) - 7)
+        window.undo_stack.undo()
+        self.assertEqual(fingerprints(), before)
+        self.assertEqual([m.id for m in window.config.sensors], [i.model.id for i in sensors])
+        window.undo_stack.redo()
+        window.undo_stack.undo()
+        self.assertEqual(fingerprints(), before)
+
+
+class ExchangeTableTest(unittest.TestCase):
+    """The PLC's values (typed) and tracked-load slots are one table (Edit >
+    Exchange Table), not canvas items: nothing on the canvas reorders them,
+    and the table's order is the frame's."""
+
+    def open(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        window = MainWindow(config=load_config(os.path.join(here, "merge_demo.json")),
+                            config_path=os.path.join(tempfile.mkdtemp(), "layout.json"))
+        self.addCleanup(window.deleteLater)
+        return window
+
+    def dialog(self, window):
+        import layout_editor as le
+        window.config.plcValues = []                       # the table's own behaviour: from no values
+        d = le.ExchangeTableDialog(window, window.config.plcValues, window.config.trackedLoads,
+                                   {i.model.id for i in window.items_list})
+        self.addCleanup(d.deleteLater)
+        return d
+
+    def test_values_and_slots_are_not_on_the_canvas(self):
+        import layout_editor as le
+        window = self.open()
+        self.assertFalse([i for i in window.items_list if i.kind in ("trackedload", "plcvalue")])
+        kinds = [kind for _name, kind, _factory in le.ComponentLibrary.BUILT_INS]
+        self.assertNotIn("trackedload", kinds)
+        self.assertNotIn("plcvalue", kinds)
+        ids = [s.id for s in window.config.trackedLoads]
+        self.assertEqual([s.id for s in window._build_export_config().trackedLoads], ids)
+
+    def test_typed_values_reach_the_exchange_in_the_tables_order(self):
+        import st_export
+        window = self.open()
+        d = self.dialog(window)
+        d.add_value("REAL", "cycle_ms")
+        d.add_value("UDINT", "scans")
+        d.add_value("BOOL", "overrun")
+        self.assertEqual([d.table.item(r, 1).text() for r in range(3)], ["cycle_ms", "scans", "overrun"])
+        self.assertEqual(d.table.item(3, 1).text(), window.config.trackedLoads[0].id)   # the slots after
+        self.assertTrue(window.apply_exchange_table(d.values(), d.slots()))
+        config = window._build_export_config()
+        self.assertEqual([(v.id, v.dataType) for v in config.plcValues],
+                         [("cycle_ms", "REAL"), ("scans", "UDINT"), ("overrun", "BOOL")])
+        structs = st_export.contract(config)["structs"]
+        self.assertEqual(structs["PlcValueUdint_Command"], [{"name": "value", "type": "UDINT"}])
+        self.assertEqual(structs["PlcValueBool_Command"], [{"name": "value", "type": "BOOL"}])
+        self.assertEqual(structs["PlcValue_Command"], [{"name": "value", "type": "REAL"}])
+        window.undo_stack.undo()
+        self.assertEqual(window.config.plcValues, [])
+
+    def test_a_type_change_moves_the_row_to_its_group(self):
+        window = self.open()
+        d = self.dialog(window)
+        slots = len(window.config.trackedLoads)
+        d.add_value("REAL", "a")
+        d._retype(d._rows[0], "Tracked load")             # a value becomes a tracked load: the last row
+        self.assertEqual(d._rows[-1].id, "a")
+        self.assertEqual(len(d.slots()), slots + 1)
+        d._retype(d._rows[-1], "UINT")                    # back to a value: the first group
+        self.assertEqual((d._rows[0].id, d._rows[0].dataType), ("a", "UINT"))
+
+    def test_a_tracked_rows_role_is_its_type_and_not_an_io_change(self):
+        """Track slot / Sync load: the same row on the wire, drawn (and
+        checked) by its role - no rebuild of the PLC for it."""
+        window = self.open()
+        d = self.dialog(window)
+        row = d._rows[0]
+        d._retype(row, "Track slot")
+        self.assertEqual((d._rows[0].id, d._rows[0].role), (row.id, "slot"))
+        self.assertNotIn("rebuild", d.status.text())
+        d._retype(d._rows[0], "Sync load")
+        self.assertEqual(d._rows[0].role, "sync")
+        self.assertEqual(d._type_of(d._rows[0]), "Sync load")
+        self.assertTrue(window.apply_exchange_table(d.values(), d.slots()))
+        self.assertEqual(window.config.trackedLoads[0].role, "sync")
+        self.assertIn('"role":"sync"', window.config.model_dump_json())                   # saved with the layout
+
+    def test_ids_must_be_names_and_free(self):
+        window = self.open()
+        d = self.dialog(window)
+        d.add_value("REAL", "belt_5_a")                   # a belt's id
+        d.add_value("REAL", "9lives")
+        found = d.problems()
+        self.assertEqual(len(found), 2, found)
+        d.remove_selected(0)
+        d.remove_selected(0)
+        self.assertEqual(d.problems(), [])
+
+    def test_up_and_down_stay_within_the_group(self):
+        window = self.open()
+        d = self.dialog(window)
+        d.add_value("REAL", "a")
+        d.add_value("REAL", "b")
+        d.move_selected(1, 0)
+        self.assertEqual([r.id for r in d.values()], ["b", "a"])
+        d.move_selected(1, 1)                              # the last value can't go into the slots
+        self.assertEqual([r.id for r in d.values()], ["b", "a"])
+
+
+class DriveLimitsInTheDesignerTest(unittest.TestCase):
+    """Every belt / roller and diverter shows its motor's limits (rpm, rpm/s)."""
+
+    def test_every_belt_and_diverter_has_the_motor_limit_rows(self):
+        import layout_editor as le
+        from config_parser import Diverter
+        for fmt in ("speed", "vfd", "frequency"):
+            belt = Belt(id="b", type="linear", x=0, y=0, length=4, beltWidth=1, rotation=0, speed=1.0,
+                        directionAngle=0, color="#fff", commandFormat=fmt)
+            attrs = [s[1] for s in le._field_specs_for(BeltItem(belt))]
+            self.assertIn("drive.motorMaxSpeed", attrs, fmt)
+            self.assertIn("drive.motorMaxAccel", attrs, fmt)
+        d = Diverter(id="d", x=0, y=0)
+        attrs = [s[1] for s in le._field_specs_for(le.DiverterItem(d))]
+        self.assertIn("drive.motorMaxSpeed", attrs)
+        self.assertIn("drive.motorMaxAccel", attrs)
+        le._set_model_value(d, "drive.motorMaxAccel", 2900.0)
+        self.assertEqual(d.drive.motorMaxAccel, 2900.0)
+
+    def test_editing_a_limit_on_a_belt_in_m_per_s_pins_its_train(self):
+        import layout_editor as le
+        belt = Belt(id="b", type="linear", x=0, y=0, length=4, beltWidth=1, rotation=0, speed=0.8,
+                    directionAngle=0, color="#fff", commandFormat="vfd")
+        le._set_model_value(belt, "drive.motorMaxAccel", 2900.0)
+        self.assertIsNotNone(belt.drive.gearRatio)
+        self.assertIsNotNone(belt.drive.drumDiameter)
+        le._set_model_value(belt, "drive.motorMaxAccel", 0)                      # 0 = not set
+        self.assertIsNone(belt.drive.motorMaxAccel)
+
+
 class LayoutEditorRoundTripTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -29,7 +216,7 @@ class LayoutEditorRoundTripTest(unittest.TestCase):
         config = load_config("station_1.json")
         config.tractionModel = "friction"
         config.physicsDt = 0.002
-        config.mqttSettings.beltFeedback = True
+        config.belts[0].feedback = True
         config.belts[0].drive = DriveConfig(accel=1.5, tau=0.1)
         with open(self.path, "w", encoding="utf-8") as f:
             f.write(config.model_dump_json(indent=2))
@@ -54,7 +241,7 @@ class LayoutEditorRoundTripTest(unittest.TestCase):
         self.assertEqual(saved.model_dump(), self.original.model_dump())
         self.assertEqual(saved.tractionModel, "friction")
         self.assertEqual(saved.belts[0].drive.accel, 1.5)
-        self.assertTrue(saved.mqttSettings.beltFeedback)
+        self.assertTrue(saved.belts[0].feedback)
 
     def test_moved_and_added_components_are_saved_and_run_in_the_simulator(self):
         window = self.open_window()

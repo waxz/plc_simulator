@@ -96,7 +96,7 @@ class EditorClicksTest(unittest.TestCase):
         self.assertTrue(panel.tree.isVisible())
         self.assertIn("button_1_1_2", panel.header.text())
         groups = [panel.tree.topLevelItem(i).text(0) for i in range(panel.tree.topLevelItemCount())]
-        self.assertEqual(groups, ["Identity", "Layout", "Operation", "Display",
+        self.assertEqual(groups, ["Identity", "Layout", "Operation", "Display", "AX / PLC geometry",
                                   "Feedback (simulator -> PLC)"])        # a button: its contact, to the PLC
 
         # Click the NC contact box: the model changes, undo puts it back.
@@ -119,7 +119,7 @@ class EditorClicksTest(unittest.TestCase):
         import drivetrain
         self.click_on_canvas("belt_1_1_1")
         panel = self.window.properties_panel
-        self.assertNotIn("drive.gearRatio", panel.spins)
+        self.assertIn("drive.gearRatio", panel.spins)          # every belt shows its drive train (its motor limits)
         panel.combos["commandFormat"].setCurrentText(hmi.combo_label("commandFormat", "frequency"))
         QTest.qWait(50)                                  # the rows are rebuilt on the next tick
         panel = self.window.properties_panel
@@ -127,7 +127,7 @@ class EditorClicksTest(unittest.TestCase):
         self.assertEqual(belt.commandFormat, "frequency")
         groups = [panel.tree.topLevelItem(i).text(0) for i in range(panel.tree.topLevelItemCount())]
         self.assertEqual([g for g in groups if g in hmi.PROPERTY_GROUP_ORDER],
-                         ["Identity", "Layout", "Mechanics", "Drive", "Motion", "Display"])   # by layer
+                         ["Identity", "Layout", "Mechanics", "Drive", "Motion", "Display", "AX / PLC geometry"])   # by layer
         self.assertEqual(panel.spins["drive.motorRatedSpeed"].suffix(), " rpm")
         self.assertEqual(panel.spins["drive.maxFrequency"].suffix(), " Hz")
         # not set yet: the grid shows the gear ratio the simulation derives
@@ -155,7 +155,7 @@ class EditorClicksTest(unittest.TestCase):
 
         panel.combos["commandFormat"].setCurrentText(hmi.combo_label("commandFormat", "speed"))
         QTest.qWait(50)
-        self.assertNotIn("drive.gearRatio", self.window.properties_panel.spins)
+        self.assertIn("drive.gearRatio", self.window.properties_panel.spins)   # still shown: every belt's train
 
     def test_tool_bars_are_one_compact_row(self):
         top = [b for b in self.window.findChildren(QToolBar)

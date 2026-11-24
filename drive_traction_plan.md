@@ -15,10 +15,9 @@ Status: **Phases 0–4 implemented (simulator side), 2026-10-27.** Open items: u
   with `--headless`) runs physics + exchange on their own 2 ms tick. Exchange channels
   were capped at the GUI frame rate before that, and at ~64 Hz on Windows by
   `time.monotonic()`'s 15.6 ms resolution (now `perf_counter()`).
-- Belt feedback is its own frame type, `FrameType.BELT_FEEDBACK` (6), and is **opt-in**
-  (`mqttSettings.beltFeedback`). The PLC's `CommunicationProgram` (ax_dev
-  `tcp_client.st`) deserializes every received frame into its IO_MAPPING struct without
-  checking `ExtractedFrameType`, so an extra frame type would corrupt it until P4.5 is done.
+- A belt's drive feedback is the belt's own property (`Belt.feedback`), carried in the
+  input frame with every other device's feedback (2026-11-14; at first it was a frame type
+  of its own, removed).
 - `clock/simNanoseconds` (UINT64, simulated time) is available next to the wall-clock
   `clock/nanoseconds`.
 - `--headless` never actually ran physics before (nothing set `playing`); fixed.

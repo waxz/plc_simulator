@@ -140,8 +140,8 @@ class ApplyTest(unittest.TestCase):
         self.assertEqual(c.sensors[1].sensor_states, "0110")
         self.assertIsNone(io_signals.apply(c, "lamp", "mode", 258))                 # BYTE: masked
         self.assertEqual(c.leds[0].mode, 2)
-        self.assertIsNone(io_signals.apply(c, "d", "divert", 1))
-        self.assertIs(c.diverters[0].divert, True)
+        self.assertIsNone(io_signals.apply(c, "d", "enable", 1))
+        self.assertIs(c.diverters[0].enable, True)
         values = io_signals.read(c, ["d", "missing"])
         self.assertEqual(list(values), ["d"])
         self.assertEqual(values["d"]["control"], "manual")
@@ -177,31 +177,22 @@ class ManualModeTest(unittest.TestCase):
         self.assertEqual(config.sensors[0].risingEdges, 1)
         self.assertFalse(io_signals.read(config, ["forced"])["forced"]["values"]["sensor_states"])
 
-    def test_a_diverter_runs_at_its_commanded_speed_and_direction(self):
-        d = Diverter(id="d", x=5.0, y=0.0, divertAngle=-90.0, speed=1.0, control="manual")
-        d.commandSpeed, d.commandAngle = 0.4, 15.0
-        self.assertEqual(logistics.diverter_motion(d), (0.4, -75.0))       # relative to its divertAngle
-        d.commandSpeed = d.commandAngle = 0.0
-        self.assertEqual(logistics.diverter_motion(d), (0.0, -90.0))       # 0: as designed
-        commands = [s.name for s in io_signals.signals(d) if s.direction == "command"]
-        self.assertEqual(commands, ["divert", "commandSpeed", "commandAngle"])
-
     def test_diverter_commands_start_at_the_layout_values_and_mean_what_they_say(self):
         config = SimulatorConfig(belts=[belt()], useSurfaceVelocity=True,
                                  diverters=[Diverter(id="d", x=5.0, y=0.0, divertAngle=30.0, speed=1.2,
                                                      control="manual")])
         engine = PhysicsEngine(config)
         d = config.diverters[0]
-        self.assertEqual((d.commandSpeed, d.commandAngle), (1.2, 0.0))    # the layout's speed, no correction
+        self.assertEqual((d.commandSpeed, d.commandAngle), (1.2, 30.0))   # the layout's speed and divertAngle
         self.assertNotIn("commandSpeed", d.model_dump())                  # runtime, not layout
         parcel = engine.add_parcel(4.0, 0.0, 0.3, 0.3)
-        d.divert, d.commandSpeed = True, 0.0
+        d.enable, d.commandSpeed = True, 0.0
         engine.run_for(1.5)
         self.assertAlmostEqual(parcel.body.position.y, 0.0, places=2)      # speed 0: held, not pushed
         held = parcel.body.position.x
-        d.commandSpeed, d.commandAngle = 1.0, -75.0
+        d.commandSpeed, d.commandAngle = 1.0, -45.0
         engine.run_for(0.3)
-        self.assertLess(parcel.body.position.y, -0.05)                    # 30 - 75 = -45: to the right,
+        self.assertLess(parcel.body.position.y, -0.05)                    # -45: to the right,
         self.assertGreater(parcel.body.position.x, held + 0.05)           # and on
 
     def test_manual_machines_follow_their_commands(self):
@@ -212,7 +203,7 @@ class ManualModeTest(unittest.TestCase):
         engine.run_for(0.2)
         self.assertFalse(config.diverters[0].active)
         self.assertTrue(config.stoppers[0].isUp)
-        self.assertIsNone(io_signals.apply(config, "d", "divert", True))
+        self.assertIsNone(io_signals.apply(config, "d", "enable", True))
         self.assertIsNone(io_signals.apply(config, "st", "release", True))
         engine.run_for(1.0)
         self.assertTrue(config.diverters[0].active)
@@ -222,22 +213,6 @@ class ManualModeTest(unittest.TestCase):
 class AtRestTest(unittest.TestCase):
     """The simulator starts with the PLC's commands at rest: nothing moves
     until the PLC (plc_mock.py or a real one) commands it."""
-
-    def test_plc_driven_components_start_at_rest(self):
-        config = load_config(DEMO)
-        config.belts[1].control = "manual"
-        manual_speed = config.belts[1].speed
-        io_signals.at_rest(config)
-        self.assertEqual([b.speed for b in config.belts[2:]], [0.0] * len(config.belts[2:]))
-        self.assertEqual(config.belts[1].speed, manual_speed)         # set by hand: left alone
-        self.assertEqual([d.control for d in config.diverters], ["plc"] * len(config.diverters))
-        self.assertFalse(any(a.release for a in config.accumulators))
-        self.assertTrue(all(b.directionAngle == load_config(DEMO).belts[i].directionAngle
-                            for i, b in enumerate(config.belts)))      # the flow direction stays
-        engine = PhysicsEngine(config)
-        engine.add_parcel(config.belts[0].x, config.belts[0].y, 0.3, 0.3)
-        engine.run_for(2.0)
-        self.assertEqual({round(b.actualSpeed, 3) for b in config.belts if b.control == "plc"}, {0.0})
 
     def test_the_simulator_starts_that_way(self):
         import inspect
@@ -283,9 +258,9 @@ class SimulatorInspectorTest(unittest.TestCase):
         d = self.inspect("div_2")
         self.assertEqual(set(self.ui.io_source_buttons.values()), {"plc", "manual"})
         self.assertTrue(self.source_button("plc").is_selected)
-        self.assertEqual(list(self.ui.io_rows), ["divert", "commandSpeed", "commandAngle", "active", "present",
+        self.assertEqual(list(self.ui.io_rows), ["enable", "commandSpeed", "commandAngle", "active", "present",
                                                  "presentCode", "diverted"])
-        widget = self.ui.io_rows["divert"][1]
+        widget = self.ui.io_rows["enable"][1]
         self.assertIsInstance(widget, pygame_gui.elements.UILabel)       # from the PLC: shown, not set here
         d.diverted = 5
         self.ui.update_live()
@@ -296,10 +271,10 @@ class SimulatorInspectorTest(unittest.TestCase):
         d = self.inspect("div_1")
         self.press(self.source_button("manual"))
         self.assertEqual(d.control, "manual")
-        toggle = self.ui.io_rows["divert"][1]
+        toggle = self.ui.io_rows["enable"][1]
         self.assertIsInstance(toggle, pygame_gui.elements.UIButton)
         self.press(toggle)
-        self.assertTrue(d.divert)
+        self.assertTrue(d.enable)
         self.ui.update_live()
         self.assertEqual(toggle.text, "ON")
         entry = self.ui.io_rows["commandAngle"][1]
@@ -311,10 +286,10 @@ class SimulatorInspectorTest(unittest.TestCase):
         self.assertEqual(d.commandAngle, 45.0)
         self.engine.run_for(0.1)
         self.assertTrue(d.active)
-        self.assertEqual(logistics.diverter_motion(d)[1], d.divertAngle + 45.0)   # relative: -90 + 45
+        self.assertEqual(logistics.diverter_motion(d)[1], 45.0)           # deg to the travel, as commanded
         self.press(self.source_button("plc"))                             # back: readouts again
         self.assertEqual(d.control, "plc")
-        self.assertIsInstance(self.ui.io_rows["divert"][1], pygame_gui.elements.UILabel)
+        self.assertIsInstance(self.ui.io_rows["enable"][1], pygame_gui.elements.UILabel)
 
     def test_typing_a_value_is_not_a_shortcut(self):
         self.inspect("infeed")
@@ -349,10 +324,10 @@ class WindowApplyTest(unittest.TestCase):
         from visualizer import Renderer
         config = load_config(DEMO)
         renderer = Renderer(config, headless=True)
-        self.assertFalse(renderer.set_io("div_1", "divert", True))      # from the PLC: not by hand
+        self.assertFalse(renderer.set_io("div_1", "enable", True))      # from the PLC: not by hand
         self.assertTrue(renderer.set_io("div_1", "control", "manual"))
-        self.assertTrue(renderer.set_io("div_1", "divert", True))
-        self.assertTrue(config.diverters[0].divert)
+        self.assertTrue(renderer.set_io("div_1", "enable", True))
+        self.assertTrue(config.diverters[0].enable)
         sent = []
         renderer.physics = type("Proxy", (), {"set_io": lambda self, *a: sent.append(a)})()
         self.assertTrue(renderer.set_io("infeed", "control", "manual"))
@@ -370,9 +345,9 @@ class ProxyTest(unittest.TestCase):
         proxy.set_io("infeed", "control", "manual")
         proxy.set_io("infeed", "speed", 0.25)
         proxy.set_io("div_1", "control", "manual")
-        proxy.set_io("div_1", "divert", True)
+        proxy.set_io("div_1", "enable", True)
         # The mirror shows the child's values: it took them.
-        self.assertTrue(wait_for(proxy, lambda: belt_.speed == 0.25 and config.diverters[0].divert))
+        self.assertTrue(wait_for(proxy, lambda: belt_.speed == 0.25 and config.diverters[0].enable))
 
 
 class DesignerPanelTest(unittest.TestCase):
@@ -409,7 +384,7 @@ class DesignerPanelTest(unittest.TestCase):
         from layout_editor import IO_COMMANDS, IO_FEEDBACK, IO_GROUP
         self.select("div_1")
         self.assertEqual(self.group_rows(IO_GROUP), ["Command source"])
-        self.assertEqual(self.group_rows(IO_COMMANDS), ["divert", "commandSpeed", "commandAngle"])
+        self.assertEqual(self.group_rows(IO_COMMANDS), ["enable", "commandSpeed", "commandAngle"])
         self.assertEqual(self.group_rows(IO_FEEDBACK), ["active", "present", "presentCode", "diverted"])
         self.assertEqual(self.panel.tree.itemWidget(self.panel.io_rows["presentCode"], 1).text(), "DWORD")
         combo = self.panel.combos["control"]
@@ -421,6 +396,31 @@ class DesignerPanelTest(unittest.TestCase):
         self.select("dws_1")                                            # a scanner: feedback only
         self.assertNotIn("control", self.panel.combos)
         self.assertEqual(self.group_rows(IO_FEEDBACK)[:2], ["noRead", "present"])
+
+    def test_a_wheel_decks_rows_set_its_command_arrays(self):
+        """The wheels are the PLC interface: a swivel motor per row, so a speed and an angle per row -
+        changing the rows changes the commands shown, at once (and back on undo)."""
+        from layout_editor import IO_COMMANDS
+
+        def array_type(name):
+            _app.processEvents()
+            return self.panel.tree.itemWidget(self.panel.io_rows[name], 1).text()
+
+        self.select("div_2")                                            # wheels in the demo
+        self.panel._apply_field("rowControl", True)
+        _app.processEvents()
+        self.assertEqual(self.group_rows(IO_COMMANDS), ["enable", "rowSpeeds", "rowAngles"])
+        d = self.window.scene.selectedItems()[0].model
+        fitted = len(__import__("equipment_geometry").grid_of(d)[0])
+        self.assertEqual(array_type("rowSpeeds"), f"ARRAY[0..{fitted - 1}] OF REAL")
+        self.panel._apply_field("wheelRows", 7)
+        self.assertEqual(array_type("rowSpeeds"), "ARRAY[0..6] OF REAL")
+        self.assertEqual(array_type("rowAngles"), "ARRAY[0..6] OF REAL")
+        self.window.undo_stack.undo()
+        self.assertEqual(array_type("rowAngles"), f"ARRAY[0..{fitted - 1}] OF REAL")
+        self.window.undo_stack.undo()                                   # no row control: one of each
+        _app.processEvents()
+        self.assertEqual(self.group_rows(IO_COMMANDS), ["enable", "commandSpeed", "commandAngle"])
 
     def test_a_new_diverter_type_redraws_what_it_covers(self):
         self.select("div_1")

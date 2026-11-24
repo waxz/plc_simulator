@@ -43,6 +43,15 @@ class DriveConfig(BaseModel):
     # An encoder on the motor shaft, counts per revolution; None = a
     # measuring wheel on the surface, countsPerM.
     encoderCountsPerRev: Optional[int] = None
+    # The motor's limits, on its shaft (drivetrain.motor_limits converts them
+    # through the train to the surface, the hoist or the table): no faster
+    # than motorMaxSpeed (rpm), no ramp steeper than motorMaxAccel (rpm/s),
+    # and a belt's stop (setpoint 0: run off, speed 0, a hold, a safety
+    # stop) brakes at motorMaxAccel - the quick stop - not on decel /
+    # rampDownTime. They need a train (gearRatio and drumDiameter, a Hz
+    # belt, or a machine's drive). None = no limit.
+    motorMaxSpeed: Optional[float] = None
+    motorMaxAccel: Optional[float] = None
 
 
 class PathNode(BaseModel):
@@ -101,7 +110,7 @@ class Belt(BaseModel):
     speedBinding: Optional[str] = None
     directionAngleBinding: Optional[str] = None
     directionBinding: Optional[str] = None
-    transition_momentum_duration: float = 0.6
+    transition_momentum_duration: float = 0.6   # handoff "blend" only: the seconds a parcel takes to follow
     # How the PLC commands the motor (devices.commanded_speed):
     #   "speed" - `speed` is the signed setpoint (negative = reverse);
     #             on the wire: speed + directionAngle REALs
@@ -115,6 +124,12 @@ class Belt(BaseModel):
     #             reverse BOOL, frequency REAL; feedback adds outputFrequency
     #             (Hz) and motorSpeed (rpm)
     commandFormat: Literal["speed", "vfd", "frequency"] = "speed"
+    # The drive's feedback to the PLC, in the input frame with every other
+    # device's: running, atSpeed, reversing, fault (bits), actualSpeed (REAL,
+    # m/s), encoderCount (UDINT); a "frequency" belt adds outputFrequency (Hz)
+    # and motorSpeed (rpm). What a real drive or encoder reports - a PLC that
+    # tracks loads by travel takes it from here. Off: the belt reports nothing.
+    feedback: bool = False
     control: CommandSource = "plc"
     run: bool = False
     reverse: bool = False
@@ -122,7 +137,13 @@ class Belt(BaseModel):
     # `speed` is the commanded setpoint (written by the PLC). The drive model
     # turns it into `actualSpeed`, which is what physics uses.
     drive: Optional[DriveConfig] = None
-    friction: float = 0.5     # belt/parcel friction coefficient (friction traction)
+    # Side guides (rails) along its open side edges (kinematic model, handoff
+    # "friction"): a parcel reaching past such an edge over nothing is pushed
+    # back on - not where another belt adjoins (a merge opening, an outlet).
+    guides: bool = True
+    friction: float = 0.5     # belt/parcel friction coefficient mu: the friction traction model's cap, and the
+                              # kinematic model's hand-off (handoff "friction": a parcel's velocity follows the
+                              # belt by at most mu g - a speed step slips dv^2 / 2 mu g; 0: no slip)
     # What carries the load: a belt, or driven rollers (pallets: a roller
     # conveyor, `rollerPitch` m between roller centres). It moves things
     # the same way; it is drawn as rollers (2D, designer, 3D).
@@ -132,6 +153,11 @@ class Belt(BaseModel):
     # what is on its level. An elevator's platform belt changes level with
     # the platform (-1 while travelling: it moves nothing).
     level: int = 0
+    # Where loads enter / leave it, set by hand (None: from its shape, ax_geometry.py):
+    # [x, y] in the belt's own frame (like vertexs: turned by rotation, offset by x / y),
+    # so they move with it. What a PLC program's path (start -> end) is made from.
+    inletPoint: Optional[List[float]] = None
+    outletPoint: Optional[List[float]] = None
     # Runtime outputs (drive.py) - the motor feedback: actualSpeed (FLOAT),
     # encoderCount (UINT32) and the status bits running, atSpeed, reversing,
     # fault. Never saved into layout files.
@@ -211,7 +237,18 @@ class Sensor(BaseModel):
     blockedBeams: int = Field(default=0, exclude=True)
     _filter: Optional[list] = PrivateAttr(default=None)  # per beam: [output, timer]
 
+SOURCE_CLEAR_GAP_M = 0.2   # the automatic detection area: the largest parcel and this much each way
+
+
 class Source(BaseModel):
+    """Makes a parcel every `interval` s at (x, y), heading `rotation` - but
+    only while its **detection area** is clear: a rectangle centred on the
+    source, turned with it, `clearLength` m along its heading and
+    `clearWidth` m across it. While any parcel (or pallet) of its level is
+    in the area it waits, and makes the parcel as soon as the area clears
+    (an interval shorter than the line can take no longer piles parcels up
+    at the start of the belt). 0 = automatic: the largest parcel it makes,
+    plus SOURCE_CLEAR_GAP_M before and after it along the heading."""
     id: str
     x: float
     y: float
@@ -236,13 +273,27 @@ class Source(BaseModel):
     destinationWeights: List[float] = Field(default_factory=list)
     noReadRate: float = 0.0
     barcodeStart: int = 1000001
+    clearLength: float = 0.0  # m, its detection area along its heading (0: the largest parcel + 2 x 0.2 m)
+    clearWidth: float = 0.0   # m, ... across it (0: the largest parcel)
+
+    def clear_area(self) -> Tuple[float, float]:
+        """Its detection area (along, across its heading), m."""
+        largest = max(self.maxWidth, self.maxHeight, self.minWidth, self.minHeight)
+        along = self.clearLength if self.clearLength > 0 else largest + 2.0 * SOURCE_CLEAR_GAP_M
+        across = self.clearWidth if self.clearWidth > 0 else largest
+        return along, across
 
 class Sink(BaseModel):
     """Where parcels leave the layout. With a `capacity` it is a chute /
     bin (logistics.py): it holds that many, then reports `full` and parcels
     back up in front of it until it is emptied - after `emptyTime` s by
     itself (0 = only on command), or by the PLC's `empty` (rising edge).
-    Only chutes (capacity > 0) are on the PLC exchange."""
+    Only chutes (capacity > 0) are on the PLC exchange.
+    `fillMode` (a chute's): "count" - each load is counted and deleted,
+    `full` at the capacity; "keep" - each load stays in the bin (set into
+    its next slot), `full` at the capacity, the bin's loads removed when it
+    is emptied; "delete" - each load is deleted (counted, the count wraps),
+    never `full`."""
     id: str
     x: float
     y: float
@@ -251,6 +302,7 @@ class Sink(BaseModel):
     label: str
     capacity: int = 0
     emptyTime: float = 0.0
+    fillMode: Literal["count", "keep", "delete"] = "count"
     control: CommandSource = "plc"
     empty: bool = False                                  # command
     count: int = Field(default=0, exclude=True)          # feedback: parcels in it now
@@ -271,8 +323,9 @@ class ControlButton(BaseModel):
     # "momentary": pressed while held (push button); "latching": each press
     # toggles (selector switch, emergency stop) - see devices.py.
     buttonType: Literal["momentary", "latching"] = "momentary"
-    # NC contact (typical for STOP / emergency stop): the signal is 1 while
-    # NOT pressed, 0 when pressed, so a broken wire reads as "stop".
+    # NC contact (typical for STOP / emergency stop): how the button is wired,
+    # shown on the panel. The simulator applies it; the PLC gets the final
+    # state either way (1 while pressed), see devices.contact.
     normallyClosed: bool = False
     # Keyboard key that presses it in the simulator window (e.g. "1", "q").
     key: Optional[str] = None
@@ -591,21 +644,46 @@ class Scanner(BaseModel):
 
 
 class Diverter(BaseModel):
-    """Sends parcels off the belt onto a branch: while it is active, parcels
-    in its zone (`width` along the travel, `height` across, `rotation` the
-    travel) are steered at `divertAngle` degrees to the travel - +90 / -90
-    for a pusher (left / right), about +-30 for pop-up wheels - at `speed`.
+    """Sends parcels onto a branch. Its zone: `width` along the travel,
+    `height` across, `rotation` the travel; `divertAngle` the branch's
+    direction (deg to the travel: +90 / -90 a pusher's left / right, about
+    +-30 for wheels), `speed` its design speed.
 
-    Active while `divert` is on, at `commandSpeed` m/s, steering at
-    `divertAngle` + `commandAngle` degrees: the command is relative to the
-    layout's divert angle, so 0 sends parcels the designed way and the PLC
-    trims it (logistics.divert_angle). Pop-up wheels steer at most 60
-    degrees each way; they swivel to the angle while active and back to
-    straight when not (`wheelAngle`, where they point now), and the parcels
-    in the zone go the way the wheels point (logistics.diverter_motion).
-    `commandSpeed` starts at the layout's `speed`, `commandAngle` at 0 (the
-    simulation's start / reset), and plc_mock.py's program sends those (it
-    fires for a code tracked to `destination`).
+    Three commands: `enable`, `commandSpeed` (m/s) and `commandAngle` (deg
+    to the travel, + left; logistics.divert_angle).
+
+    A pusher works over a belt: while `enable` is on it pushes what is in
+    its zone at `commandSpeed`, at `commandAngle`; off, the belt carries it.
+
+    Pop-up wheels ("wheels") are a conveyor of their own, with two motors:
+    one turns the wheels (the speed: `commandSpeed`), one swivels them (the
+    direction: `commandAngle`, at most 60 deg each way, 0 = straight on).
+    The parcels in the zone always go the way the wheels point at the
+    wheels' speed - straight through at angle 0, onto the branch at
+    divertAngle - and `enable` off stops the wheels: what is on them stands
+    (logistics.diverter_motion). Where they point now: `wheelAngle`.
+
+    Row control (`rowControl`, wheels only): the deck is a two-dimensional
+    array of wheels - rows across the travel, one after another along it
+    (as many as the module has wheels along the travel:
+    `wheelRows`, or fitted to the deck: 6 on a 1 m deck; row 0 first; each
+    row's strip from midway to the row before to midway to the row after).
+    The wheels: `wheelRows` rows of `wheelColumns` wheels at
+    `wheelPitchAlong` / `wheelPitchAcross` m (0: fitted to the deck). Every wheel turns on its own motor; each row's
+    wheels swivel together on one motor, mounted along the travel. Then the
+    commands are `enable` and per row a speed and an angle (`rowSpeeds[i]`,
+    `rowAngles[i]`), and a parcel goes the average way of the rows under it
+    (logistics: its footprint sampled). Where each row points now:
+    `rowWheelAngles`. The deck carries the parcels itself: no belt under it.
+
+    At the simulation's start / reset: `commandSpeed` = `speed`,
+    `commandAngle` = a pusher's divertAngle, the wheels' 0 (straight);
+    plc_mock.py's program enables them and steers to divertAngle for a code
+    tracked to `destination` (a layout saying `divert` for `enable` loads).
+    `drive` (optional): the wheels' / the pusher's motor, as a machine's
+    (drivetrain.py; the drum is the wheel or roller): the parcels go at
+    `actualSpeed`, which ramps to `commandSpeed` while active and to 0 when
+    not, within the motor's limits. Without one: at `commandSpeed` at once.
     Feedback: `active`, `present` (a parcel in the zone), `presentCode`
     (UDINT, its barcode; 0 for a no-read) and `diverted` (UINT count)."""
     id: str
@@ -622,14 +700,43 @@ class Diverter(BaseModel):
     color: str = "#f97316"
     level: int = 0
     control: ControlMode = "plc"
-    divert: bool = False                                     # command: run
+    enable: bool = False                                     # command: a pusher pushes, wheels turn
+    # Where its zone begins and ends for the AX program (world x, y; None: the ends of its
+    # box along its travel) - set in the designer by input, drag or a pick (ax_geometry.zone_ends)
+    axStart: Optional[List[float]] = None
+    axEnd: Optional[List[float]] = None
     commandSpeed: float = Field(default=0.0, exclude=True)   # command: m/s
-    commandAngle: float = Field(default=0.0, exclude=True)   # command: deg added to divertAngle
+    commandAngle: float = Field(default=0.0, exclude=True)   # command: deg to the travel (+ left)
+    rowControl: bool = False                                 # wheels: a swivel motor per wheel row
+    # the wheels (equipment_geometry.wheel_grid): rows along the travel (each across it), wheels in
+    # a row, and their pitch along / across, m - 0: fitted to the deck
+    wheelRows: int = 0
+    wheelColumns: int = 0
+    wheelPitchAlong: float = 0.0
+    wheelPitchAcross: float = 0.0
+    rowSpeeds: List[float] = Field(default_factory=list, exclude=True)    # command per row (rows > 1): m/s
+    rowAngles: List[float] = Field(default_factory=list, exclude=True)    # command per row: deg to the travel
+    rowWheelAngles: List[float] = Field(default_factory=list, exclude=True)   # runtime: where each row points
+    rowActualSpeeds: List[float] = Field(default_factory=list, exclude=True)  # runtime: each row's speed
+    drive: Optional[DriveConfig] = None                      # the wheels' / pusher's motor (None: instant)
+    actualSpeed: float = Field(default=0.0, exclude=True)    # runtime: the speed the parcels go at (m/s)
     wheelAngle: float = Field(default=0.0, exclude=True)     # runtime: where pop-up wheels point (deg)
     active: bool = Field(default=False, exclude=True)        # feedback
     present: bool = Field(default=False, exclude=True)
     presentCode: int = Field(default=0, exclude=True)
     diverted: int = Field(default=0, exclude=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _divert_is_enable(cls, data):
+        """Layouts written before the enable command: their `divert`."""
+        if isinstance(data, dict) and "divert" in data:
+            data = dict(data)
+            data.setdefault("enable", data.pop("divert"))
+        if isinstance(data, dict) and "rows" in data:             # a deck of rows, as first written
+            data = dict(data)
+            data.setdefault("rowControl", int(data.pop("rows") or 1) > 1)
+        return data
 
 
 class Turntable(BaseModel):
@@ -754,6 +861,116 @@ class GuardDoor(BaseModel):
     locked: bool = Field(default=False, exclude=True)
 
 
+# A PLC value's data types: what the exchange's wire carries (device_kinds.VALUE_TYPES).
+PlcDataType = Literal["BOOL", "BYTE", "UINT", "UDINT", "ULINT", "REAL"]
+
+
+class PlcValue(BaseModel):
+    """A value the PLC shows: one it writes (`value`, in its output frame)
+    that drives nothing - no motor, no lamp - of its `dataType` (BOOL,
+    BYTE, UINT, UDINT, ULINT, REAL; its ST struct follows the type). Its
+    tag monitors list it and the 3D page's charts plot it (over time, or two
+    of them as an x/y trajectory). Use it for what the PLC computes: a
+    tracked position, a controller's error, a state number, a scan time.
+    The designer's Exchange Table edits them (with the tracked-load slots):
+    a row's place is its place in the frame. `unit` and `decimals` are for
+    showing it; `x`, `y` are no longer used (it is not drawn)."""
+    id: str
+    x: float
+    y: float
+    rotation: float = 0.0
+    width: float = 1.0
+    height: float = 0.35
+    label: str = ""
+    unit: str = ""
+    decimals: int = 2
+    color: str = "#a78bfa"
+    level: int = 0
+    control: CommandSource = "plc"
+    dataType: PlcDataType = "REAL"
+    value: Union[float, int, bool] = Field(default=0.0, exclude=True)   # command: the PLC's value
+
+
+class LinkWatchdog(BaseModel):
+    """The PLC link's heartbeat and watchdog, both ways (logistics.py).
+    The PLC counts `plcHeartbeat` up every scan (UINT, wraps); the simulator
+    counts `simHeartbeat` up every physics step - it stops while the
+    simulation is paused or stalls - and reports `plcAlive` while the PLC's
+    heartbeat moves. Once the PLC's heartbeat has moved (armed), it standing
+    still for `timeoutMs` trips the watchdog: every command of the PLC is put
+    at rest (belts stopped, bits off) until it moves again - as a drive's
+    own communication watchdog stops it when its PLC is gone. The PLC
+    watches `simHeartbeat` the same way (the plant is not advancing: hold).
+
+    Latency: the PLC echoes `simHeartbeatEcho`, the simHeartbeat of the input
+    its outputs were computed from. When they arrive the simulator is some
+    steps further: `latencyMs` = (simHeartbeat - echo) steps x the step, in
+    simulated ms - the age of the plant state the PLC's commands answer,
+    the whole loop (the input frame's way, the PLC's scan, the output's way
+    back). 0 until an echo comes. `latencyMaxMs`: the longest since start."""
+    id: str
+    x: float
+    y: float
+    width: float = 1.4
+    height: float = 0.4
+    label: str = ""
+    color: str = "#22c55e"
+    timeoutMs: int = 1000
+    control: CommandSource = "plc"
+    plcHeartbeat: int = Field(default=0, exclude=True)        # command: the PLC's counter
+    simHeartbeatEcho: int = Field(default=0, exclude=True)    # command: the simHeartbeat its outputs are of
+    simHeartbeat: int = Field(default=0, exclude=True)        # feedback: the simulator's counter
+    plcAlive: bool = Field(default=False, exclude=True)       # feedback: the PLC's counter moves
+    latencyMs: float = Field(default=0.0, exclude=True)       # feedback: the loop's age, simulated ms
+    latencyMaxMs: float = Field(default=0.0, exclude=True)    # runtime: the longest
+    tripped: bool = Field(default=False, exclude=True)        # runtime: the PLC's commands at rest
+    trips: int = Field(default=0, exclude=True)               # runtime: how often
+
+
+class TrackedLoadView(BaseModel):
+    """One load the PLC tracks, as it shows it: a slot the PLC fills from its
+    load table every scan (one per load it can show at a time). It drives
+    nothing; the simulator checks it (logistics.py, tracking): against the
+    parcel nearest it as the parcels were at the simulation step the PLC's
+    values come from - `frame`, the watchdog's `simHeartbeat` in the input
+    frame the PLC computed them from - so the exchange's delay is no error.
+    It reports, per slot, the error along the load's travel and across it.
+    Positions in the plant (m), the heading in degrees, as every angle on
+    the exchange. Its tags are shown and plotted in the 3D page's tag
+    monitor (view "Tracked loads"). `x`, `y` place it in the designer.
+
+    Its `role` (the layout's, not on the exchange: the frame is the same for
+    each) says what the box is, and how the simulator draws it ("Track boxes"
+    in the 3D view, [B] in the window):
+      load  a load the PLC tracks (checked against the parcels)
+      slot  a slot on a merge line: one a load asked for, or was granted
+            (drawn, never checked: no parcel is in it yet)
+      sync  the load a sync section is driving into its slot (checked)"""
+    id: str
+    x: float
+    y: float
+    width: float = 1.0
+    height: float = 0.3
+    label: str = ""
+    color: str = "#f472b6"
+    level: int = 0
+    control: CommandSource = "plc"
+    role: Literal["load", "slot", "sync"] = "load"            # what the box is (drawn by it; slots not checked)
+    active: bool = Field(default=False, exclude=True)         # command: the slot shows a load
+    loadId: int = Field(default=0, exclude=True)              # command: the PLC's load id
+    loadX: float = Field(default=0.0, exclude=True)           # command: its centre, m
+    loadY: float = Field(default=0.0, exclude=True)
+    loadYaw: float = Field(default=0.0, exclude=True)         # command: its travel's heading, deg
+    loadLength: float = Field(default=0.0, exclude=True)      # command: along the travel, m
+    loadWidth: float = Field(default=0.0, exclude=True)       # command: across it, m
+    frame: int = Field(default=0, exclude=True)               # command: the simHeartbeat its values are of
+    matched: bool = Field(default=False, exclude=True)        # feedback: a parcel was found for it
+    alongError: float = Field(default=0.0, exclude=True)      # feedback: PLC - parcel along the travel, m
+    lateralError: float = Field(default=0.0, exclude=True)    # feedback: PLC - parcel across it (+ left), m
+    lengthError: float = Field(default=0.0, exclude=True)     # runtime: PLC - parcel length (its own box), m
+    widthError: float = Field(default=0.0, exclude=True)      # runtime: PLC - parcel width, m
+
+
 class SafetyCircuit(BaseModel):
     """A safety relay: it stops the belts `beltIds` (every belt when empty)
     - whatever the PLC commands - when one of its emergency stops
@@ -808,18 +1025,16 @@ class MqttSettings(BaseModel):
     # every frame the simulator itself sends. A connecting client (e.g.
     # plc_mock.py) has its own separate node id, not this one.
     nodeId: int = 0
-    # Publish belt actualSpeed/encoderCount as a BELT_FEEDBACK frame. Off by
-    # default: a PLC that doesn't check the frame type byte would deserialize
-    # this frame into its IO_MAPPING input struct.
-    beltFeedback: bool = False
-    beltFeedbackIntervalMs: int = 10
+    # (What a device reports to the PLC is the device's own - a belt's drive
+    # feedback is Belt.feedback - and travels in the I/O frames: these
+    # settings are only the transport's.)
     # TCP exchange robustness (tcp_framed_transport.py), all opt-in:
     #   tcpLengthEndianness   byte order of the frame's length field (None:
     #                         the payload's `endianness`, as always)
     #   tcpRxTimeoutMs        close a client silent this long (0: never)
     #   tcpMaxPayload         don't send frames with a longer payload (0: no
-    #                         limit) - the AX TcpClient's buffers hold 256
-    #                         bytes per frame: payload 242 at most
+    #                         limit) - the AX TcpClient's frames hold 4110
+    #                         bytes: payload 4096 at most
     #   tcpOutputOwner        accept the PLC output frame (IO_MAPPING) only
     #                         from this node id (None: from any client)
     #   tcpRequireLayoutCheck accept it only from a connection whose
@@ -861,8 +1076,13 @@ class AxExport(BaseModel):
     frames: List[str] = Field(default_factory=list)    # [] = every frame
     tags: bool = True               # the PLC tags STRUCT, ReadTags / WriteTags
     bitArrays: bool = False         # a laser banner's beams as ARRAY OF BOOL (else ARRAY OF BYTE)
-    maxPayload: int = 242           # refuse a bigger frame (the AX TcpClient's buffer); 0 = no limit
+    maxPayload: int = 4096          # refuse a bigger frame (the AX TcpClient's 4110-byte frames); 0 = no limit
     vectors: str = ""               # also an AxUnit golden-vector test file ("" = none)
+    # Device kinds whose tags are arrays in the PLC tags STRUCT (plc_tags.tag_path): per wire
+    # struct type an ARRAY of it, the device's index its place in its kind's list (layout
+    # order), named in <prefix>_TagIndex - so a program can loop over them ("belts",
+    # "trackedLoads"). [] = every tag a variable of its own.
+    tagArrays: List[str] = Field(default_factory=list)
 
 
 class BackgroundDrawing(BaseModel):
@@ -912,6 +1132,9 @@ class SimulatorConfig(BaseModel):
     doors: List[GuardDoor] = Field(default_factory=list)
     safety: List[SafetyCircuit] = Field(default_factory=list)
     controlPanels: List[ControlPanel] = Field(default_factory=list)
+    plcValues: List[PlcValue] = Field(default_factory=list)  # values the PLC shows / plots (drive nothing)
+    watchdogs: List[LinkWatchdog] = Field(default_factory=list)  # the PLC link's heartbeat both ways
+    trackedLoads: List[TrackedLoadView] = Field(default_factory=list)  # loads the PLC tracks, drawn and checked
     mqttSettings: MqttSettings = Field(default_factory=MqttSettings)
     connections: List[BeltConnection] = Field(default_factory=list)
     plcTags: List[PlcTag] = Field(default_factory=list)     # tag names / tables / comments (io_table.py)
@@ -928,6 +1151,19 @@ class SimulatorConfig(BaseModel):
     # "kinematic": legacy velocity override (useSurfaceVelocity) / impulse model.
     # "friction": parcels dragged by force-limited joints (traction.py).
     tractionModel: Literal["kinematic", "friction"] = "kinematic"
+    # How a kinematic parcel takes up a belt's velocity (physics.drive_toward_target):
+    #   "friction"  at most the belt's friction x g (Coulomb friction: it
+    #               slides until the speeds match, a speed step costs dv^2 / 2 mu g
+    #               of slip, a joint between equal belts none; with the two-belt drive and side guides);
+    #   "blend"     over the belt's transition_momentum_duration, restarted at
+    #               every hand-off (the former model: a 0.6 s blend lags a faster
+    #               belt by up to ~90 mm on short belts).
+    #   "scaled"    the blend's smooth ease, split: the momentum across the new
+    #               belt over its transition_momentum_duration (a side merge slides
+    #               in as with "blend"), the speed along it over that x |dv along|
+    #               / |v_belt| (a 15 % speed step ~0.08 s instead of 0.6; an equal
+    #               belt none): the merges' look, little slip - the default
+    handoff: Literal["friction", "blend", "scaled"] = "scaled"
     floorFriction: float = 0.6
     # Fixed physics step (s). Sensors and drives are evaluated every step.
     physicsDt: float = 0.004

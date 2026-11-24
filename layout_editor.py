@@ -75,10 +75,10 @@ from copy import deepcopy
 from dataclasses import dataclass, replace as dataclass_replace
 from typing import Callable, List, Optional, Tuple
 
-from PySide6.QtCore import Qt, QPointF, QMimeData, QRectF, QSize, QTimer
+from PySide6.QtCore import Qt, QPointF, QMimeData, QRectF, QSize, QTimer, QObject, QEvent
 from PySide6.QtGui import (
     QBrush, QColor, QPen, QPainter, QPainterPath, QDrag, QPolygonF, QTransform, QKeySequence, QAction,
-    QUndoStack, QUndoCommand, QFont, QFontMetricsF, QIcon, QPixmap, QActionGroup,
+    QUndoStack, QUndoCommand, QFont, QFontMetricsF, QIcon, QPixmap, QActionGroup, QValidator,
 )
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QGraphicsView, QGraphicsScene, QGraphicsItem,
@@ -86,25 +86,30 @@ from PySide6.QtWidgets import (
     QFormLayout, QDoubleSpinBox, QSpinBox, QComboBox, QPushButton, QColorDialog,
     QLineEdit, QLabel, QVBoxLayout, QHBoxLayout, QDialog, QStackedWidget, QToolBar,
     QFileDialog, QCheckBox, QMessageBox, QStyle, QInputDialog, QTreeWidget, QTreeWidgetItem, QMenu,
-    QAbstractItemView, QHeaderView, QGraphicsRectItem,
+    QAbstractItemView, QHeaderView, QGraphicsRectItem, QTableWidget, QTableWidgetItem, QDialogButtonBox,
+    QRadioButton, QPlainTextEdit, QGraphicsEllipseItem, QAbstractSpinBox, QAbstractScrollArea,
 )
 
 from config_parser import (
     Belt, ControlButton, Elevator, LedIndicator, Pallet, RobotArm, Sensor, SimulatorConfig, Sink, Source, Stopper,
     load_config,
 )
-from config_parser import Accumulator, Diverter, DriveConfig, GuardDoor, SafetyCircuit, Scanner, Transfer, Turntable
+from config_parser import (Accumulator, Diverter, DriveConfig, GuardDoor, LinkWatchdog, PlcValue, SafetyCircuit, Scanner,
+                           TrackedLoadView,
+                           Transfer, Turntable)
 from config_parser import ControlPanel, PanelElement
 import control_panel
 import drivetrain
 import equipment_geometry as geo
 import hmi_style as hmi
 import io_signals
+import ax_geometry
+from cad.belts import cut_of, make_cut_belt, mitre_of, mitred_belt, set_mitre
 from cad.path import (
     belt_local_path, flatten as path_flatten, footprint as path_footprint, path_flow_sign, path_length,
     segments as path_segments,
 )
-from id_utils import next_indexed_id, unique_incremented_id
+from id_utils import display_name, next_indexed_id, unique_incremented_id
 from component_library import (
     LibraryEntry, clean_folder, default_library_path, entry_from_model, load_library, remap_references, save_library,
     shift_model, station_from_models, unique_name,
@@ -268,6 +273,388 @@ def _find_measure_target(scene_pos: QPointF, points, edges, tolerance: float):
     return ("free", _snap_free_point(scene_pos, [], [], tolerance))
 
 
+class FieldGuard(QObject):
+    """The designer's fields, application-wide:
+    - Ctrl+Z / Ctrl+Y (Undo / Redo) in a field go to the window's undo stack - a focused text or
+      number field took them for its own text, so after an edit "undo did nothing";
+    - the mouse wheel never changes a number field or a drop-down (too easy to change one by
+      scrolling the panel past it): the wheel scrolls what holds the field instead."""
+
+    def eventFilter(self, obj, event):
+        kind = event.type()
+        if kind == QEvent.ShortcutOverride and isinstance(obj, (QLineEdit, QAbstractSpinBox)):
+            if event.matches(QKeySequence.Undo) or event.matches(QKeySequence.Redo):
+                event.ignore()                          # not the field's: the window's action runs
+                return True
+        if kind == QEvent.Wheel:
+            widget = obj
+            while widget is not None and not isinstance(widget, (QAbstractSpinBox, QComboBox)):
+                widget = widget.parentWidget() if widget.isWidgetType() else None
+                if widget is not None and isinstance(widget, QAbstractScrollArea):
+                    widget = None
+            if widget is not None:
+                area = widget.parentWidget()
+                while area is not None and not isinstance(area, QAbstractScrollArea):
+                    area = area.parentWidget()
+                if area is not None:
+                    QApplication.sendEvent(area.viewport(), event)
+                return True
+        return False
+
+
+class NumberSpinBox(QDoubleSpinBox):
+    """A number field that keeps 6 decimals (1 um) but shows only those the value needs - at
+    least `shown` - so 2.3094 reads 2.3094 and 2.0 reads 2.000, and digits can be typed anywhere
+    (a fixed 3 decimals rounded 2.3094 to 2.309 and refused a fourth). It applies on Enter, on
+    leaving the field or with the arrows - not on every keystroke, which re-formatted the field
+    under the cursor."""
+
+    def __init__(self, shown: int = 3, decimals: int = 6, parent=None):
+        super().__init__(parent)
+        self.shown = shown
+        self.setDecimals(max(decimals, shown))
+        self.setKeyboardTracking(False)
+
+    def _core(self, text: str) -> str:
+        if self.suffix() and text.endswith(self.suffix()):
+            text = text[: -len(self.suffix())]
+        if self.prefix() and text.startswith(self.prefix()):
+            text = text[len(self.prefix()):]
+        return text.strip()
+
+    def validate(self, text: str, pos: int):
+        """Any partial number while typing (a deleted decimal point, a digit taken off, a value
+        out of range for a moment) - Qt's own check refused those; fixup fits it in on Enter."""
+        core = self._core(text)
+        if core in ("", "-", "+", ".", "-.", "+."):
+            return QValidator.Intermediate, text, pos
+        try:
+            value = float(core)
+        except ValueError:
+            return QValidator.Invalid, text, pos
+        if "." in core and len(core.split(".", 1)[1]) > self.decimals():
+            return QValidator.Invalid, text, pos
+        if self.minimum() <= value <= self.maximum():
+            return QValidator.Acceptable, text, pos
+        return QValidator.Intermediate, text, pos
+
+    def fixup(self, text: str) -> str:
+        try:
+            value = float(self._core(text))
+        except ValueError:
+            value = self.value()
+        return self.textFromValue(min(max(value, self.minimum()), self.maximum()))
+
+    def valueFromText(self, text: str) -> float:
+        try:
+            return min(max(float(self._core(text)), self.minimum()), self.maximum())
+        except ValueError:
+            return self.value()
+
+    def textFromValue(self, value: float) -> str:
+        text = f"{value:.{self.decimals()}f}"
+        if "." in text:
+            whole, frac = text.split(".")
+            frac = frac.rstrip("0").ljust(self.shown, "0")
+            text = f"{whole}.{frac}" if frac else whole
+        return text
+
+
+class AxPortHandle(QGraphicsEllipseItem):
+    """A belt's AX start or end on the canvas (the properties panel's AX section): a ring at the
+    point; dragged (a straight belt's), it calls `on_moved((x, y))` with the world point where it
+    was let go - snapped to the grid's step like the rest of the canvas."""
+
+    RADIUS = 7.0
+
+    def __init__(self, scene_pos: QPointF, color: QColor, movable: bool, on_moved, snap=None):
+        r = self.RADIUS
+        self.snap = snap                                # scene point -> world (x, y): the drawing tools' snap
+        super().__init__(-r, -r, 2 * r, 2 * r)
+        self.setPos(scene_pos)
+        pen = QPen(color, 3)
+        pen.setCosmetic(True)
+        self.setPen(pen)
+        self.setBrush(QBrush(QColor(color.red(), color.green(), color.blue(), 70)))
+        self.setZValue(3000)
+        self.setFlag(QGraphicsItem.ItemIgnoresTransformations, True)
+        self.setFlag(QGraphicsItem.ItemIsMovable, movable)
+        self.setFlag(QGraphicsItem.ItemSendsGeometryChanges, movable)
+        if not movable:                                 # a marker only: clicks go to what is under it
+            self.setAcceptedMouseButtons(Qt.NoButton)
+        self.setCursor(Qt.SizeAllCursor if movable else Qt.ArrowCursor)
+        self.setToolTip(("AX start" if color.green() > color.red() else "AX end") +
+                        (" - drag to set it" if movable else ""))
+        self.on_moved = on_moved
+        self._pressed_at = None
+
+    def itemChange(self, change, value):
+        # dragged: onto key points (ends, centres, midpoints) like the drawing tools
+        if change == QGraphicsItem.ItemPositionChange and self.snap is not None and self._pressed_at is not None:
+            return to_scene_pos(*self.snap(value))
+        return super().itemChange(change, value)
+
+    def mousePressEvent(self, event):
+        self._pressed_at = QPointF(self.pos())
+        super().mousePressEvent(event)
+        event.accept()                                  # never selects / drags the belt under it
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        if self._pressed_at is not None and self.pos() != self._pressed_at:
+            self.on_moved(from_scene_pos(self.pos()))
+        self._pressed_at = None
+
+
+def _belt_centerline(config, belt_id: str):
+    """(length m, world points) of a belt's centre line - its lines and arcs, as the AX geometry
+    states them (ax_geometry) - or None."""
+    import ax_geometry
+    for b in ax_geometry.layout_geometry(config)["belts"]:
+        if b["id"] != belt_id or not b["segments"]:
+            continue
+        pts = []
+        for seg in b["segments"]:
+            (sx, sy), (ex, ey) = seg["start"][:2], seg["end"][:2]
+            if seg["kind"] == "arc" and seg.get("centre"):
+                cx, cy = seg["centre"][:2]
+                radius = math.hypot(sx - cx, sy - cy)
+                a0, a1 = math.atan2(sy - cy, sx - cx), math.atan2(ey - cy, ex - cx)
+                if seg.get("ccw"):
+                    while a1 <= a0:
+                        a1 += 2.0 * math.pi
+                else:
+                    while a1 >= a0:
+                        a1 -= 2.0 * math.pi
+                n = max(8, int(abs(a1 - a0) / 0.08))
+                pts += [(cx + radius * math.cos(a0 + (a1 - a0) * k / n), cy + radius * math.sin(a0 + (a1 - a0) * k / n))
+                        for k in range(n + 1)]
+            else:
+                pts += [(sx, sy), (ex, ey)]
+        return float(b["length"]), pts
+    return None
+
+
+def _closest_on_segment(p: QPointF, a: QPointF, b: QPointF) -> QPointF:
+    dx, dy = b.x() - a.x(), b.y() - a.y()
+    length_sq = dx * dx + dy * dy
+    if length_sq < 1e-12:
+        return QPointF(a)
+    k = max(0.0, min(1.0, ((p.x() - a.x()) * dx + (p.y() - a.y()) * dy) / length_sq))
+    return QPointF(a.x() + k * dx, a.y() + k * dy)
+
+
+class MeasureDialog(QDialog):
+    """The measure tool's window (D): choose what to measure, then click on the layout. Its
+    picks are highlighted while it is open and gone when it closes - nothing is left on the
+    canvas. Right click undoes the last pick.
+
+      Point to point   two points (snapped to key points, edges, the grid): distance, dx, dy,
+                       direction
+      Path length      belts (their centre lines - lines and curves) and edges, clicked one
+                       after another (again: taken off): each length and the total
+      Angle            two lines (edges, or a straight belt's direction): the angle between"""
+
+    MODES = (("point", "Point to point"), ("path", "Path length (belts, lines, curves)"),
+             ("angle", "Angle between two lines"))
+
+    def __init__(self, window):
+        super().__init__(window)
+        self.window_ = window
+        self.setWindowTitle("Measure")
+        self.setWindowFlag(Qt.Tool, True)
+        layout = QVBoxLayout(self)
+        self.buttons = {}
+        for key, label in self.MODES:
+            button = QRadioButton(label)
+            button.toggled.connect(lambda on, k=key: on and self.set_mode(k))
+            layout.addWidget(button)
+            self.buttons[key] = button
+        self.hint = QLabel()
+        self.hint.setWordWrap(True)
+        layout.addWidget(self.hint)
+        self.result = QPlainTextEdit()
+        self.result.setReadOnly(True)
+        self.result.setMinimumSize(320, 140)
+        layout.addWidget(self.result)
+        row = QHBoxLayout()
+        clear = QPushButton("Clear")
+        clear.clicked.connect(self.clear)
+        close = QPushButton("Close")
+        close.clicked.connect(self.close)
+        row.addWidget(clear)
+        row.addStretch(1)
+        row.addWidget(close)
+        layout.addLayout(row)
+        self.mode = "point"
+        self.closing = False
+        self.picks = []                         # point: QPointF; path: (name, length, scene points); angle: (a, b)
+        self.buttons["point"].setChecked(True)
+
+    # -- the picks ---------------------------------------------------------------------------
+
+    def set_mode(self, mode: str) -> None:
+        self.mode = mode
+        self.hint.setText({
+            "point": "Click two points (key points, edges and the grid snap).",
+            "path": "Click belts (their centre lines), sketch lines / arcs, drawing lines / arcs or "
+                    "edges, one after another; click one again to take it off.",
+            "angle": "Click two lines: component edges, or straight belts.",
+        }[mode])
+        self.clear()
+
+    def clear(self) -> None:
+        self.picks = []
+        self.refresh()
+
+    def undo(self) -> None:
+        if self.picks:
+            self.picks.pop()
+        self.refresh()
+
+    def pick(self, target, item, scene_pos: QPointF) -> None:
+        """A click on the layout: what it hit (the view's measure target), the component under
+        it and where."""
+        kind, value = target
+        if self.mode == "point":
+            snap = getattr(self.window_.view, "snap_point", None)
+            if snap is not None:                        # the drawing tools' snap: end, centre, midpoint
+                point = to_scene_pos(*snap(scene_pos))
+            else:
+                point = _closest_on_segment(scene_pos, *value) if kind == "edge" else QPointF(value)
+            if len(self.picks) >= 2:
+                self.picks = []
+            self.picks.append(point)
+        elif self.mode == "path":
+            entry = self._path_entry(kind, value, item, scene_pos)
+            if entry is not None:
+                same = [p for p in self.picks if p[0] == entry[0]]
+                if same:
+                    self.picks.remove(same[0])           # clicked again: taken off
+                else:
+                    self.picks.append(entry)
+        else:
+            line = self._line_of(kind, value, item, scene_pos)
+            if line is not None:
+                if len(self.picks) >= 2:
+                    self.picks = []
+                self.picks.append(line)
+        self.refresh()
+
+    def _curve_at(self, scene_pos: QPointF):
+        """A sketch entity or a background drawing shape (lines, arcs, polylines) at the click:
+        (key, name, shape) or None."""
+        cad = getattr(self.window_, "cad", None)
+        if cad is None:
+            return None
+        for sketch in getattr(cad, "sketch_items", []):
+            if sketch.isVisible() and sketch.shape().contains(sketch.mapFromScene(scene_pos)):
+                return (f"sketch {sketch.index + 1}", f"sketch {sketch.index + 1}", sketch.entity)
+        picker = getattr(getattr(cad, "snap", None), "picker", None)
+        if picker is not None:
+            x, y = from_scene_pos(scene_pos)
+            shape = picker.pick_line(x, y, self.window_.view._snap_tolerance_scene_units() / SCALE)
+            if shape is not None:
+                return (f"drawing {id(shape)}", f"drawing {getattr(shape, 'layer', '') or 'shape'}", shape)
+        return None
+
+    @staticmethod
+    def _curve_length(shape):
+        segs = path_segments(list(shape.points), list(shape.bulges or []), bool(shape.closed))
+        flat, _ = path_flatten(segs, 0.01)
+        if shape.closed and flat:
+            flat.append(flat[0])
+        return sum(s.length for s in segs), [to_scene_pos(x, y) for x, y in flat], segs
+
+    def _path_entry(self, kind, value, item, scene_pos=None):
+        if item is None and scene_pos is not None:
+            curve = self._curve_at(scene_pos)
+            if curve is not None:
+                key, name, shape = curve
+                length, pts, segs = self._curve_length(shape)
+                arcs = sum(1 for s in segs if s.kind == "arc")
+                return (key, length, pts, f"{name} ({len(segs)} segment{'s' if len(segs) > 1 else ''}"
+                                          + (f", {arcs} arc{'s' if arcs > 1 else ''}" if arcs else "") + ")")
+        if item is not None and getattr(item, "kind", "") == "belt":
+            centre = _belt_centerline(self.window_.config, item.model.id)
+            if centre is not None:
+                length, world = centre
+                return (f"belt {item.model.id}", length, [to_scene_pos(x, y) for x, y in world],
+                        f"belt {item.model.id}")
+        if kind == "edge":
+            a, b = value
+            (ax_, ay_), (bx_, by_) = from_scene_pos(a), from_scene_pos(b)
+            name = f"edge ({ax_:.2f}, {ay_:.2f})-({bx_:.2f}, {by_:.2f})"
+            return (name, math.hypot(bx_ - ax_, by_ - ay_), [a, b], name)
+        return None
+
+    def _line_of(self, kind, value, item, scene_pos=None):
+        if kind == "edge":
+            return value
+        if item is None and scene_pos is not None:
+            curve = self._curve_at(scene_pos)
+            if curve is not None:
+                segs = self._curve_length(curve[2])[2]
+                x, y = from_scene_pos(scene_pos)
+                line = min((s for s in segs if s.kind == "line"), default=None,
+                           key=lambda s: _point_segment_distance(QPointF(x, y), QPointF(*s.p0), QPointF(*s.p1)))
+                if line is not None:
+                    return (to_scene_pos(*line.p0), to_scene_pos(*line.p1))
+        if item is not None and getattr(item, "kind", "") == "belt":
+            centre = _belt_centerline(self.window_.config, item.model.id)
+            if centre is not None and len(centre[1]) == 2:     # a straight belt: its direction
+                (ax_, ay_), (bx_, by_) = centre[1]
+                return (to_scene_pos(ax_, ay_), to_scene_pos(bx_, by_))
+        return None
+
+    # -- the result ----------------------------------------------------------------------------
+
+    def refresh(self) -> None:
+        scene = self.window_.scene
+        lines = []
+        if self.mode == "point":
+            scene.show_measure_marks(points=list(self.picks))
+            for k, pt in enumerate(self.picks):
+                x, y = from_scene_pos(pt)
+                lines.append(f"P{k + 1}: ({x:.3f}, {y:.3f}) m")
+            if len(self.picks) == 2:
+                (x1, y1), (x2, y2) = from_scene_pos(self.picks[0]), from_scene_pos(self.picks[1])
+                lines += [f"distance: {math.hypot(x2 - x1, y2 - y1):.3f} m",
+                          f"dx: {x2 - x1:+.3f} m   dy: {y2 - y1:+.3f} m",
+                          f"direction: {math.degrees(math.atan2(y2 - y1, x2 - x1)):.2f} deg"]
+        elif self.mode == "path":
+            scene.show_measure_marks(polylines=[p[2] for p in self.picks])
+            for _key, length, _pts, name in self.picks:
+                lines.append(f"{name}: {length:.3f} m")
+            if self.picks:
+                lines.append(f"total: {sum(p[1] for p in self.picks):.3f} m ({len(self.picks)})")
+        else:
+            scene.show_measure_marks(segments=list(self.picks))
+            for k, (a, b) in enumerate(self.picks):
+                (x1, y1), (x2, y2) = from_scene_pos(a), from_scene_pos(b)
+                lines.append(f"L{k + 1}: direction {math.degrees(math.atan2(y2 - y1, x2 - x1)):.2f} deg, "
+                             f"{math.hypot(x2 - x1, y2 - y1):.3f} m")
+            if len(self.picks) == 2:
+                angles = []
+                for a, b in self.picks:
+                    (x1, y1), (x2, y2) = from_scene_pos(a), from_scene_pos(b)
+                    angles.append(math.degrees(math.atan2(y2 - y1, x2 - x1)))
+                diff = abs(angles[0] - angles[1]) % 360.0
+                diff = 360.0 - diff if diff > 180.0 else diff
+                lines += [f"angle between: {diff:.2f} deg", f"acute: {min(diff, 180.0 - diff):.2f} deg"]
+        self.result.setPlainText("\n".join(lines) if lines else "-")
+
+    def closeEvent(self, event):
+        self.closing = True
+        try:
+            self.picks = []
+            self.window_.scene.clear_measurements()
+            self.window_.measure_action.setChecked(False)
+        finally:
+            self.closing = False
+        super().closeEvent(event)
+
+
 @dataclass
 class ComponentTemplate:
     """A library entry: a name, a component kind, and a factory that builds
@@ -390,6 +777,34 @@ class SnapGuideScene(QGraphicsScene):
         for item in self._measure_items:
             self.removeItem(item)
         self._measure_items.clear()
+
+    def show_measure_marks(self, points=(), polylines=(), segments=()) -> None:
+        """The measure window's current selection, drawn over the layout - replaced on every
+        change and cleared with it (never left on the canvas): points (scene), polylines (lists
+        of scene points: a belt's centre line) and segments (scene point pairs: picked lines)."""
+        self.clear_measurements()
+        color = QColor(0, 220, 255)
+        pen = QPen(color, 3)
+        pen.setCosmetic(True)
+        for pt in points:
+            ring = self.addEllipse(pt.x() - 5, pt.y() - 5, 10, 10, pen, QBrush(Qt.NoBrush))
+            ring.setZValue(2000)
+            self._measure_items.append(ring)
+        if len(points) == 2:
+            line = self.addLine(points[0].x(), points[0].y(), points[1].x(), points[1].y(), pen)
+            line.setZValue(2000)
+            self._measure_items.append(line)
+        for poly in polylines:
+            for a, b in zip(poly, poly[1:]):
+                seg = self.addLine(a.x(), a.y(), b.x(), b.y(), pen)
+                seg.setZValue(2000)
+                self._measure_items.append(seg)
+        orange = QPen(QColor(255, 160, 0), 3)
+        orange.setCosmetic(True)
+        for a, b in segments:
+            seg = self.addLine(a.x(), a.y(), b.x(), b.y(), orange)
+            seg.setZValue(2000)
+            self._measure_items.append(seg)
 
     def show_measure_preview(self, target) -> None:
         """Live hover feedback for the measure tool: a dim marker over
@@ -1127,8 +1542,7 @@ PlacedItem._tag_room = _placed_item_tag_room
 
 
 def _device_label(model) -> str:
-    label = (getattr(model, "label", "") or "").strip()
-    return label if label and label.upper() not in ("SENSOR", "SRC", "SNK", "BTN", "LED") else model.id
+    return display_name(model)          # id_utils: one name, never the id and its copy
 
 
 class BeltItem(PlacedItem):
@@ -1509,6 +1923,18 @@ class SourceItem(PlacedItem):
 
     def paint(self, painter: QPainter, option, widget=None):
         super().paint(painter, option, widget)
+        # its detection area (Source.clear_area): a new parcel only while it is clear
+        along, across = self.model.clear_area()
+        pen = QPen(hmi.qcolor(hmi.SOURCE), 0)
+        pen.setStyle(Qt.DashLine)
+        painter.setPen(pen)
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRect(QRectF(-along * SCALE / 2.0, -across * SCALE / 2.0, along * SCALE, across * SCALE))
+
+    def boundingRect(self):
+        along, across = self.model.clear_area()
+        area = QRectF(-along * SCALE / 2.0, -across * SCALE / 2.0, along * SCALE, across * SCALE)
+        return super().boundingRect().united(area.adjusted(-1, -1, 1, 1))
 
     def _tag_spec(self):
         return (_device_label(self.model), QPointF(0, self.model.maxHeight * SCALE / 2.0), "below", hmi.TEXT_DIM)
@@ -2038,9 +2464,13 @@ class DiverterItem(_MachineItem):
         m = self.model
         steer = geo.wheel_steer(m.divertAngle)
         length, thick = 2 * geo.WHEEL_R * SCALE, geo.WHEEL_T * SCALE
+        if getattr(m, "rowControl", False):                 # the rows' borders: each row swivels alone
+            painter.setPen(QPen(color.darker(160), 0))
+            for lo, _hi in geo.row_bounds(m.width, geo.grid_of(m)[0])[1:]:
+                painter.drawLine(QPointF(lo * SCALE, -m.height / 2.0 * SCALE), QPointF(lo * SCALE, m.height / 2.0 * SCALE))
         painter.setPen(QPen(QColor("#111418"), 0))
         painter.setBrush(QBrush(QColor("#2b3038")))
-        for x, y in geo.wheel_centres(m.width, m.height):
+        for x, y in geo.centres_of(m):
             painter.save()
             painter.translate(x * SCALE, -y * SCALE)
             painter.rotate(-steer)
@@ -2155,6 +2585,83 @@ class SafetyItem(_IconItem):
 
     kind = "safety"
     TEXT = "SAFE"
+
+
+class PlcValueItem(_MachineItem):
+    """A value the PLC shows (PlcValue): a tinted box with its label and
+    unit; it drives nothing (the simulator shows the PLC's value there)."""
+
+    kind = "plcvalue"
+
+    def __init__(self, model: PlcValue):
+        super().__init__(model, _rect_points(model.width, model.height))
+        self.setPen(Qt.NoPen)
+
+    def _outline(self):
+        return _rect_points(self.model.width, self.model.height)
+
+    def paint(self, painter: QPainter, option, widget=None):
+        color = QColor(self.model.color)
+        fill = QColor(color)
+        fill.setAlpha(45)
+        self.setBrush(QBrush(fill))
+        pen = QPen(color, 0)
+        pen.setStyle(Qt.DashLine)
+        self.setPen(pen)
+        super().paint(painter, option, widget)
+        painter.setPen(QPen(hmi.qcolor(hmi.TEXT), 0))
+        unit = f" [{self.model.unit}]" if self.model.unit else ""
+        painter.drawText(self.polygon().boundingRect(), Qt.AlignCenter, f"PLC {self.model.label or self.model.id}{unit}")
+
+
+class WatchdogItem(_MachineItem):
+    """The PLC link's heartbeat and watchdog (LinkWatchdog): a box with its
+    timeout."""
+
+    kind = "watchdog"
+
+    def __init__(self, model: LinkWatchdog):
+        super().__init__(model, _rect_points(model.width, model.height))
+        self.setPen(Qt.NoPen)
+
+    def _outline(self):
+        return _rect_points(self.model.width, self.model.height)
+
+    def paint(self, painter: QPainter, option, widget=None):
+        color = QColor(self.model.color)
+        fill = QColor(color)
+        fill.setAlpha(45)
+        self.setBrush(QBrush(fill))
+        self.setPen(QPen(color, 0))
+        super().paint(painter, option, widget)
+        painter.setPen(QPen(hmi.qcolor(hmi.TEXT), 0))
+        painter.drawText(self.polygon().boundingRect(), Qt.AlignCenter,
+                         f"Watchdog {self.model.label or self.model.id} ({self.model.timeoutMs} ms)")
+
+
+class TrackedLoadItem(_MachineItem):
+    """A slot for a load the PLC tracks (TrackedLoadView): an outlined box;
+    in the simulator it lists the load and its errors, and draws the load
+    where the PLC has it."""
+
+    kind = "trackedload"
+
+    def __init__(self, model: TrackedLoadView):
+        super().__init__(model, _rect_points(model.width, model.height))
+        self.setPen(Qt.NoPen)
+
+    def _outline(self):
+        return _rect_points(self.model.width, self.model.height)
+
+    def paint(self, painter: QPainter, option, widget=None):
+        color = QColor(self.model.color)
+        self.setBrush(Qt.NoBrush)
+        self.setPen(QPen(color, 0))
+        super().paint(painter, option, widget)
+        painter.setPen(QPen(hmi.qcolor(hmi.TEXT), 0))
+        what = {"slot": "Slot", "sync": "Sync"}.get(getattr(self.model, "role", "load"), "Tracked")
+        painter.drawText(self.polygon().boundingRect(), Qt.AlignCenter,
+                         f"{what} {self.model.label or self.model.id}")
 
 
 class GuardDoorItem(_MachineItem):
@@ -2742,6 +3249,13 @@ def _make_transfer(new_id: str) -> Transfer:
     return Transfer(id=new_id, x=0.0, y=0.0, label="90° transfer")
 
 
+def _make_merge_belt(new_id: str) -> Belt:
+    """A merge belt (cad.belts.mitred_belt): the last belt of a side induction,
+    its end cut at 45 degrees along the main line's edge. Its length, width
+    and end angle are properties; it moves and rotates like any belt."""
+    return mitred_belt(new_id, (-0.5, 0.0), 0.0, 1.0, 0.5, 45.0, speed=1.0, color="#3b82f6")
+
+
 def _make_linear_belt(new_id: str) -> Belt:
     return Belt(
         id=new_id, type="linear", x=0.0, y=0.0, length=4.0, beltWidth=1.0,
@@ -2819,12 +3333,31 @@ def _make_wheel_diverter(new_id: str) -> Diverter:
                     label="Wheel diverter")
 
 
+def _make_wheel_sorter(new_id: str) -> Diverter:
+    """A deck of wheel rows, each swivelling on its own motor (rowControl): 1 m x 0.5 m, 6 rows,
+    to the right at 30 degrees - a conveyor of its own, placed between two belts."""
+    return Diverter(id=new_id, x=0.0, y=0.0, width=1.0, height=0.5, diverterType="wheels", rowControl=True,
+                    divertAngle=-30.0, speed=2.3094, label="Wheel sorter")
+
+
 def _make_turntable(new_id: str) -> Turntable:
     return Turntable(id=new_id, x=0.0, y=0.0, label="Turntable")
 
 
 def _make_accumulator(new_id: str) -> Accumulator:
     return Accumulator(id=new_id, x=0.0, y=0.0, label="Accumulation")
+
+
+def _make_watchdog(new_id: str) -> LinkWatchdog:
+    return LinkWatchdog(id=new_id, x=0.0, y=0.0, label="PLC link")
+
+
+def _make_tracked_load(new_id: str) -> TrackedLoadView:
+    return TrackedLoadView(id=new_id, x=0.0, y=0.0)
+
+
+def _make_plc_value(new_id: str) -> PlcValue:
+    return PlcValue(id=new_id, x=0.0, y=0.0, label="PLC value")
 
 
 def _make_door(new_id: str) -> GuardDoor:
@@ -2865,6 +3398,9 @@ ITEM_CLASS_FOR_KIND = {
     "accumulator": AccumulatorItem,
     "door": GuardDoorItem,
     "safety": SafetyItem,
+    "plcvalue": PlcValueItem,
+    "watchdog": WatchdogItem,
+    "trackedload": TrackedLoadItem,
     "panel": ControlPanelItem,
 }
 
@@ -2888,6 +3424,9 @@ KIND_FOR_MODEL_CLASS = {
     Accumulator: "accumulator",
     GuardDoor: "door",
     SafetyCircuit: "safety",
+    PlcValue: "plcvalue",
+    LinkWatchdog: "watchdog",
+    TrackedLoadView: "trackedload",
     ControlPanel: "panel",
 }
 
@@ -2915,8 +3454,19 @@ CONFIG_LIST_ATTR_FOR_KIND = {
     "accumulator": "accumulators",
     "door": "doors",
     "safety": "safety",
+    "plcvalue": "plcValues",
+    "watchdog": "watchdogs",
+    "trackedload": "trackedLoads",
     "panel": "controlPanels",
 }
+
+
+# Kinds edited as a table, not placed on the canvas: data slots whose list
+# order is their order in the PLC exchange (a row is a position in the
+# frame). On the canvas a cut + paste re-adds them at the end in selection
+# order, and the PLC sees another layout (I/O layout MISMATCH) though
+# nothing visible changed. Edit > Exchange Table edits them.
+TABLE_KINDS = ("plcvalue", "trackedload")
 
 
 def build_items_from_config(config, scene: QGraphicsScene, items_list: list):
@@ -2954,9 +3504,14 @@ def build_items_from_config(config, scene: QGraphicsScene, items_list: list):
         item = LedItem(model)
         scene.addItem(item)
         items_list.append(item)
-    for kind in ("elevator", "turntable", "transfer", "pallet", "stopper", "robot", "scanner", "diverter", "accumulator",
-                 "door", "safety", "panel"):
-        for model in getattr(config, CONFIG_LIST_ATTR_FOR_KIND[kind]):
+    # every other kind the designer has (CONFIG_LIST_ATTR_FOR_KIND): _build_export_config rebuilds each
+    # list from the items, so a kind with no items here would be dropped from the layout on Run / Save
+    # (as the watchdog and the tracked-load slots were)
+    first = ("elevator", "turntable", "transfer", "pallet", "stopper", "robot", "scanner", "diverter", "accumulator",
+             "door", "safety", "panel")
+    built = {"belt", "sensor", "source", "sink", "button", "led"} | set(TABLE_KINDS)
+    for kind in first + tuple(k for k in CONFIG_LIST_ATTR_FOR_KIND if k not in first and k not in built):
+        for model in getattr(config, CONFIG_LIST_ATTR_FOR_KIND[kind], None) or []:
             item = ITEM_CLASS_FOR_KIND[kind](model)
             scene.addItem(item)
             items_list.append(item)
@@ -2991,6 +3546,10 @@ class ComponentLibrary(QTreeWidget):
          "A straight belt conveyor for parcels and cartons."),
         ("Conveyors/Belts", "Curved Belt", "belt", _make_curved_belt,
          "A curved belt conveyor (radius, start and end angle)."),
+        ("Conveyors/Belts", "Merge Belt", "belt", _make_merge_belt,
+         "The last belt of a side induction: straight, its end cut at an angle (45 degrees: a triangle-like "
+         "end) to lie along the main line's edge, so the whole load leaves it onto the line. Length, width "
+         "and end angle are properties."),
         ("Conveyors/Rollers", "Roller Conveyor", "belt", _make_roller_conveyor,
          "A straight driven roller conveyor - for pallets, totes and cases."),
         ("Conveyors/Rollers", "Curved Roller Conveyor", "belt", _make_curved_roller,
@@ -3016,6 +3575,9 @@ class ComponentLibrary(QTreeWidget):
          "Pushes parcels for its destination off at 90° onto a branch."),
         ("Sorting", "Wheel Diverter", "diverter", _make_wheel_diverter,
          "Pop-up wheels steer parcels for its destination off at an angle."),
+        ("Sorting", "Wheel Sorter (row control)", "diverter", _make_wheel_sorter,
+         "A deck of wheels carrying parcels itself (no belt under it): a speed and a swivel motor per "
+         "wheel row, so each row turns for the next parcel as soon as the one before has left it."),
         ("Sorting", "Chute", "sink", _make_chute, "A sorting chute / bin with a capacity: full signal, emptying."),
         ("Pallet Handling", "Pallet", "pallet", _make_pallet,
          "A EUR pallet: rides the rollers, carries loads (robot or source above it)."),
@@ -3035,6 +3597,10 @@ class ComponentLibrary(QTreeWidget):
         ("Operator Panel", "Emergency Stop", "button", _make_estop,
          "A latching NC mushroom button - list it in a safety relay's E-stops."),
         ("Operator Panel", "LED Indicator", "led", _make_led, "A pilot lamp the PLC switches."),
+        ("Operator Panel", "Link Watchdog", "watchdog", _make_watchdog,
+         "The PLC link's heartbeat both ways: the PLC counts its heartbeat up every scan, the simulator its "
+         "own every step. When the PLC's stands still for the timeout, the simulator puts every PLC command at "
+         "rest (the conveyors stop) until it moves again; the PLC holds the line while the simulator's stands still."),
         ("Operator Panel", "Control Panel", "panel", _make_control_panel,
          "An operator panel: its push buttons, lamps and buzzer are its properties (Panel elements)."),
     )
@@ -3588,8 +4154,238 @@ class DeleteItemsCommand(QUndoCommand):
             self._do_remove(item)
 
     def undo(self):
-        for item in self.items:
+        for item in reversed(self.items):      # the reverse of the removals: each back at its old index
             self._do_add(item)
+
+
+class ListReplaceCommand(QUndoCommand):
+    """One of the config's lists replaced as a whole (a table kind's rows)."""
+
+    def __init__(self, config, attr: str, new: list, text: str):
+        super().__init__(text)
+        self.config, self.attr = config, attr
+        self.old, self.new = list(getattr(config, attr)), list(new)
+
+    def redo(self):
+        setattr(self.config, self.attr, list(self.new))
+
+    def undo(self):
+        setattr(self.config, self.attr, list(self.old))
+
+
+TRACKED_LOAD = "Tracked load"
+TRACK_SLOT = "Track slot"          # a slot on a merge line (role "slot": drawn, not checked)
+SYNC_LOAD = "Sync load"            # the load a sync section drives into its slot (role "sync")
+TRACK_ROLES = {TRACKED_LOAD: "load", TRACK_SLOT: "slot", SYNC_LOAD: "sync"}
+EXCHANGE_TYPES = ("REAL", "UDINT", "UINT", "ULINT", "BYTE", "BOOL", TRACKED_LOAD, TRACK_SLOT, SYNC_LOAD)
+_ID_OK = __import__("re").compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+
+
+class ExchangeTableDialog(QDialog):
+    """The data the PLC sends the simulator only to be shown, plotted and
+    checked - its values (PlcValue: a scan time, a counter, a controller's
+    error) and its tracked-load slots (TrackedLoadView, checked against the
+    parcels) - as one table. Row N is the N-th of them in the PLC's output
+    frame: the values first, then the slots (the frame's kind order), each
+    in its rows' order. The type of a row is its data type (BOOL, BYTE,
+    UINT, UDINT, ULINT, REAL) or a tracked load; changing it moves the row
+    to the end of the other group. Any change here changes the PLC's I/O:
+    export to SIMATIC AX and rebuild the PLC (the dialog says so)."""
+
+    COLUMNS = ("#", "Id", "Type", "Unit", "Decimals", "Label")
+
+    def __init__(self, parent, values, slots, taken_ids=()):
+        super().__init__(parent)
+        self.setWindowTitle("Exchange Table")
+        self._rows = [v.model_copy() for v in values] + [s.model_copy() for s in slots]
+        self._before = self._signature(self._rows)
+        self._taken = set(taken_ids)              # the layout's other components' ids
+        layout = QVBoxLayout(self)
+        note = QLabel("What the PLC sends to be shown, plotted and checked. Row N is the N-th in the PLC's "
+                      "output frame: the values first, then the tracked loads. Any change here changes the "
+                      "PLC's I/O: export to SIMATIC AX and rebuild the PLC.")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        self.table = QTableWidget(0, len(self.COLUMNS), self)
+        self.table.setHorizontalHeaderLabels(self.COLUMNS)
+        self.table.verticalHeader().setVisible(False)
+        self.table.horizontalHeader().setSectionResizeMode(len(self.COLUMNS) - 1, QHeaderView.Stretch)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        layout.addWidget(self.table)
+        buttons = QHBoxLayout()
+        for text, slot in (("Add value", self.add_value), ("Add tracked load", self.add_tracked_load),
+                           ("Remove", self.remove_selected), ("Up", lambda: self.move_selected(-1)),
+                           ("Down", lambda: self.move_selected(1))):
+            button = QPushButton(text)
+            button.clicked.connect(slot)
+            buttons.addWidget(button)
+        buttons.addStretch(1)
+        layout.addLayout(buttons)
+        self.status = QLabel()
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+        box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        box.accepted.connect(self._accept)
+        box.rejected.connect(self.reject)
+        layout.addWidget(box)
+        self.resize(720, 520)
+        self._fill()
+
+    # -- the rows -------------------------------------------------------------------------------
+
+    @staticmethod
+    def _is_slot(row) -> bool:
+        return isinstance(row, TrackedLoadView)
+
+    @staticmethod
+    def _type_of(row) -> str:
+        if isinstance(row, TrackedLoadView):
+            return next((t for t, role in TRACK_ROLES.items() if role == row.role), TRACKED_LOAD)
+        return row.dataType
+
+    @classmethod
+    def _signature(cls, rows):
+        """What the exchange carries: a tracked row's role is the layout's, not on the wire."""
+        return [(r.id, TRACKED_LOAD if cls._is_slot(r) else r.dataType) for r in rows]
+
+    def _sorted(self):
+        """Values first, then the slots: the frame's order."""
+        self._rows = [r for r in self._rows if not self._is_slot(r)] + [r for r in self._rows if self._is_slot(r)]
+
+    def _fill(self, select: int = -1):
+        self._sorted()
+        self.table.blockSignals(True)
+        self.table.setRowCount(len(self._rows))
+        for n, row in enumerate(self._rows):
+            number = QTableWidgetItem(str(n + 1))
+            number.setFlags(number.flags() & ~Qt.ItemIsEditable)
+            self.table.setItem(n, 0, number)
+            self.table.setItem(n, 1, QTableWidgetItem(row.id))
+            combo = QComboBox()
+            combo.addItems(EXCHANGE_TYPES)
+            combo.setCurrentText(self._type_of(row))
+            combo.currentTextChanged.connect(lambda text, r=row: self._retype(r, text))
+            self.table.setCellWidget(n, 2, combo)
+            slot = self._is_slot(row)
+            for col, text in ((3, "" if slot else row.unit), (4, "" if slot else str(row.decimals))):
+                cell = QTableWidgetItem(text)
+                if slot:
+                    cell.setFlags(cell.flags() & ~Qt.ItemIsEditable)
+                self.table.setItem(n, col, cell)
+            self.table.setItem(n, 5, QTableWidgetItem(row.label))
+        self.table.blockSignals(False)
+        if 0 <= select < len(self._rows):
+            self.table.selectRow(select)
+        values = sum(1 for r in self._rows if not self._is_slot(r))
+        changed = self._signature(self._rows) != self._before
+        self.status.setText(f"{values} values, {len(self._rows) - values} tracked loads" + (
+            " - the exchange changes: export to SIMATIC AX and rebuild the PLC" if changed else ""))
+
+    def _take_cells(self):
+        """The edited cells into the rows."""
+        for n, row in enumerate(self._rows):
+            ident = self.table.item(n, 1)
+            if ident is not None:
+                row.id = ident.text().strip()
+            label = self.table.item(n, 5)
+            if label is not None:
+                row.label = label.text()
+            if not self._is_slot(row):
+                unit, decimals = self.table.item(n, 3), self.table.item(n, 4)
+                if unit is not None:
+                    row.unit = unit.text()
+                if decimals is not None:
+                    try:
+                        row.decimals = max(0, min(9, int(decimals.text())))
+                    except ValueError:
+                        pass
+
+    def _new_id(self, stem: str) -> str:
+        taken = {r.id for r in self._rows} | self._taken
+        n = 1
+        while f"{stem}_{n:02d}" in taken:
+            n += 1
+        return f"{stem}_{n:02d}"
+
+    def _retype(self, row, text: str):
+        self._take_cells()
+        index = next(i for i, r in enumerate(self._rows) if r is row)
+        tracked = text in TRACK_ROLES
+        if tracked and not self._is_slot(row):
+            self._rows[index] = TrackedLoadView(id=row.id, x=0.0, y=0.0, label=row.label, role=TRACK_ROLES[text])
+        elif tracked:
+            row.role = TRACK_ROLES[text]          # the same row on the wire: only how it is drawn and checked
+        elif self._is_slot(row):
+            self._rows[index] = PlcValue(id=row.id, x=0.0, y=0.0, label=row.label, dataType=text)
+        else:
+            row.dataType = text
+        moved = self._rows.pop(index) if tracked != self._is_slot(row) else None
+        if moved is not None:                     # to the end of its new group
+            self._rows.append(moved)
+        self._fill()
+
+    def add_value(self, data_type: str = "REAL", ident: str = None) -> None:
+        self._take_cells()
+        self._rows.append(PlcValue(id=ident or self._new_id("value"), x=0.0, y=0.0, dataType=data_type))
+        self._fill()
+
+    def add_tracked_load(self) -> None:
+        self._take_cells()
+        self._rows.append(TrackedLoadView(id=self._new_id("track"), x=0.0, y=0.0))
+        self._fill()
+
+    def _selected(self) -> int:
+        rows = self.table.selectionModel().selectedRows() if self.table.selectionModel() else []
+        return rows[0].row() if rows else -1
+
+    def remove_selected(self, index: int = None) -> None:
+        self._take_cells()
+        index = self._selected() if index is None else index
+        if 0 <= index < len(self._rows):
+            self._rows.pop(index)
+        self._fill(min(index, len(self._rows) - 1))
+
+    def move_selected(self, step: int, index: int = None) -> None:
+        """Up / down within its group (values or tracked loads)."""
+        self._take_cells()
+        index = self._selected() if index is None else index
+        other = index + step
+        if not (0 <= index < len(self._rows) and 0 <= other < len(self._rows)):
+            return
+        if self._is_slot(self._rows[index]) != self._is_slot(self._rows[other]):
+            return
+        self._rows[index], self._rows[other] = self._rows[other], self._rows[index]
+        self._fill(other)
+
+    # -- the result -----------------------------------------------------------------------------
+
+    def problems(self):
+        """Why the table can't be applied: ids missing, malformed or taken."""
+        self._take_cells()
+        seen, found = set(), []
+        for n, row in enumerate(self._rows):
+            if not _ID_OK.match(row.id):
+                found.append(f"row {n + 1}: '{row.id}' is not a name (a letter, then letters, digits, _)")
+            elif row.id in seen or row.id in self._taken:
+                found.append(f"row {n + 1}: the id '{row.id}' is taken")
+            seen.add(row.id)
+        return found
+
+    def _accept(self):
+        found = self.problems()
+        if found:
+            QMessageBox.warning(self, "Exchange Table", "\n".join(found))
+            return
+        self.accept()
+
+    def values(self):
+        self._take_cells()
+        return [r.model_copy() for r in self._rows if not self._is_slot(r)]
+
+    def slots(self):
+        self._take_cells()
+        return [r.model_copy() for r in self._rows if self._is_slot(r)]
 
 
 class MoveItemCommand(QUndoCommand):
@@ -3722,6 +4518,16 @@ class CanvasView(QGraphicsView):
         # ("point"|"free", QPointF), or ("edge", (p1, p2)).
         self._measure_mode = False
         self._measure_pending: Optional[tuple] = None
+        # A one-shot point pick (a belt's AX start / end): the next left click, snapped to key points,
+        # edges and the grid, goes to this callable as a world (x, y); Escape or a right click drops it
+        self.pick_point: Optional[Callable] = None
+        # The drawing tools' object snap (end, centre, midpoint, nearest, grid): a scene point -> a
+        # world (x, y); set by the window once its snap engine exists
+        self.snap_point: Optional[Callable] = None
+        # The measure window (MeasureDialog): every measure click, (target, item under it, scene
+        # position); a right click undoes its last pick (on_measure_undo)
+        self.on_measure_click: Optional[Callable] = None
+        self.on_measure_undo: Optional[Callable] = None
         self.setAcceptDrops(True)
         self.setDragMode(QGraphicsView.RubberBandDrag)
         # Mouse-move events normally only arrive while a button is held -
@@ -3838,11 +4644,21 @@ class CanvasView(QGraphicsView):
     def _do_add_item(self, item: PlacedItem) -> PlacedItem:
         """The actual add mutation - scene, items_list, config. Called
         directly (no undo stack) or as an AddItemCommand's redo/DeleteItems
-        Command's undo."""
+        Command's undo. An item removed before goes back where it was, in
+        items_list and in its config list: the order of a kind's list is the
+        order of the PLC exchange (device_kinds: "in layout order"), so a
+        delete + undo must not move it - the PLC would see another layout."""
         self.scene().addItem(item)
-        self.items_list.append(item)
-        if self.config is not None:
-            getattr(self.config, CONFIG_LIST_ATTR_FOR_KIND[item.kind]).append(item.model)
+        at = item.__dict__.pop("_removed_at", None)
+        models = getattr(self.config, CONFIG_LIST_ATTR_FOR_KIND[item.kind]) if self.config is not None else None
+        if at is None:
+            self.items_list.append(item)
+            if models is not None:
+                models.append(item.model)
+        else:
+            self.items_list.insert(min(at[0], len(self.items_list)), item)
+            if models is not None:
+                models.insert(min(at[1], len(models)), item.model)
         self.invalidate_points_edges_cache()
         if self.on_items_changed:
             self.on_items_changed()
@@ -3851,9 +4667,14 @@ class CanvasView(QGraphicsView):
     def _do_remove_item(self, item: PlacedItem):
         """The actual remove mutation - inverse of `_do_add_item`."""
         self.scene().removeItem(item)
-        self.items_list.remove(item)
+        index = self.items_list.index(item)
+        self.items_list.pop(index)
+        model_index = len(self.items_list)
         if self.config is not None:
-            getattr(self.config, CONFIG_LIST_ATTR_FOR_KIND[item.kind]).remove(item.model)
+            models = getattr(self.config, CONFIG_LIST_ATTR_FOR_KIND[item.kind])
+            model_index = next(i for i, m in enumerate(models) if m is item.model)
+            models.pop(model_index)
+        item.__dict__["_removed_at"] = (index, model_index)     # an undo puts it back here
         self.invalidate_points_edges_cache()
         if self.on_items_changed:
             self.on_items_changed()
@@ -3938,6 +4759,9 @@ class CanvasView(QGraphicsView):
     def _handle_measure_click(self, view_pos):
         target = self._measure_target_at(view_pos)
         kind, value = target
+        if self.on_measure_click is not None:               # the measure window decides
+            self.on_measure_click(target, self.placed_item_at(view_pos), self.mapToScene(view_pos))
+            return
 
         if self._measure_pending is None:
             self._measure_pending = target
@@ -4001,6 +4825,20 @@ class CanvasView(QGraphicsView):
             event.accept()
             return
         self._right_press_used = False
+        if self.pick_point is not None and event.button() in (Qt.LeftButton, Qt.RightButton):
+            pick, self.pick_point = self.pick_point, None
+            self.setCursor(Qt.CrossCursor if self._measure_mode else Qt.ArrowCursor)
+            if event.button() == Qt.LeftButton:
+                if self.snap_point is not None:         # the drawing tools' snap: end, centre, midpoint
+                    pick(self.snap_point(self.mapToScene(event.pos())))
+                else:
+                    kind, value = self._measure_target_at(event.pos())
+                    point = _closest_on_segment(self.mapToScene(event.pos()), *value) if kind == "edge" else value
+                    pick(from_scene_pos(point))
+            else:
+                self._right_press_used = True
+            event.accept()
+            return
         if self.tool is not None and self.tool.mouse_press(event):
             self._right_press_used = event.button() == Qt.RightButton
             event.accept()
@@ -4014,6 +4852,8 @@ class CanvasView(QGraphicsView):
             # stays on the canvas, it's just no longer waiting for a second
             # click to complete a measurement.
             self._measure_pending = None
+            if self.on_measure_undo is not None:
+                self.on_measure_undo()
             self._right_press_used = True
             event.accept()
             return
@@ -4237,12 +5077,12 @@ def _field_specs_for(item: PlacedItem):
         specs.append(("float", "rotation", "Rotation", -360.0, 360.0, 1.0))
     if isinstance(item, BeltItem):
         specs.append(("combo", "commandFormat", "Drive type", ["speed", "vfd", "frequency"]))
+        specs.append(("bool", "feedback", "Drive feedback to the PLC"))
         if item.model.type in ("linear", "curved") and not item.is_custom_shape():
             specs.append(("combo", "surface", "Surface", ["belt", "roller"]))
             if item.model.surface == "roller":
                 specs.append(("float", "rollerPitch", "Roller pitch", 0.03, 1.0, 0.005))
-        if item.model.commandFormat == "frequency":
-            specs += _DRIVE_TRAIN_SPECS              # after the surface: the train runs from it to the motor
+        specs += _DRIVE_TRAIN_SPECS                  # every belt / roller: its motor, gearing, limits              # after the surface: the train runs from it to the motor
         specs.append(("float", "directionAngle", "Direction", -360.0, 360.0, 1.0))
         if item.is_path():
             specs.append(("float", "beltWidth", "Width", 0.05, 100.0, 0.05))
@@ -4255,6 +5095,18 @@ def _field_specs_for(item: PlacedItem):
         elif not item.is_custom_shape():
             specs.append(("float", "length", "Length", 0.1, 100.0, 0.1))
             specs.append(("float", "beltWidth", "Width", 0.1, 100.0, 0.1))
+        elif cut_of(item.model) is not None:
+            # a cut belt (cad.belts.mitred_belt; a merge or a branch): its numbers, its start edge stays put
+            specs.append(("float", "length", "Length", 0.05, 100.0, 0.05))
+            specs.append(("float", "beltWidth", "Width", 0.1, 100.0, 0.05))
+            specs.append(("float", "mitre.start", "Start angle", 1.0, 179.0, 5.0))
+            specs.append(("float", "mitre.end", "End angle", 1.0, 179.0, 5.0))
+        if item.is_custom_shape() or not (item.is_curved() or item.is_path()):
+            # where loads enter / leave it - the AX path's start and end (ax_geometry.outline_ports):
+            # from its shape, or set by hand (here, by dragging its handles, or picked on the canvas)
+            for attr, label in (("port.inX", "AX start X"), ("port.inY", "AX start Y"),
+                                ("port.outX", "AX end X"), ("port.outY", "AX end Y")):
+                specs.append(("float", attr, label, -100000.0, 100000.0, 0.05))
         specs.append(("float", "speed", "Speed", -50.0, 50.0, 0.1))
         specs.append(("float", "transition_momentum_duration", "Transition", 0.0, 10.0, 0.1))
         specs.append(("int", "level", "Level", 0, 20))
@@ -4277,6 +5129,8 @@ def _field_specs_for(item: PlacedItem):
         specs.append(("float", "maxWidth", "Max width", 0.05, 50.0, 0.05))
         specs.append(("float", "minHeight", "Min length", 0.05, 50.0, 0.05))
         specs.append(("float", "maxHeight", "Max length", 0.05, 50.0, 0.05))
+        specs.append(("float", "clearLength", "Clear area length (0 auto)", 0.0, 50.0, 0.05))
+        specs.append(("float", "clearWidth", "Clear area width (0 auto)", 0.0, 50.0, 0.05))
         specs.append(("text", "label", "Label"))
         specs.append(("int", "level", "Level", 0, 20))
         specs.append(("text", "destinations", "Destinations"))
@@ -4291,6 +5145,7 @@ def _field_specs_for(item: PlacedItem):
         specs.append(("text", "label", "Label"))
         specs.append(("int", "capacity", "Chute capacity", 0, 100000))
         specs.append(("float", "emptyTime", "Empty after", 0.0, 3600.0, 0.5))
+        specs.append(("combo", "fillMode", "Chute fill", ["count", "keep", "delete"]))
     elif isinstance(item, ButtonItem):
         specs.append(("float", "width", "Width", 0.05, 50.0, 0.05))
         specs.append(("float", "height", "Height", 0.05, 50.0, 0.05))
@@ -4344,11 +5199,21 @@ def _field_specs_for(item: PlacedItem):
                   ("int", "level", "Level", 0, 20), ("text", "label", "Label")]
     elif isinstance(item, DiverterItem):
         specs += [("combo", "diverterType", "Type", ["pusher", "wheels"]),
+                  ("bool", "rowControl", "Row control (a swivel motor per wheel row)"),
+                  ("int", "wheelRows", "Wheel rows along (0: fit)", 0, 100),
+                  ("int", "wheelColumns", "Wheels per row (0: fit)", 0, 100),
+                  ("float", "wheelPitchAlong", "Row pitch, m (0: fit)", 0.0, 2.0, 0.01),
+                  ("float", "wheelPitchAcross", "Wheel pitch across, m (0: fit)", 0.0, 2.0, 0.01),
                   ("float", "width", "Zone length", 0.05, 10.0, 0.05), ("float", "height", "Zone width", 0.05, 10.0, 0.05),
                   ("float", "divertAngle", "Divert angle", -180.0, 180.0, 5.0),
                   ("float", "speed", "Divert speed", 0.05, 10.0, 0.05),
                   ("int", "destination", "Destination", 0, 255),
                   ("int", "level", "Level", 0, 20), ("text", "label", "Label")]
+        # its AX zone, begin and end (ax_geometry.zone_ends): its box's ends, or set by hand
+        specs += [("float", a, label, -100000.0, 100000.0, 0.05)
+                  for a, label in (("zone.inX", "AX begin X"), ("zone.inY", "AX begin Y"),
+                                   ("zone.outX", "AX end X"), ("zone.outY", "AX end Y"))]
+        specs += _WHEEL_TRAIN_SPECS         # the wheels' / pusher's motor: wheel, chain, gearbox, motor, limits
     elif isinstance(item, TurntableItem):
         specs += [("float", "radius", "Radius", 0.1, 10.0, 0.05), ("text", "beltId", "Platform belt"),
                   ("text", "angles", "Positions"), ("float", "turnSpeed", "Turn speed", 1.0, 720.0, 5.0),
@@ -4368,6 +5233,14 @@ def _field_specs_for(item: PlacedItem):
                   ("text", "label", "Label")]
     elif isinstance(item, GuardDoorItem):
         specs += [("float", "width", "Width", 0.2, 10.0, 0.05), ("text", "label", "Label")]
+    elif isinstance(item, WatchdogItem):
+        specs += [("text", "label", "Label"), ("int", "timeoutMs", "Timeout (ms)", 50, 60000)]
+    elif isinstance(item, TrackedLoadItem):
+        specs += [("text", "label", "Label"), ("float", "width", "Width", 0.2, 10.0, 0.05),
+                  ("float", "height", "Height", 0.1, 5.0, 0.05)]
+    elif isinstance(item, PlcValueItem):
+        specs += [("text", "label", "Label"), ("text", "unit", "Unit"), ("int", "decimals", "Decimals", 0, 6),
+                  ("float", "width", "Width", 0.2, 10.0, 0.05), ("float", "height", "Height", 0.1, 5.0, 0.05)]
     elif isinstance(item, SafetyItem):
         specs += [("text", "stopButtonIds", "E-stops"), ("text", "doorIds", "Guard doors"),
                   ("text", "curtainIds", "Light curtains"), ("text", "beltIds", "Belts stopped"),
@@ -4442,6 +5315,11 @@ class PanelElementsEditor(QWidget):
         self.table.blockSignals(False)
         self.table.setFixedHeight(self.table.horizontalHeader().height() + 4
                                   + sum(self.table.rowHeight(r) for r in range(self.table.rowCount())))
+        # the whole editor (table and buttons) its height, and the property tree's row with it -
+        # else the buttons were drawn over the last rows of the table
+        self.setFixedHeight(self.sizeHint().height())
+        if getattr(self, "on_resized", None) is not None:
+            self.on_resized()
 
     def _changed(self, elements):
         try:
@@ -4546,6 +5424,8 @@ _DRIVE_TRAIN_SPECS = [
     ("float", "drive.maxFrequency", "Max frequency", 1.0, 400.0, 1.0),
     ("float", "drive.rampUpTime", "Ramp up", 0.0, 60.0, 0.1),
     ("float", "drive.rampDownTime", "Ramp down", 0.0, 60.0, 0.1),
+    ("float", "drive.motorMaxSpeed", "Motor max speed", 0.0, 10000.0, 10.0),    # the motor's limits
+    ("float", "drive.motorMaxAccel", "Motor max accel", 0.0, 100000.0, 100.0),  # a belt's stop brakes at it
     ("int", "drive.encoderCountsPerRev", "Encoder/rev", 0, 1000000),
     ("summary", "drive.summary", "Result"),
 ]
@@ -4558,13 +5438,36 @@ _CHAIN_TRAIN_SPECS = [("float", "drive.drumDiameter", "Sprocket Ø", 0.01, 2.0, 
 _TABLE_TRAIN_SPECS = [("float", "drive.transmissionRatio", "Ring / pinion", 0.1, 100.0, 0.1)
                       if spec[1] == "drive.transmissionRatio" else spec
                       for spec in _LIFT_TRAIN_SPECS if spec[1] != "drive.drumDiameter"]
+# A diverter's motor: the drum is its wheel (pop-up wheels) or its roller (a pusher's belt).
+_WHEEL_TRAIN_SPECS = [("float", "drive.drumDiameter", "Wheel \u00d8", 0.01, 2.0, 0.005)
+                      if spec[1] == "drive.drumDiameter" else spec for spec in _LIFT_TRAIN_SPECS]
 # Drive fields where 0 in the grid means "not set" (None in the model).
-_DRIVE_ZERO_IS_NONE = {"rampUpTime", "rampDownTime", "encoderCountsPerRev"}
+_DRIVE_ZERO_IS_NONE = {"rampUpTime", "rampDownTime", "motorMaxSpeed", "motorMaxAccel", "encoderCountsPerRev"}
 
 
 def _model_value(model, attr: str):
     """A field's stored value; "drive.<field>" reads the belt's DriveConfig
-    (its default while the belt has none)."""
+    (its default while the belt has none); "mitre.end" a merge belt's end angle."""
+    if attr in ("mitre.end", "mitre.start"):
+        cut = cut_of(model)
+        return round(cut["end_deg" if attr == "mitre.end" else "start_deg"], 6) if cut else 90.0
+    if attr.startswith("zone."):                     # a diverter's AX zone (ax_geometry.zone_ends)
+        if attr == "zone.reset":
+            return (model.axStart, model.axEnd)
+        begin, end, _how = ax_geometry.zone_ends(model)
+        point = begin if attr.startswith("zone.in") else end
+        return round(point[0] if attr.endswith("X") else point[1], 6)
+    if attr.startswith("port."):
+        if attr == "port.reset":
+            return (model.inletPoint, model.outletPoint)
+        inlet, outlet, _how = ax_geometry.outline_ports(model)
+        if attr in ("port.inXY", "port.outXY"):
+            point = inlet if attr == "port.inXY" else outlet
+            return (round(point[0], 6), round(point[1], 6))
+        point = inlet if attr.startswith("port.in") else outlet
+        return round(point[0] if attr.endswith("X") else point[1], 6)
+    if attr == "shape.cut":
+        return _belt_shape_snapshot(model)
     if not attr.startswith("drive."):
         return getattr(model, attr)
     name = attr[len("drive."):]
@@ -4586,13 +5489,66 @@ def _shown_value(model, attr: str):
     return value
 
 
+def _belt_shape_snapshot(model) -> dict:
+    return {k: getattr(model, k) for k in ("x", "y", "rotation", "directionAngle", "length", "beltWidth")} | \
+        {"vertexs": [dict(v) for v in (model.vertexs or [])]}
+
+
 def _set_model_value(model, attr: str, value) -> None:
+    if attr == "shape.cut":                         # Make Cut Belt and its undo: the whole shape at once
+        for k, v in value.items():
+            setattr(model, k, [dict(x) for x in v] if k == "vertexs" else v)
+        return
+    if attr.startswith("zone."):
+        if attr == "zone.reset":
+            model.axStart, model.axEnd = (list(v) if v is not None else None for v in value)
+            return
+        begin, end, _how = ax_geometry.zone_ends(model)
+        point = list(begin if attr.startswith("zone.in") else end)
+        point[0 if attr.endswith("X") else 1] = value
+        if attr.startswith("zone.in"):
+            model.axStart = point
+        else:
+            model.axEnd = point
+        return
+    if attr.startswith("port."):
+        if attr == "port.reset":
+            model.inletPoint, model.outletPoint = value
+            return
+        if attr in ("port.inXY", "port.outXY"):           # a point at once (a drag, a pick)
+            local = ax_geometry.to_local(model, *value)
+            if attr == "port.inXY":
+                model.inletPoint = local
+            else:
+                model.outletPoint = local
+            return
+        inlet, outlet, _how = ax_geometry.outline_ports(model)
+        point = list(inlet if attr.startswith("port.in") else outlet)
+        point[0 if attr.endswith("X") else 1] = value
+        local = ax_geometry.to_local(model, *point)
+        if attr.startswith("port.in"):
+            model.inletPoint = local
+        else:
+            model.outletPoint = local
+        return
+    if isinstance(model, Belt) and cut_of(model) is not None and attr in ("length", "beltWidth", "mitre.end",
+                                                                          "mitre.start"):
+        # a merge belt: rebuild its corners (a value it cannot take - too short for its
+        # end angle - is refused by set_mitre and nothing changes)
+        try:
+            set_mitre(model, length=value if attr == "length" else None,
+                      width=value if attr == "beltWidth" else None, end_deg=value if attr == "mitre.end" else None,
+                      start_deg=value if attr == "mitre.start" else None)
+        except ValueError as exc:
+            QMessageBox.warning(None, "Merge belt", str(exc))
+        return
     if not attr.startswith("drive."):
         setattr(model, attr, value)
         return
     name = attr[len("drive."):]
     if model.drive is None:
         model.drive = DriveConfig()
+    drivetrain.pin_belt_train(model)        # a belt in m/s: its train as shown, so the rpm limits act
     if name in _DRIVE_ZERO_IS_NONE and value == 0:
         value = None
     setattr(model.drive, name, value)
@@ -4695,7 +5651,191 @@ class PropertiesPanel(QWidget):
                                "Select one to edit its properties.")
             self._show_empty()
 
+    # -- the AX view of the selected component (ax_geometry.py) ----------------------------------------
+    AX_GROUP = "AX / PLC geometry"
+
+    def _ax_config(self):
+        getter = getattr(self, "get_config", None)
+        return getter() if getter else None
+
+    def _build_ax_rows(self):
+        """Where the AX program states this component: a belt by its path's start
+        and end (x, y, z), heading and length; a device by its point and how far
+        along the belt under it. Read-only; Copy ST puts the Configure line(s) on
+        the clipboard."""
+        self.ax_label = None
+        item, config = self.current, self._ax_config()
+        if item is None or config is None or not hasattr(item.model, "x"):
+            return
+        label = QLabel()
+        label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        label.setWordWrap(True)
+        label.setContentsMargins(8, 4, 8, 4)
+        label.setStyleSheet("font-family: Consolas, monospace;")
+        self.ax_label = label
+        self._add_row(self.AX_GROUP, "", label, span=True)
+        straight = isinstance(item, BeltItem) and (item.is_custom_shape() or not (item.is_curved() or item.is_path()))
+        if isinstance(item, DiverterItem):
+            reset = QPushButton("Begin / end from its box")
+            reset.setToolTip("Forget the AX zone set by hand: the ends of its box along its travel again")
+            reset.setEnabled(bool(item.model.axStart or item.model.axEnd))
+            reset.clicked.connect(self._reset_zone)
+            self._add_row(self.AX_GROUP, "", reset, span=True)
+        if straight or isinstance(item, DiverterItem):
+            words = ("begin", "end") if isinstance(item, DiverterItem) else ("start", "end")
+            picks = QWidget()
+            row = QHBoxLayout(picks)
+            row.setContentsMargins(0, 0, 0, 0)
+            for which, word in (("in", words[0]), ("out", words[1])):
+                button = QPushButton(f"Pick {word} on canvas")
+                button.setToolTip("The next click on the canvas - snapped to ends, centres and midpoints like the "
+                                  f"drawing tools - sets the AX {word}; or drag its handle (green {words[0]}, "
+                                  f"red {words[1]})")
+                button.clicked.connect(lambda _=False, w=which: self._pick_port(w))
+                row.addWidget(button)
+            self._add_row(self.AX_GROUP, "", picks, span=True)
+        if straight:
+            reset = QPushButton("Start / end from the shape")
+            reset.setToolTip("Forget the start / end set by hand: the middles of its start and end edges again")
+            reset.setEnabled(bool(item.model.inletPoint or item.model.outletPoint))
+            reset.clicked.connect(self._reset_ports)
+            self._add_row(self.AX_GROUP, "", reset, span=True)
+        if isinstance(item, BeltItem) and item.is_custom_shape():
+            loose = cut_of(item.model, loose=True)
+            if loose is not None and not loose["canonical"] and not (cut_of(item.model) or {}).get("canonical"):
+                snap = QPushButton("Make Cut Belt (edit by length, width, angles)")
+                snap.setToolTip("Its sides along its travel, its start and end edges kept: then its length, width "
+                                "and the angles of its two ends are properties")
+                snap.clicked.connect(self._make_cut_belt)
+                self._add_row(self.AX_GROUP, "", snap, span=True)
+        if isinstance(item, BeltItem):
+            button = QPushButton("Copy ST (Path, Width)")
+            button.setToolTip("Copy this belt's ConveyorPath.AddLine / AddArc and Width_m for an AX Configure")
+            button.clicked.connect(self._copy_ax_st)
+            self._add_row(self.AX_GROUP, "", button, span=True)
+        self._refresh_ax_rows()
+
+    def _pick_port(self, which: str):
+        """The next click on the canvas sets the selected belt's AX start / end ("in" / "out")."""
+        item = self.current
+        if item is None or item.scene() is None:
+            return
+        for view in item.scene().views():
+            if hasattr(view, "pick_point"):
+                view.pick_point = lambda pos, it=item, w=which: self._set_port(it, w, pos)
+                view.setCursor(Qt.CrossCursor)
+
+    def _reset_zone(self):
+        item = self.current
+        if item is None:
+            return
+        old = (item.model.axStart, item.model.axEnd)
+        self._push_property_change(item, "zone.reset", old, (None, None), self._do_apply_field, "AX Zone from Its Box")
+        QTimer.singleShot(0, self._rebuild_and_reload)
+
+    def _set_port(self, item, which: str, world):
+        """Set the AX start / end (a belt) or begin / end (a diverter's zone); undo gives back
+        exactly what was there (set by hand or not)."""
+        model = item.model
+        if isinstance(item, DiverterItem):
+            old = (model.axStart, model.axEnd)
+            point = [round(world[0], 6), round(world[1], 6)]
+            new = (point, model.axEnd) if which == "in" else (model.axStart, point)
+            if old != new:
+                self._push_property_change(item, "zone.reset", old, new, self._do_apply_field,
+                                           f"AX zone {'begin' if which == 'in' else 'end'} of {model.id}")
+                QTimer.singleShot(0, self.refresh_after_change)
+            return
+        old = (model.inletPoint, model.outletPoint)
+        local = ax_geometry.to_local(model, round(world[0], 6), round(world[1], 6))
+        new = (local, model.outletPoint) if which == "in" else (model.inletPoint, local)
+        if old != new:
+            self._push_property_change(item, "port.reset", old, new, self._do_apply_field,
+                                       f"AX {'start' if which == 'in' else 'end'} of {model.id}")
+            QTimer.singleShot(0, self.refresh_after_change)
+
+    def _clear_port_handles(self):
+        for handle in getattr(self, "_port_handles", []):
+            if handle.scene() is not None:
+                handle.scene().removeItem(handle)
+        self._port_handles = []
+
+    def _show_port_handles(self, item, config):
+        """The selected belt's AX start (green) and end (red) on the canvas; a straight belt's can
+        be dragged (each drag one undo step)."""
+        self._clear_port_handles()
+        if not isinstance(item, (BeltItem, DiverterItem)) or item.scene() is None:
+            return
+        try:
+            if isinstance(item, DiverterItem):
+                start, end, _how = ax_geometry.zone_ends(item.model)
+                movable = True
+            else:
+                path = ax_geometry.belt_path(config, item.model)
+                start, end = path.start, path.end
+                movable = item.is_custom_shape() or not (item.is_curved() or item.is_path())
+        except Exception:  # noqa: BLE001 - a half-edited shape
+            return
+        snap = None
+        for view in item.scene().views():
+            snap = getattr(view, "snap_point", None) or snap
+        for which, point, color in (("in", start, QColor(40, 200, 90)), ("out", end, QColor(230, 60, 60))):
+            handle = AxPortHandle(to_scene_pos(point[0], point[1]), color, movable,
+                                  lambda pos, it=item, w=which: self._set_port(it, w, pos), snap=snap)
+            item.scene().addItem(handle)
+            self._port_handles.append(handle)
+
+    def _refresh_ax_rows(self):
+        label, item, config = getattr(self, "ax_label", None), self.current, self._ax_config()
+        if item is not None and config is not None:
+            self._show_port_handles(item, config)
+        if label is None or item is None or config is None:
+            return
+        try:
+            if isinstance(item, BeltItem):
+                text = ax_geometry.describe(config, item.model)
+            else:
+                text = ax_geometry.describe_point(config, item.model)
+        except Exception as exc:  # noqa: BLE001 - a half-edited shape must not break the panel
+            text = f"(no AX geometry: {exc})"
+        label.setText(text)
+
+    def _reset_ports(self):
+        item = self.current
+        if item is None:
+            return
+        old = (item.model.inletPoint, item.model.outletPoint)
+        self._push_property_change(item, "port.reset", old, (None, None), self._do_apply_field, "Ports from the Shape")
+        QTimer.singleShot(0, self._rebuild_and_reload)
+
+    def _make_cut_belt(self):
+        item = self.current
+        if item is None:
+            return
+        old = _belt_shape_snapshot(item.model)
+        probe = item.model.model_copy(deep=True)
+        if not make_cut_belt(probe, loose=True):
+            return
+        self._push_property_change(item, "shape.cut", old, _belt_shape_snapshot(probe), self._do_apply_field,
+                                   "Make Cut Belt")
+
+    def _copy_ax_st(self):
+        item, config = self.current, self._ax_config()
+        if item is None or config is None:
+            return
+        path = ax_geometry.belt_path(config, item.model)
+        QApplication.clipboard().setText("\n".join(ax_geometry.st_path_lines(path)) + "\n")
+
+    def refresh_after_change(self):
+        """After any undoable change (a drag, a dialog move, an edit, undo / redo):
+        the selected component's numbers and its AX geometry again."""
+        if self.current is not None and self.current.scene() is not None:
+            self._load()
+            self._refresh_ax_rows()
+
     def _clear_dynamic_rows(self):
+        self.ax_label = None
+        self._clear_port_handles()
         self.tree.clear()  # deletes the editor widgets too
         self.spins.clear()
         self.texts.clear()
@@ -4747,6 +5887,10 @@ class PropertiesPanel(QWidget):
         item = self.current
         if not item:
             return
+        if isinstance(item, BeltItem):
+            cut = cut_of(item.model)
+            if cut is not None and not cut["canonical"] and make_cut_belt(item.model):
+                item.sync_from_model()      # the same corners, now editable by its numbers
         self.id_edit = QLineEdit()
         self.id_edit.editingFinished.connect(self._apply_id)
         self._add_row("Identity", "Id", self.id_edit)
@@ -4755,9 +5899,8 @@ class PropertiesPanel(QWidget):
             field_kind, attr, label = spec[0], spec[1], spec[2]
             if field_kind == "float":
                 _, _, _, lo, hi, step = spec
-                widget = QDoubleSpinBox()
+                widget = NumberSpinBox(shown=hmi.PROPERTY_DECIMALS.get(attr, 3))
                 widget.setRange(lo, hi)
-                widget.setDecimals(hmi.PROPERTY_DECIMALS.get(attr, 3))
                 widget.setSingleStep(step)
                 widget.setSuffix(_FIELD_UNITS.get(attr, ""))
                 widget.valueChanged.connect(lambda v, a=attr: self._apply_field(a, v))
@@ -4803,11 +5946,17 @@ class PropertiesPanel(QWidget):
             if field_kind in ("float", "int") and attr[len("drive."):] in _DRIVE_ZERO_IS_NONE:
                 widget.setSpecialValueText("not set")      # 0 = None: the drive's accel / surface encoder
             # The result and the element table: the whole width, no label.
-            self._add_row(hmi.property_group(attr), label, widget, span=field_kind in ("summary", "elements"))
+            row = self._add_row(hmi.property_group(attr), label, widget, span=field_kind in ("summary", "elements"))
+            if field_kind == "elements":
+                def resized(r=row, w=widget):
+                    r.setSizeHint(0, QSize(w.width(), w.height()))
+                    self.tree.doItemsLayout()
+                widget.on_resized = resized
         if hasattr(item.model, "color"):
             self.color_btn = QPushButton("-")
             self.color_btn.clicked.connect(self._pick_color)
             self._add_row("Display", "Color", self.color_btn)
+        self._build_ax_rows()
         self._build_io()
         for group, tree_item in self._group_items.items():
             tree_item.setExpanded(group not in self._collapsed_groups)
@@ -4917,11 +6066,24 @@ class PropertiesPanel(QWidget):
         otherwise apply it directly. `do_apply(item, attr, value)` performs
         the actual model mutation + visual refresh for this specific field -
         shared between the live edit and undo/redo replay."""
-        apply_fn = lambda it, v, a=attr: do_apply(it, a, v)
+        def apply_fn(it, v, a=attr):
+            before = self._io_signature(it)
+            do_apply(it, a, v)
+            if it is self.current and self._io_signature(it) != before:
+                QTimer.singleShot(0, self._rebuild_and_reload)   # its PLC I/O changed (e.g. a deck's rows)
         if self.undo_stack is not None:
             self.undo_stack.push(PropertyEditCommand(item, apply_fn, old_value, new_value, text or f"Edit {attr}"))
         else:
             apply_fn(item, new_value)
+
+    @staticmethod
+    def _io_signature(item):
+        """Its PLC signals, names and sizes: the I/O section is rebuilt when an edit changes them
+        (a wheel deck's rows, a banner's beams, a type)."""
+        try:
+            return tuple((s.name, s.byte_type, s.count) for s in io_signals.signals(item.model))
+        except Exception:  # noqa: BLE001 - a half-edited model: no signature
+            return None
 
     def _resync_widget(self, item, attr: str):
         """After undo/redo replays a value (or any programmatic apply),
@@ -4930,7 +6092,8 @@ class PropertiesPanel(QWidget):
         value until the next selection change."""
         if item is not self.current:
             return
-        value = _shown_value(item.model, attr) if attr.startswith("drive.") else getattr(item.model, attr, None)
+        value = (_shown_value(item.model, attr) if attr.startswith(("drive.", "mitre.", "port.", "zone."))
+                 else getattr(item.model, attr, None))
         for widgets, setter in (
             (self.spins, lambda w, v: w.setValue(v if v is not None else self._OPTIONAL_FIELD_DEFAULTS.get(attr, 0))),
             (self.texts, lambda w, v: w.setText(_field_text(attr, v))),
@@ -4961,7 +6124,24 @@ class PropertiesPanel(QWidget):
         every keystroke, which used to re-trigger the drag-snap logic (and
         its guide-line overlay) even for unrelated edits like `speed`."""
         _set_model_value(item.model, attr, value)
-        if attr in ("x", "y"):
+        if isinstance(item, BeltItem) and (attr == "shape.cut" or (cut_of(item.model) is not None and attr in (
+                "length", "beltWidth", "mitre.end", "mitre.start"))):
+            item.sync_from_model()          # its corners and its middle (the start edge stays put)
+            if item is self.current:
+                if attr == "shape.cut":
+                    QTimer.singleShot(0, self._rebuild_and_reload)    # it may have become a cut belt
+                else:
+                    for a in ("x", "y", "length", "beltWidth", "mitre.end", "mitre.start", "port.inX",
+                              "port.inY", "port.outX", "port.outY"):
+                        self._resync_widget(item, a)
+        elif attr.startswith(("port.", "zone.")):
+            item.update()
+            if item is self.current:
+                for a in ("port.inX", "port.inY", "port.outX", "port.outY",
+                          "zone.inX", "zone.inY", "zone.outX", "zone.outY"):
+                    if a in self.spins:
+                        self._resync_widget(item, a)
+        elif attr in ("x", "y"):
             item.setPos(to_scene_pos(item.model.x, item.model.y))
         elif attr == "rotation":
             item.setRotation(-value)
@@ -5274,6 +6454,11 @@ class ComponentManagerPanel(QWidget):
             if m.type == "path":
                 return f"path{' loop' if m.closed else ''}, {len(m.path or [])} anchors{drive}"
             if m.shape == "quadrilateral":
+                end = mitre_of(m)
+                if end is not None:
+                    cut = cut_of(m)
+                    return (f"cut belt {cut['length']:.3f} × {cut['width']:g} m, start {cut['start_deg']:g}°, "
+                            f"end {end:g}°{drive}")
                 return f"polygon, {len(m.vertexs or [])} corners{drive}"
             if m.surface == "roller":
                 return f"roller conveyor {m.length:g} × {m.beltWidth:g} m{drive}"
@@ -5563,6 +6748,8 @@ class MainWindow(QMainWindow):
         properties_panel = PropertiesPanel(self.scene, self.items_list, on_model_changed=manager_panel.refresh)
         self.properties_panel = properties_panel
         properties_panel.undo_stack = self.undo_stack
+        properties_panel.get_config = lambda: self.config
+        self.undo_stack.indexChanged.connect(lambda _i: properties_panel.refresh_after_change())
         props_dock = QDockWidget("Properties", self)
         props_dock.setWidget(properties_panel)
         self.addDockWidget(Qt.RightDockWidgetArea, props_dock)
@@ -5611,6 +6798,21 @@ class MainWindow(QMainWindow):
         self.redo_action = redo_action = self.undo_stack.createRedoAction(self, "Redo")
         redo_action.setShortcut(QKeySequence.Redo)
         edit_menu.addAction(redo_action)
+        edit_menu.addSeparator()
+        self.move_to_action = QAction("Move Selection To...", self)
+        self.move_to_action.setShortcut("Ctrl+M")
+        self.move_to_action.setToolTip("Move the selected components together, as a group, so a chosen "
+                                       "reference point lands on the X / Y you type")
+        self.move_to_action.triggered.connect(self._move_selection_to)
+        edit_menu.addAction(self.move_to_action)
+        self.addAction(self.move_to_action)
+        edit_menu.addSeparator()
+        self.slots_action = QAction("Exchange Table...", self)
+        self.slots_action.setToolTip("What the PLC sends to be shown, plotted and checked - its values (of a "
+                                     "data type) and tracked loads - as a numbered table: a row's number is "
+                                     "its place in the PLC's output frame")
+        self.slots_action.triggered.connect(self._edit_exchange_table)
+        edit_menu.addAction(self.slots_action)
 
         # Pan Tool - always available (standalone demo or driven mode), a
         # toggle-button/shortcut equivalent of holding Space, plus
@@ -5638,19 +6840,21 @@ class MainWindow(QMainWindow):
         self.measure_action.setCheckable(True)
         self.measure_action.setShortcut("D")
         self.measure_action.setToolTip(
-            "Toggle the measure tool (D). Click to place a marker point; a second click "
-            "completes a marker line showing length and angle. Right-click cancels a "
-            "pending line."
+            "Measure (D): opens the measure window - point to point, the length of belts / "
+            "lines / curves, or the angle between two lines; click on the layout. Nothing is "
+            "left on the canvas. Right-click undoes the last pick."
         )
         self.measure_action.toggled.connect(self.view.set_measure_mode)
+        self.measure_action.toggled.connect(self._toggle_measure_window)
         self.measure_action.toggled.connect(lambda checked: self.pan_action.setChecked(False) if checked else None)
         self.pan_action.toggled.connect(lambda checked: self.measure_action.setChecked(False) if checked else None)
         view_toolbar.addAction(self.measure_action)
 
         self.clear_measure_action = clear_measure_action = QAction("Clear Measurements", self)
-        clear_measure_action.setToolTip("Remove all marker points/lines drawn by the measure tool.")
-        clear_measure_action.triggered.connect(self.scene.clear_measurements)
-        view_toolbar.addAction(clear_measure_action)
+        clear_measure_action.setToolTip("Clear the measure window's picks.")
+        clear_measure_action.triggered.connect(
+            lambda: self.measure_dialog.clear() if self.measure_dialog is not None else self.scene.clear_measurements())
+        self.measure_dialog: Optional[MeasureDialog] = None
 
         # Simulation + theme: one toolbar on the right of the main one.
         sim_toolbar = QToolBar("Simulation", self)
@@ -5673,9 +6877,16 @@ class MainWindow(QMainWindow):
         # DXF background/export (ezdxf). Imported here, not at module top,
         # because layout_editor_cad builds on this module's classes.
         from layout_editor_cad import CadController
+        self.field_guard = FieldGuard(self)
+        QApplication.instance().installEventFilter(self.field_guard)
         self.cad = CadController(self, belt_item_cls=BeltItem, to_scene_pos=to_scene_pos,
                                  from_scene_pos=from_scene_pos, snap_free_point=_snap_free_point,
                                  scale=SCALE, file_menu=file_menu)
+
+        def snap_point(scene_pos):                      # the drawing tools' object snap, for picks and handles
+            hit = self.cad.snap.snap(scene_pos)
+            return (hit.x, hit.y)
+        self.view.snap_point = snap_point
         check_dock = QDockWidget("Layout Check", self)
         check_dock.setWidget(self.cad.check_panel)
         self.addDockWidget(Qt.BottomDockWidgetArea, check_dock)
@@ -5810,6 +7021,19 @@ class MainWindow(QMainWindow):
         except RuntimeError:
             return  # the undo stack is being destroyed (window closing)
         self.setWindowTitle(f"Conveyor Layout Editor - {name}{dirty}")
+
+    def _toggle_measure_window(self, checked: bool):
+        """The measure tool on: its window (MeasureDialog) shows and takes the clicks; off: it
+        closes, its marks with it."""
+        if checked:
+            if self.measure_dialog is None:
+                self.measure_dialog = MeasureDialog(self)
+                self.view.on_measure_click = self.measure_dialog.pick
+                self.view.on_measure_undo = self.measure_dialog.undo
+            self.measure_dialog.show()
+            self.measure_dialog.raise_()
+        elif self.measure_dialog is not None and self.measure_dialog.isVisible()                 and not self.measure_dialog.closing:
+            self.measure_dialog.close()
 
     def closeEvent(self, event):
         if not self.undo_stack.isClean():
@@ -5966,6 +7190,7 @@ class MainWindow(QMainWindow):
             menu.addSeparator()
             add(f"Select All {item.kind.capitalize()}s", lambda: self._select_kind(item.kind))
             add("Zoom to Selection", self._zoom_to_selection)
+            add("Move Selection To...", self._move_selection_to, shortcut="Ctrl+M")
             add("Add to Library", self.library_panel.add_selected)
         else:
             if self._last_command is not None:
@@ -6077,6 +7302,79 @@ class MainWindow(QMainWindow):
             apply = lambda target, value: panel._do_apply_field(target, "rotation", value)
             self.undo_stack.push(PropertyEditCommand(it, apply, old, new, "Rotate"))
         self.undo_stack.endMacro()
+
+    def _selection_references(self, items) -> list:
+        """(name, (x, y)) reference points of a selection, in world metres."""
+        rect = items[0].sceneBoundingRect()
+        for it in items[1:]:
+            rect = rect.united(it.sceneBoundingRect())
+        x0, y1 = from_scene_pos(rect.topLeft())
+        x1, y0 = from_scene_pos(rect.bottomRight())
+        refs = [("lower-left corner of the selection", (x0, y0)),
+                ("centre of the selection", ((x0 + x1) / 2, (y0 + y1) / 2))]
+        for it in items:
+            if isinstance(it, BeltItem):
+                try:
+                    path = ax_geometry.belt_path(self.config, it.model)
+                except Exception:  # noqa: BLE001
+                    continue
+                refs.append((f"start of {it.model.id} (its AX path)", path.start[:2]))
+                refs.append((f"end of {it.model.id} (its AX path)", path.end[:2]))
+            else:
+                refs.append((f"{it.model.id}", (it.model.x, it.model.y)))
+        return refs
+
+    def _move_selection_to(self):
+        """Move every selected component by one offset (a group keeps its shape):
+        the reference point chosen lands on the X / Y typed. One undo step."""
+        items = [i for i in self.scene.selectedItems() if isinstance(i, PlacedItem)]
+        if not items:
+            self.statusBar().showMessage("Select the components to move first (drag a box, or Ctrl+click).", 5000)
+            return
+        from PySide6.QtWidgets import QDialogButtonBox, QFormLayout
+        refs = self._selection_references(items)
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"Move {len(items)} Component{'s' if len(items) > 1 else ''} To")
+        form = QFormLayout(dialog)
+        combo = QComboBox()
+        combo.addItems([name for name, _ in refs])
+        xs, ys = NumberSpinBox(), NumberSpinBox()
+        for spin in (xs, ys):
+            spin.setRange(-100000.0, 100000.0)
+            spin.setSingleStep(self.config.gridSize or 0.25)
+            spin.setSuffix(" m")
+
+        def show_ref(index):
+            x, y = refs[index][1]
+            xs.setValue(x)
+            ys.setValue(y)
+        combo.currentIndexChanged.connect(show_ref)
+        show_ref(0)
+        form.addRow("Reference point", combo)
+        form.addRow("X", xs)
+        form.addRow("Y", ys)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        rx, ry = refs[combo.currentIndex()][1]
+        dx, dy = xs.value() - rx, ys.value() - ry
+        if abs(dx) < 1e-9 and abs(dy) < 1e-9:
+            return
+        self.move_items_by(items, dx, dy)
+
+    def move_items_by(self, items, dx: float, dy: float):
+        """Shift these components by (dx, dy) metres, one undo step."""
+        self.undo_stack.beginMacro(f"Move {len(items)} Component{'s' if len(items) > 1 else ''}")
+        for it in items:
+            old = QPointF(it.pos())
+            new = to_scene_pos(it.model.x + dx, it.model.y + dy)
+            self.undo_stack.push(MoveItemCommand(it, old, new))
+        self.undo_stack.endMacro()
+        self.view.invalidate_points_edges_cache()
+        self.statusBar().showMessage(f"Moved {len(items)} component(s) by ({dx:+.3f}, {dy:+.3f}) m.", 5000)
 
     def _select_kind(self, kind: str):
         for it in self.items_list:
@@ -6219,6 +7517,27 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"SIMATIC AX: {what} {files} - {'; '.join(result.report)}", 12000)
         return result
 
+    def _edit_exchange_table(self) -> bool:
+        """Edit > Exchange Table: the values and the tracked-load slots; OK
+        applies it as one undo step."""
+        if self.config is None:
+            return False
+        taken = {i.model.id for i in self.items_list}
+        dialog = ExchangeTableDialog(self, self.config.plcValues, self.config.trackedLoads, taken)
+        if dialog.exec() != QDialog.Accepted:
+            return False
+        return self.apply_exchange_table(dialog.values(), dialog.slots())
+
+    def apply_exchange_table(self, values, slots) -> bool:
+        same = lambda a, b: [x.model_dump() for x in a] == [x.model_dump() for x in b]   # noqa: E731
+        if same(values, self.config.plcValues) and same(slots, self.config.trackedLoads):
+            return False
+        self.undo_stack.beginMacro("Edit Exchange Table")
+        self.undo_stack.push(ListReplaceCommand(self.config, "plcValues", values, "Values"))
+        self.undo_stack.push(ListReplaceCommand(self.config, "trackedLoads", slots, "Tracked loads"))
+        self.undo_stack.endMacro()
+        return True
+
     def _build_export_config(self) -> SimulatorConfig:
         """Reassemble a `SimulatorConfig` from the *current* `items_list`
         (property edits already mutate the same model objects `self.config`
@@ -6231,7 +7550,10 @@ class MainWindow(QMainWindow):
         base = self.config if self.config is not None else SimulatorConfig()
         by_kind = {kind: [] for kind in CONFIG_LIST_ATTR_FOR_KIND}
         for item in self.items_list:
-            by_kind[item.kind].append(item.model)
+            if item.kind not in TABLE_KINDS:
+                by_kind[item.kind].append(item.model)
+        for kind in TABLE_KINDS:                       # edited as a table: in their rows' order
+            by_kind[kind] = list(getattr(base, CONFIG_LIST_ATTR_FOR_KIND[kind]))
         return base.model_copy(update={
             attr: by_kind[kind] for kind, attr in CONFIG_LIST_ATTR_FOR_KIND.items()
         })
@@ -6243,6 +7565,9 @@ def main():
                     "then run the saved layout with `python main.py <layout.json>`."
     )
     parser.add_argument("layout", nargs="?", help="Layout JSON to open (omit to start a new layout)")
+    parser.add_argument("--exit-with", type=int, default=0, metavar="PID",
+                        help="close when that process ends (the simulator that opened this designer); "
+                             "unsaved changes are asked about first")
     args = parser.parse_args()
 
     app = QApplication(sys.argv)
@@ -6253,7 +7578,32 @@ def main():
         window = MainWindow(config_path=args.layout)
     window.show()
     attach_instance_link(app)
+    if args.exit_with:
+        exit_with_process(app, args.exit_with)
     sys.exit(app.exec())
+
+
+def exit_with_process(app, pid: int, poll_ms: int = 1000):
+    """Close every designer window when the process `pid` ends (the simulator that started this
+    designer): one designer per simulator, none left behind. A window with unsaved changes asks
+    first (its closeEvent); cancelled, the designer stays open."""
+    import sim_link
+    timer = QTimer(app)
+
+    def check():
+        if sim_link.process_alive(pid):
+            return
+        timer.stop()
+        for window in [w for w in QApplication.topLevelWidgets() if isinstance(w, MainWindow)]:
+            try:
+                if window.isVisible():
+                    window.close()
+            except RuntimeError:                        # a window already being deleted: nothing to close
+                continue
+
+    timer.timeout.connect(check)
+    timer.start(poll_ms)
+    return timer
 
 
 def attach_instance_link(app, poll_ms: int = 150):

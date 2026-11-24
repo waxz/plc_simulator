@@ -33,7 +33,7 @@ import io_layout
 from config_parser import SimulatorConfig, load_config
 from config_parser import Belt
 from device_kinds import kind_of
-from mqtt_message_binding import (ByteType, belt_feedback_mapping, custom_component_mapping, find_component_by_id,
+from mqtt_message_binding import (ByteType, custom_component_mapping, find_component_by_id,
                                   parse_path)
 from tcp_framed_transport import FrameType, TcpFrameCodec
 
@@ -56,8 +56,6 @@ def frames(config: SimulatorConfig) -> List[Tuple[str, int, list]]:
             custom_component_mapping(config, next(iter(pub.values()))["custom_ids"], direction="out")),
            ("Sim_Output", int(FrameType.IO_MAPPING),
             custom_component_mapping(config, next(iter(sub.values()))["custom_ids"], direction="in"))]
-    if config.mqttSettings.beltFeedback:
-        out.append(("Belt_Feedback", int(FrameType.BELT_FEEDBACK), belt_feedback_mapping(config)))
     for frame_type, channel in METRICS_CHANNELS.items():
         out.append((_metric_name(FrameType(frame_type).name), int(frame_type), layout_mapping(channel["layout"])))
     return out
@@ -65,7 +63,7 @@ def frames(config: SimulatorConfig) -> List[Tuple[str, int, list]]:
 
 # Which side of the exchange each frame carries: "out" = simulator -> PLC
 # (feedback), "in" = PLC -> simulator (commands). Metric frames: neither.
-FRAME_DIRECTIONS = {"Sim_Input": "out", "Sim_Output": "in", "Belt_Feedback": "out"}
+FRAME_DIRECTIONS = {"Sim_Input": "out", "Sim_Output": "in"}
 
 
 def device_type(component, direction: Optional[str]) -> Optional[str]:
@@ -76,7 +74,7 @@ def device_type(component, direction: Optional[str]) -> Optional[str]:
     side = "Feedback" if direction == "out" else "Command"
     kind = kind_of(component)
     if kind is not None:
-        return f"{kind.st_name}_{side}"
+        return f"{kind.struct_name(component)}_{side}"
     if isinstance(component, Belt):
         if component.commandFormat == "frequency":
             return f"BeltFreq_{side}"
@@ -191,7 +189,7 @@ def members(mapping, config: Optional[SimulatorConfig] = None, direction: Option
             if name not in declared:
                 declared[name] = Member(name, grouped[component])
                 out.append(declared[name])
-            access.append((f, f"{name}.{_st_name(field)}"))
+            access.append((f, f"{name}.{_st_name(field)}" + (f"[{index}]" if index is not None else "")))
             continue
         if component == "clock":
             name, st_type = unique("clock", "clock"), "LINT"
@@ -216,13 +214,25 @@ def device_structs(config: SimulatorConfig) -> Dict[str, List[Tuple[str, str]]]:
     for name, _frame_type, mapping in frames(config):
         direction = FRAME_DIRECTIONS.get(name)
         seen: Dict[str, List[Tuple[str, str]]] = {}
+        lengths: Dict[Tuple[str, str], int] = {}
         for f in io_layout.layout_fields(mapping):
             if f.is_padding:
                 continue
-            component_id, field, _index = parse_path(f.path)
+            component_id, field, index = parse_path(f.path)
             type_name = device_type(_component(config, component_id), direction)
-            if type_name:
-                seen.setdefault(component_id, []).append((_st_name(field), ST_TYPES[f.byte_type]))
+            if not type_name:
+                continue
+            if index is not None:                   # an ARRAY member (name[i]): declared once, its length
+                key = (component_id, field)
+                if key not in lengths:
+                    seen.setdefault(component_id, []).append((_st_name(field), ST_TYPES[f.byte_type]))
+                lengths[key] = max(lengths.get(key, 0), index + 1)
+                continue
+            seen.setdefault(component_id, []).append((_st_name(field), ST_TYPES[f.byte_type]))
+        for (component_id, field), n in lengths.items():
+            if n > 1:
+                seen[component_id] = [(m, f"ARRAY[0..{n - 1}] OF {t}" if m == _st_name(field) else t)
+                                      for m, t in seen[component_id]]
         for component_id, fields in seen.items():
             type_name = device_type(_component(config, component_id), direction)
             if structs.setdefault(type_name, fields) != fields:
@@ -355,9 +365,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--frames", help="comma-separated frames (default: every frame)")
     parser.add_argument("--no-tags", action="store_true", help="leave out the PLC tags STRUCT and ReadTags / WriteTags")
     parser.add_argument("--bit-arrays", action="store_true", help="a laser banner's beams as ARRAY OF BOOL")
-    parser.add_argument("--max-payload", type=int, help="refuse a bigger frame (default 242); 0 = no limit")
+    parser.add_argument("--max-payload", type=int, help="refuse a bigger frame (default 4096: the AX TcpClient's 4110-byte frames); 0 = no limit")
     parser.add_argument("--vectors", help="also write an AxUnit golden-vector test file")
-    parser.add_argument("--exchange-config", help="JSON overriding exchange settings (endianness, beltFeedback)")
+    parser.add_argument("--exchange-config", help="JSON overriding exchange settings (endianness, ...)")
     parser.add_argument("--from-contract", help="the ST from a saved contract (--contract) instead of a layout")
     parser.add_argument("--contract", help="also write the contract (with the PLC tags) as JSON here")
     parser.add_argument("--tags", help="also write the PLC tags as JSON here (plc_tags.tags_json)")

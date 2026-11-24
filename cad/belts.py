@@ -54,6 +54,157 @@ def outline_belt(belt_id: str, points: Sequence[Point], flow_heading: Optional[f
                 vertexs=[{"x": x, "y": y} for x, y in local], speed=speed, directionAngle=heading, color=color)
 
 
+# ---------------------------------------------------------------------------
+# Cut belts: straight, with either end cut at an angle (a triangle-like end)
+# ---------------------------------------------------------------------------
+#
+# The last belt of a side induction ends along the main line's edge (a merge
+# belt: its END is cut), and a branch leaving a line's side starts along that
+# edge (its START is cut), so a load moves across the whole edge at once. Such
+# a belt is an outline belt (4 corners) kept in a fixed form, so the designer
+# shows and edits it by its numbers:
+#   length  - its centreline: from the middle of its start edge to the middle
+#             of its end edge (Belt.length)
+#   width   - Belt.beltWidth
+#   start / end angle - each edge's angle to the travel, degrees in (0, 180):
+#             90 a square edge; 45 the edge running 45 degrees to the right of
+#             the travel (its left side longer at the end, shorter at the start)
+# The belt's x, y is the middle of its centreline and its rotation the travel
+# (directionAngle 0), so it moves and rotates like any belt. A 4-corner belt of
+# that shape drawn or edited by hand is recognised too (cut_of) and can be put
+# back into this form (make_cut_belt), with nothing moving.
+
+MITRE_TOLERANCE = 1e-6
+_SHAPE_TOLERANCE = 1e-4          # m: corners this close count as on the form
+LOOSE_DEG = 1.5                  # a hand-drawn side this close to the travel (cut_of(loose=True))
+
+
+def _cot(deg: float) -> float:
+    return math.cos(math.radians(deg)) / math.sin(math.radians(deg))
+
+
+def mitre_corners(length: float, width: float, end_deg: float, start_deg: float = 90.0) -> List[dict]:
+    """The 4 local corners (CCW): start right, end right, end left, start left."""
+    for name, deg in (("end", end_deg), ("start", start_deg)):
+        if not 1.0 <= deg <= 179.0:
+            raise ValueError(f"The {name} angle must be between 1 and 179 degrees (90: a square edge).")
+    half, w2 = length / 2.0, width / 2.0
+    ce, cs = _cot(end_deg), _cot(start_deg)
+    right, left = length - w2 * ce + w2 * cs, length + w2 * ce - w2 * cs
+    if min(right, left) < -MITRE_TOLERANCE:
+        need = w2 * abs(ce - cs)
+        raise ValueError(f"A {width:g} m wide belt with these cut ends needs at least {need:.3f} m of length "
+                         f"(then one side is 0: a triangle).")
+    return [{"x": -half - w2 * cs, "y": -w2}, {"x": half - w2 * ce, "y": -w2},
+            {"x": half + w2 * ce, "y": w2}, {"x": -half + w2 * cs, "y": w2}]
+
+
+def mitred_belt(belt_id: str, start: Point, heading: float, length: float, width: float, end_deg: float,
+                speed: float = 1.0, color: str = "#3b82f6", start_deg: float = 90.0) -> Belt:
+    """A cut belt from `start` (the middle of its start edge), travelling at
+    `heading` degrees, its end cut at `end_deg` and its start at `start_deg`."""
+    a = math.radians(heading)
+    cx, cy = start[0] + math.cos(a) * length / 2.0, start[1] + math.sin(a) * length / 2.0
+    return Belt(id=belt_id, type="linear", shape="quadrilateral", x=cx, y=cy, rotation=heading,
+                length=length, beltWidth=width, vertexs=mitre_corners(length, width, end_deg, start_deg),
+                speed=speed, directionAngle=0.0, color=color)
+
+
+def cut_of(belt: Belt, loose: bool = False) -> Optional[dict]:
+    """A 4-corner outline belt whose two sides run along its travel (parallel,
+    one width apart) - a cut belt, however it was drawn or edited - as
+    {start, end (x, y: the middles of its start and end edges), heading,
+    length, width, start_deg, end_deg, canonical, exact}; None for any other belt.
+    `loose`: sides within LOOSE_DEG of the travel count too (a hand-drawn
+    belt); make_cut_belt then squares them (`exact` False: corners move)."""
+    v = belt.vertexs
+    if belt.shape != "quadrilateral" or not v or len(v) != 4:
+        return None
+    h = belt.rotation + belt.directionAngle
+    a = math.radians(h)
+    ux, uy = math.cos(a), math.sin(a)
+    r = math.radians(belt.rotation)
+    world = [(belt.x + p["x"] * math.cos(r) - p["y"] * math.sin(r),
+              belt.y + p["x"] * math.sin(r) + p["y"] * math.cos(r)) for p in v]
+    uv = [(x * ux + y * uy, -x * uy + y * ux) for x, y in world]
+    edges = [(uv[i], uv[(i + 1) % 4]) for i in range(4)]
+    def parallel(p, q):
+        if abs(p[1] - q[1]) < _SHAPE_TOLERANCE:
+            return True
+        return loose and math.degrees(math.atan2(abs(q[1] - p[1]), abs(q[0] - p[0]))) < LOOSE_DEG
+
+    along = [k for k, (p, q) in enumerate(edges) if parallel(p, q)]
+    exact = all(abs(edges[k][0][1] - edges[k][1][1]) < _SHAPE_TOLERANCE for k in along)
+    if len(along) != 2 or abs(along[0] - along[1]) != 2:
+        return None
+    v_lo, v_hi = sorted((edges[k][0][1] + edges[k][1][1]) / 2.0 for k in along)
+    width = v_hi - v_lo
+    if width <= _SHAPE_TOLERANCE:
+        return None
+    vc = (v_lo + v_hi) / 2.0
+    ends = []
+    for k in [i for i in range(4) if i not in along]:
+        (u0, v0), (u1, v1) = edges[k]
+        if abs(v1 - v0) < _SHAPE_TOLERANCE:
+            return None
+        u_mid = u0 + (u1 - u0) * (vc - v0) / (v1 - v0)            # where the centreline crosses this edge
+        deg = math.degrees(math.atan2(v1 - v0, u1 - u0)) % 180.0   # the edge's angle to the travel
+        ends.append((u_mid, deg))
+    (us, ds), (ue, de) = sorted(ends)
+    if ue - us <= _SHAPE_TOLERANCE:
+        return None
+
+    def point(u):
+        return u * ux - vc * uy, u * uy + vc * ux
+
+    canonical = (abs(belt.directionAngle) < MITRE_TOLERANCE and abs(belt.length - (ue - us)) < 1e-6
+                 and abs(belt.beltWidth - width) < 1e-6
+                 and math.dist((belt.x, belt.y), point((us + ue) / 2.0)) < 1e-6)
+    return {"start": point(us), "end": point(ue), "heading": h % 360.0, "length": ue - us, "width": width,
+            "start_deg": ds, "end_deg": de, "canonical": canonical and exact, "exact": exact}
+
+
+def mitre_of(belt: Belt) -> Optional[float]:
+    """The end angle (degrees) of a cut belt, None for any other belt."""
+    cut = cut_of(belt)
+    return None if cut is None else cut["end_deg"]
+
+
+def make_cut_belt(belt: Belt, loose: bool = False) -> bool:
+    """Put a cut belt drawn or edited by hand into the cut-belt form (x, y the
+    middle of its centreline, rotation its travel, length and width its own);
+    nothing moves - except, with `loose`, a side drawn slightly off the travel
+    is squared to it. False when it is not a cut belt."""
+    cut = cut_of(belt, loose)
+    if cut is None:
+        return False
+    if not cut["canonical"]:
+        h = cut["heading"]
+        (sx, sy), (ex, ey) = cut["start"], cut["end"]
+        belt.x, belt.y = (sx + ex) / 2.0, (sy + ey) / 2.0
+        belt.rotation, belt.directionAngle = (h if h <= 180.0 else h - 360.0), 0.0
+        belt.length, belt.beltWidth = cut["length"], cut["width"]
+        belt.vertexs = mitre_corners(cut["length"], cut["width"], cut["end_deg"], cut["start_deg"])
+    return True
+
+
+def set_mitre(belt: Belt, length: Optional[float] = None, width: Optional[float] = None,
+              end_deg: Optional[float] = None, start_deg: Optional[float] = None) -> None:
+    """Change a cut belt's length, width or angles, keeping the middle of its
+    start edge where it is (it stays joined to the belt feeding it)."""
+    if not make_cut_belt(belt):
+        raise ValueError(f"{belt.id} is not a cut belt.")
+    cut = cut_of(belt)
+    new_len = belt.length if length is None else length
+    new_w = belt.beltWidth if width is None else width
+    corners = mitre_corners(new_len, new_w, cut["end_deg"] if end_deg is None else end_deg,
+                            cut["start_deg"] if start_deg is None else start_deg)     # raises before any change
+    a = math.radians(belt.rotation)
+    sx, sy = cut["start"]
+    belt.length, belt.beltWidth, belt.vertexs = new_len, new_w, corners
+    belt.x, belt.y = sx + math.cos(a) * new_len / 2.0, sy + math.sin(a) * new_len / 2.0
+
+
 def path_belt(belt_id: str, points: Sequence[Point], bulges: Sequence[float], closed: bool, width: float,
               speed: float = 1.0, color: str = "#3b82f6", corner_radius: float = 0.0) -> Belt:
     if len(points) < 2:

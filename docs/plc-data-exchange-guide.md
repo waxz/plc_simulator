@@ -73,7 +73,6 @@ ones behind it. Payloads can be at most 2048 bytes.
 |---|---|---|---|
 | `IO_MAPPING` | 1 | both | the input frame (sim -> PLC) or the output frame (PLC -> sim) |
 | `METRIC_LAYOUT_1/2/3` | 2 / 3 / 5 | PLC -> sim | the PLC's own measurements (web dashboard) |
-| `BELT_FEEDBACK` | 6 | sim -> PLC | per belt `actualSpeed` + `encoderCount`, only with `beltFeedback` on |
 | `LAYOUT_CHECK` | 7 | both | layout fingerprints and sizes (section 2.4) |
 | `INPUT_IMAGE` | 8 | PLC -> monitor | the input image the PLC worked on (Foxglove bridge) |
 | `JSON` | 9 | PLC -> monitor | a UTF-8 JSON object, published as is on `/plc/json/<topic>` (Foxglove bridge) |
@@ -119,7 +118,7 @@ input  (simulator -> PLC): 165 bytes, layout 083EBF55
   8.0-9.7    bit     BOOL   banner_1/sensor_states[0..15]  (16 bits)
   53         uint32  DWORD  dws_1/code
   157        uint64  LINT   clock/nanoseconds
-output (PLC -> simulator): 247 bytes, layout C5E971E0
+output (PLC -> simulator): 247 bytes, layout A188665C
   0.0        bit     BOOL   lamp_run/isOn
   0.2        bit     BOOL   st_feed/release
   0.4-1.0    bit     BOOL   robot_1/{start, enable, hold, faultReset, gripperClose}
@@ -183,7 +182,7 @@ Each component's fields depend on its kind:
 | Belt / roller conveyor, `commandFormat` "speed" | - | `speed` REAL (m/s, signed), `directionAngle` REAL |
 | Belt / roller conveyor, `commandFormat` "vfd" | - | `run` BOOL, `reverse` BOOL, `speed` REAL |
 | Belt / roller conveyor, `commandFormat` "frequency" | - | `run` BOOL, `reverse` BOOL, `frequency` REAL (Hz to the inverter) |
-| Belt feedback (`beltFeedback` on; own frame) | `running`, `atSpeed`, `reversing`, `fault` BOOL; `actualSpeed` REAL, `encoderCount` UDINT; a "frequency" belt also `outputFrequency` REAL (Hz), `motorSpeed` REAL (rpm) | - |
+| Belt / roller conveyor with `feedback` on (the belt's own property) | `running`, `atSpeed`, `reversing`, `fault` BOOL; `actualSpeed` REAL, `encoderCount` UDINT; a "frequency" belt also `outputFrequency` REAL (Hz), `motorSpeed` REAL (rpm) | - |
 | Machines and logistics devices | see 3.3 | see 3.3 |
 
 A belt commanded in Hz is driven through its drive train (`drivetrain.py`):
@@ -216,7 +215,7 @@ These are in the layout's `mqttSettings`, or a separate file passed with
 ```json
 { "transport": "tcp", "enabled": true,
   "tcpBindHost": "127.0.0.1", "tcpServerHost": "127.0.0.1", "tcpPort": 5001,
-  "endianness": "LE", "beltFeedback": false }
+  "endianness": "LE" }
 ```
 
 The simulator listens on `tcpBindHost:tcpPort`. A PLC on the network needs
@@ -306,7 +305,7 @@ print(input_msg.payload_size, output_msg.payload_size)   # 165 247
 - **Compose:** set the command fields on the components, then
   `payload = output_msg.serialize(config)`:
   - `belt.speed = 1.0`
-  - `diverter.divert = True`
+  - `diverter.enable = True`
   - `stopper.release = True`
   - `led.isOn = True`
 - **By id:** `mqtt_message_binding.find_component_by_id("div_1", config)`
@@ -346,7 +345,7 @@ while True:                                            # the scan
     with lock:
         infeed.speed = 1.0                             # compose
         div_1.commandSpeed, div_1.commandAngle = div_1.speed, 0.0   # 0: its divertAngle, as designed
-        div_1.divert = div_1.presentCode != 0          # divert everything, for the demo
+        div_1.enable = div_1.presentCode != 0          # divert everything, for the demo
         payload = tx.serialize(config)
     link.send(payload, frame_type=FrameType.IO_MAPPING, node_id=0)
     time.sleep(0.05)
@@ -372,10 +371,10 @@ Each kind has one function in `plc_logic.py`:
 ```python
 @device_program("diverters")
 def _diverter(control, d, scan: Scan) -> None:
-    """Fire when the code in its zone is tracked to its destination."""
+    d.commandSpeed, d.commandAngle = d.speed, d.divertAngle   # commandAngle: deg to the travel
     d.commandSpeed, d.commandAngle = d.speed, 0.0     # commandAngle: a correction to divertAngle
     fire = scan.running and d.presentCode != 0 and control.track.get(d.presentCode) == d.destination
-    d.divert = fire
+    d.enable = fire
 ```
 
 - **Its inputs:** `scan` gives `running`, `dt` (s since the last scan),
@@ -427,7 +426,7 @@ The generated frame STRUCTs for `logistics_full.json` (excerpt):
 
 ```
 Diverter_Command : STRUCT
-    divert : BOOL;
+    enable : BOOL;
     commandSpeed : REAL;
     commandAngle : REAL;
 END_STRUCT;
@@ -476,7 +475,7 @@ USING Ax.Communication;
     tcp_praser.Execute(tcpClient.ReceiveBuffer, tcpClient.ReceiveLength);
 
     // Only the I/O frame of the right size goes into Sim_Input: the simulator
-    // also sends LAYOUT_CHECK replies (and BELT_FEEDBACK when it is on).
+    // also sends LAYOUT_CHECK replies.
     IF tcp_praser.PayloadReady
        AND magicCodec.ReceivedFrameType = contract.FRAME_TYPE_IO_MAPPING
        AND TO_UDINT(tcp_praser.ExtractedLength) = contract.SIM_INPUT_SIZE THEN
@@ -503,7 +502,7 @@ USING Ax.Communication;
     simOut.robot_1.enable := TRUE;
     simOut.robot_1.program := BYTE#1;                // 1 pick and place
     simOut.robot_1.start := simIn.s_pick AND simIn.robot_1.ready AND simIn.robot_1.placeReady;
-    simOut.div_1.divert := fireDiverter1;
+    simOut.div_1.enable := fireDiverter1;
     simOut.div_1.commandSpeed := REAL#1.2;           // m/s
     simOut.div_1.commandAngle := REAL#0.0;           // deg added to its divertAngle: 0 = as designed
 
@@ -581,7 +580,7 @@ CLASS DiverterControl
         END_VAR
         cmd.commandSpeed := REAL#1.2;
         cmd.commandAngle := REAL#0.0;          // a correction to the layout's divertAngle
-        cmd.divert := running AND fb.present AND fb.presentCode <> UDINT#0
+        cmd.enable := running AND fb.present AND fb.presentCode <> UDINT#0
                       AND destinationOfCode = Destination;
     END_METHOD
 END_CLASS
@@ -618,5 +617,5 @@ safety reset), the reference is `plc_logic.py`'s device programs
 | Nothing arrives at the simulator, AX side | The output frame is larger than `MAX_PACKED_LENGTH` / `MAX_SEND_LENGTH` (`DroppedPackCount` rises). Raise them (section 5.3). |
 | Values look shifted or random | The byte order or the frame type was not checked. Use `LE` on both sides, deserialize only `FRAME_TYPE_IO_MAPPING` frames of `SIM_INPUT_SIZE` bytes. |
 | A counter "jumps back" | UINT counters wrap at 65535. Compare with the last value seen, not with a threshold. |
-| A diverter fires but nothing turns | `commandSpeed` 0: it holds the parcel. Send the speed and the angle with `divert`. |
+| A diverter fires but nothing turns | `commandSpeed` 0: it holds the parcel. Send the speed and the angle (deg to the travel) with `enable`; wheels also stop when `enable` is off. |
 | `Port 5001 is in use` | Another simulator is running. Close it, or use another port on both sides. |

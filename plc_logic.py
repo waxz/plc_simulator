@@ -8,8 +8,8 @@ object that ComponentMessage serializes - so it runs unchanged over TCP or
 MQTT (plc_mock.py) or directly in a test.
 
 Behaviour, once per scan (step()):
-  Buttons (user input), picked by label/id; an NC contact
-  (ControlButton.normallyClosed, e.g. STOP) reads 0 when pressed:
+  Buttons (user input), picked by label/id; each reads 1 while pressed,
+  NO or NC contact alike (the contact type is the simulator's detail):
     "start"            -> run
     "stop"             -> stop
     "reset"            -> clear a jam
@@ -30,7 +30,7 @@ Behaviour, once per scan (step()):
     `reverse` and `speed` (magnitude); "frequency": `run`, `reverse` and
     `frequency`, the Hz that give the design speed through the belt's drive
     train (drivetrain.py).
-  Drive faults (Belt.fault in the motor feedback, BELT_FEEDBACK frame):
+  Drive faults (Belt.fault in the drive feedback: a belt with `feedback` on reports it in the input frame):
     stop the line; it can be started again once every fault has cleared
     (a drive resets when its run command is removed).
   LEDs, picked by label/id: "run"/"ok"/"auto" (else the first LED) shows
@@ -59,10 +59,11 @@ from typing import Callable, Dict, List, Optional, Set
 
 import devices
 import drivetrain
+import equipment_geometry
 import logistics
 import machines
 from config_parser import SimulatorConfig
-from device_kinds import DEVICE_KINDS
+from device_kinds import DEVICE_KINDS, wheel_rows
 
 DEFAULT_SPEED = 1.0  # m/s for belts whose layout speed is 0
 
@@ -231,14 +232,29 @@ def _scanner(control, scanner, scan: Scan) -> None:
 
 @device_program("diverters")
 def _diverter(control, d, scan: Scan) -> None:
-    """Fire when the code in its zone is tracked to its destination, at the
-    layout's speed and direction (commandAngle 0: no correction to its
-    divertAngle)."""
-    d.commandSpeed, d.commandAngle = d.speed, 0.0
+    """Divert the code in its zone when it is tracked to its destination.
+    A pusher: enable then, at the layout's speed and divertAngle. Wheels:
+    enabled while running, straight on (angle 0) and to divertAngle for
+    the destination, at a speed that keeps the parcels' pace along the
+    travel (the design speed is the diverting one: speed x cos(divertAngle)
+    / cos(angle))."""
     fire = scan.running and d.presentCode != 0 and control.track.get(d.presentCode) == d.destination
-    if fire and not d.divert:
+    state = control.state(d)
+    if fire and not state.get("fire"):
         scan.events.append(f"diverter {d.id}: {d.presentCode} -> destination {d.destination}")
-    d.divert = fire
+    state["fire"] = fire
+    if d.diverterType == "wheels":
+        d.enable = scan.running
+        d.commandAngle = equipment_geometry.wheel_steer(d.divertAngle) if fire else 0.0
+        d.commandSpeed = d.speed * math.cos(math.radians(equipment_geometry.wheel_steer(d.divertAngle))) / \
+            math.cos(math.radians(d.commandAngle))
+        n = wheel_rows(d)
+        if n > 1:                                               # a deck of rows: all of them so
+            d.rowAngles, d.rowSpeeds = [d.commandAngle] * n, [d.commandSpeed] * n
+    else:
+        d.enable = fire
+        d.commandSpeed, d.commandAngle = d.speed, d.divertAngle
+
 
 
 @device_program("turntables")
@@ -289,6 +305,39 @@ def _chute(control, sink, scan: Scan) -> None:
     sink.empty = state["full_s"] >= CHUTE_SWAP_S
 
 
+PLC_VALUE_TURN_S = 10.0     # the mock's test signal: one turn of the circle
+
+
+@device_program("plcValues")
+def _plc_value(control, value, scan: Scan) -> None:
+    """A value the PLC shows (it drives nothing): this mock writes a test
+    signal, so the charts have something to draw - the PLC values in pairs
+    trace a circle (the first of a pair cos, the second sin, one turn in
+    PLC_VALUE_TURN_S, radius 1), while the line runs."""
+    state = control.state(value)
+    if scan.running:
+        state["t"] = state.get("t", 0.0) + scan.dt
+    ids = [v.id for v in control.config.plcValues]
+    index = ids.index(value.id) if value.id in ids else 0
+    angle = 2.0 * math.pi * state.get("t", 0.0) / PLC_VALUE_TURN_S
+    signal = math.cos(angle) if index % 2 == 0 else math.sin(angle)
+    kind = getattr(value, "dataType", "REAL")
+    if kind == "REAL":
+        value.value = signal
+    elif kind == "BOOL":
+        value.value = signal > 0.0
+    else:                                       # an integer: the time it ran, in tenths of a second
+        value.value = int(state.get("t", 0.0) * 10.0)
+
+
+@device_program("trackedLoads")
+def _tracked_load(control, slot, scan: Scan) -> None:
+    """A slot for a load the PLC tracks: this mock tracks no loads (it sees
+    only its I/O image, not the parcels), so every slot stays empty. A real
+    PLC program fills them (the AX merge demo: MergeLine.ShowLoads)."""
+    slot.active = False
+
+
 class MachineControl:
     """The PLC side of the machines and logistics devices: once per scan,
     after the belts' own outputs, the program of each kind of device
@@ -303,6 +352,7 @@ class MachineControl:
         self._states: Dict[str, dict] = {}
         self._last: Optional[float] = None
         self.reset_requested = False    # Start / Reset pressed this scan: robot fault reset, safety reset
+        self.own_programs: set = set()  # device ids another program drives (plc_merge's wheel sorters)
 
     def state(self, device) -> dict:
         """A device program's own memory for one device."""
@@ -317,7 +367,7 @@ class MachineControl:
             if program is None:
                 continue
             for device in getattr(self.config, name, []):
-                if kind.exchanged(device) and getattr(device, "control", "plc") == "plc":
+                if kind.exchanged(device) and getattr(device, "control", "plc") == "plc"                         and device.id not in self.own_programs:     # driven by a program of its own
                     program(self, device, scan)
         self.reset_requested = False
 
@@ -914,3 +964,12 @@ def make_controller(config: SimulatorConfig, jam_time: float = 5.0, autostart: b
     if len(find_lines(config)) >= 2:
         return LineController(config, jam_time=jam_time, autostart=autostart)
     return DeliveryController(config, jam_time=jam_time, autostart=autostart)
+
+
+@device_program("watchdogs")
+def _watchdog(control, w, scan: Scan) -> None:
+    """The PLC side of the link's heartbeat: counted up every scan (the
+    simulator stops this program's commands when it stands still); the
+    simulator's heartbeat of the input this scan answers, echoed (latency)."""
+    w.plcHeartbeat = (int(w.plcHeartbeat) + 1) & 0xFFFF
+    w.simHeartbeatEcho = int(w.simHeartbeat) & 0xFFFF

@@ -3,8 +3,8 @@ test_tcp_framed_transport.py - unit tests for tcp_framed_transport.py's
 framing protocol: TcpFrameCodec.pack() and TCP_StreamParser.Execute().
 
 Scope: pure in-process framing/parsing logic, no real sockets - consistent
-with how test_plc_mock.py avoids live network I/O (mqtt_manager_test.py is
-this codebase's manual integration script for that).
+with how test_plc_mock.py avoids live network I/O (test_tcp_exchange.py
+covers the live link).
 
 Frame format: 4-byte Magic Marker (0x12345678) + 1-byte Node ID + 1-byte
 Frame Type + 4-byte Length (payload size only) + payload + a trailing

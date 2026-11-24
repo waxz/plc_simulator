@@ -31,7 +31,6 @@ from mqtt_message_binding import (
     ByteType,
     ComponentMessage,
     MetricsMessage,
-    belt_feedback_mapping,
     custom_component_mapping,
     known_component_ids,
     verify_component_list,
@@ -71,9 +70,12 @@ SUBSCRIBE_TOPICS: Dict[str, Dict[str, Any]] = {
 }
 
 
-# The SIMATIC AX TcpClient's send / receive buffers are 256 bytes: a frame
-# (10 header + payload + 4 trailer) carries 242 payload bytes at most.
-PLC_MAX_PAYLOAD = 242
+# The SIMATIC AX side (ax_dev: TcpClient, TcpStreamParser, MagicFrameCodec)
+# takes payloads of up to 4096 bytes both ways: frames of 4110 (10 header +
+# payload + 4 trailer). Every size that must change together to go bigger:
+# ax_dev/docs/frame-size.md. (It was 242 for an older 256-byte client, then
+# 1010.)
+PLC_MAX_PAYLOAD = 4096
 
 
 def io_topics(config: SimulatorConfig) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
@@ -96,18 +98,19 @@ def io_topics(config: SimulatorConfig) -> Tuple[Dict[str, Dict[str, Any]], Dict[
     the byte layout."""
     legacy = PUBLISH_TOPICS["input"]["custom_ids"] + SUBSCRIBE_TOPICS["output"]["custom_ids"]
     machines = [m.id for m in exchanged_devices(config)]
+    feedback = [b.id for b in config.belts if getattr(b, "feedback", False)]   # their drive feedback (Belt.feedback)
     if set(legacy) <= known_component_ids(config):
-        if not machines:
+        if not machines and not feedback:
             return PUBLISH_TOPICS, SUBSCRIBE_TOPICS
         # Station_1 with machines added (a scanner, diverters): its wire layout
         # first, unchanged, then the machines - feedback before the clock,
         # commands after the belts - so they are exchanged too.
         legacy_in = [i for i in PUBLISH_TOPICS["input"]["custom_ids"] if i != "clock"]
         clock = ["clock"] if "clock" in PUBLISH_TOPICS["input"]["custom_ids"] else []
-        return ({"input": {**PUBLISH_TOPICS["input"], "custom_ids": legacy_in + machines + clock}},
+        return ({"input": {**PUBLISH_TOPICS["input"], "custom_ids": legacy_in + feedback + machines + clock}},
                 {"output": {**SUBSCRIBE_TOPICS["output"],
                             "custom_ids": SUBSCRIBE_TOPICS["output"]["custom_ids"] + machines}})
-    inputs = [b.id for b in config.buttons] + [s.id for s in config.sensors] + machines + ["clock"]
+    inputs = [b.id for b in config.buttons] + [s.id for s in config.sensors] + feedback + machines + ["clock"]
     outputs = [l.id for l in config.leds] + [b.id for b in config.belts] + machines
     return ({"input": {**PUBLISH_TOPICS["input"], "custom_ids": inputs}},
             {"output": {**SUBSCRIBE_TOPICS["output"], "custom_ids": outputs}})
@@ -295,6 +298,7 @@ class MQTTSyncEngine:
         self._lock = lock if lock is not None else threading.Lock()
         # Inbound IO frames applied to config / rejected while applying.
         self.rx_frames = 0
+        self._last_rx: Optional[float] = None     # monotonic time of the last frame applied (stats: rx_age_ms)
         self.rx_errors = 0
         # Inbound IO frames of the wrong size (the PLC's layout differs) -
         # counted, and reported at most every few seconds.
@@ -360,21 +364,6 @@ class MQTTSyncEngine:
             print(f"[DataExchange] Publish channel: {full_topic}  "
                   f"({len(mapping)} entries, {io_layout.describe(mapping)}, {interval_ms} ms, "
                   f"frame_type={channel.frame_type})")
-
-        # Belt drive feedback (actualSpeed + encoderCount per belt) as its own
-        # frame type. Opt-in: a PLC that deserializes every frame into its
-        # IO_MAPPING struct without checking the frame type byte would be
-        # corrupted by it.
-        if config.mqttSettings.beltFeedback and config.belts:
-            mapping = belt_feedback_mapping(config)
-            message = ComponentMessage(mapping, endianness=_struct_endianness({}, config))
-            full_topic = f"{prefix}belt_feedback".replace("//", "/")
-            channel = _TopicChannel(full_topic, message, config.mqttSettings.beltFeedbackIntervalMs,
-                                    frame_type=FrameType.BELT_FEEDBACK)
-            self._pub_channels.append(channel)
-            print(f"[DataExchange] Belt feedback channel: {full_topic}  "
-                  f"({len(config.belts)} belts, {message.payload_size} payload bytes, "
-                  f"{config.mqttSettings.beltFeedbackIntervalMs} ms, frame_type={channel.frame_type})")
 
         # Build subscribe channels and register callbacks
         for topic_suffix, topic_def in subscribe_topics.items():
@@ -513,6 +502,8 @@ class MQTTSyncEngine:
         (TCP) connected clients and frames sent/dropped by slow clients."""
         result = {"rx_frames": self.rx_frames, "rx_errors": self.rx_errors,
                   "rx_size_errors": self.rx_size_errors, "rx_ignored": self.rx_ignored}
+        if self._last_rx is not None:                 # how long since the PLC's last frame
+            result["rx_age_ms"] = int((time.monotonic() - self._last_rx) * 1000)
         if self._tcp is not None:
             result.update(self._tcp.stats())
         return result
@@ -556,6 +547,7 @@ class MQTTSyncEngine:
                 print(f"[MQTTSync] Error applying {channel.topic} payload: {exc}")
                 return
             self.rx_frames += 1
+            self._last_rx = time.monotonic()
             channel.mark()
         return handler
 
@@ -585,13 +577,13 @@ class MQTTSyncEngine:
 
     def _warn_frame_sizes(self) -> None:
         """The SIMATIC AX TcpClient (tcp_client_lib.st) sends and receives
-        through 256-byte buffers: a frame's payload must stay within 242
+        frames of at most 4110 bytes: a frame's payload must stay within 4096
         bytes. Warn when an I/O frame of this layout doesn't."""
         for channel in (*self._pub_channels, *self._sub_channels):
             size = channel.message.payload_size
             if size > PLC_MAX_PAYLOAD:
                 print(f"[TCPSync] Warning: the {channel.topic} frame has a {size}-byte payload - over the "
-                      f"{PLC_MAX_PAYLOAD} bytes the AX TcpClient's 256-byte buffers can take; raise them "
+                      f"{PLC_MAX_PAYLOAD} bytes the AX TcpClient's 4110-byte frames can take; raise them "
                       f"on the PLC (or set tcpMaxPayload to see it dropped here).")
 
     def io_layout_check(self) -> Optional[tuple]:

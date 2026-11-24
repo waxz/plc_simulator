@@ -11,8 +11,11 @@ import hmi_style as hmi
 import io_signals
 import pygame_gui
 from config_parser import Belt, Sensor, Source, Sink, ControlButton, LedIndicator, Pallet, Stopper, RobotArm, Elevator
-from config_parser import Accumulator, Diverter, GuardDoor, SafetyCircuit, Scanner, Transfer, Turntable
+from config_parser import (Accumulator, Diverter, GuardDoor, LinkWatchdog, PlcValue, SafetyCircuit, Scanner, Transfer,
+                           TrackedLoadView,
+                           Turntable)
 from physics import PhysicsEngine
+from id_utils import own_label
 
 
 TOP_BAR = 30     # px, simulator status bar
@@ -24,7 +27,8 @@ CANVAS_TOP = TOP_BAR + TOOLBAR_H
 # The tool bar's groups, left to right: (title, [(attribute, text, width[, object id])]).
 TOOLBAR_GROUPS = (
     ("SIMULATION", (("sim_play_btn", "Start", 76, "#sim_primary"), ("sim_speed_btn", "Speed 1x", 92),
-                    ("sim_clear_btn", "Clear Parcels", 108), ("sim_reset_btn", "Reset", 64))),
+                    ("sim_clear_btn", "Clear Parcels", 108), ("sim_reset_btn", "Reset", 64),
+                    ("sim_stats_btn", "Reset Stats", 96))),
     ("LAYOUT", (("manager_btn", "Components", 100), ("designer_btn", "Edit in Designer", 126))),
     ("VIEW", (("view3d_btn", "3D View", 76), ("drawing_btn", "Hide Drawing", 110), ("theme_btn", "Light Theme", 104))),
 )
@@ -51,6 +55,9 @@ INSPECTOR_FIELDS = {
     Transfer: ("id", "label", "x", "y", "rotation", "width", "height", "crossAngle", "speed", "stop"),
     GuardDoor: ("id", "label", "x", "y", "rotation", "width"),
     SafetyCircuit: ("id", "label", "x", "y"),
+    PlcValue: ("id", "label", "unit", "x", "y", "decimals"),
+    LinkWatchdog: ("id", "label", "x", "y", "timeoutMs"),
+    TrackedLoadView: ("id", "label", "x", "y"),
 }
 BELT_GEOMETRY = {
     "linear": ("length", "beltWidth", "beltShape"),
@@ -61,6 +68,11 @@ ROW_H = 24
 PANEL_W = 250
 SCROLLBAR_W = 16
 # Tooltips of the PLC I/O section's Source buttons (a component's `control`).
+FILL_TIPS = {      # a chute's fill mode (config_parser.Sink.fillMode)
+    "count": "Each load counted and deleted; full at the capacity",
+    "keep": "Each load stays in the bin; full at the capacity; removed when the bin is emptied",
+    "delete": "Each load deleted; never full",
+}
 SOURCE_TIPS = {
     "plc": "The PLC data exchange sets the commands",
     "manual": "Set the commands here; PLC frames leave them alone",
@@ -84,7 +96,8 @@ def _kind_name(item) -> str:
             LedIndicator: "LED", Pallet: "pallet", Stopper: "stopper", RobotArm: "robot arm",
             Elevator: "elevator", Scanner: "scanner", Diverter: "diverter", Turntable: "turntable",
             Accumulator: "accumulation conveyor", GuardDoor: "guard door", Transfer: "90-degree transfer",
-            SafetyCircuit: "safety circuit"}.get(type(item), "component")
+            SafetyCircuit: "safety circuit", PlcValue: "PLC value", LinkWatchdog: "link watchdog",
+            TrackedLoadView: "tracked load"}.get(type(item), "component")
 
 
 def format_value(attr: str, value) -> str:
@@ -113,6 +126,10 @@ class EditorUI:
             manager=self.manager, object_id="#toolbar",
         )
         self.toolbar_groups = []   # (title label, [buttons])
+        # one row: narrower buttons when the window is too narrow for them all (never below 44 px)
+        natural = 10 + sum(8 + 7 * len(title) + 4 + sum(t[2] + 4 for t in tools) + 18 for title, tools in TOOLBAR_GROUPS)
+        fixed = 10 + sum(8 + 7 * len(title) + 4 + 4 * len(tools) + 18 for title, tools in TOOLBAR_GROUPS)
+        scale = min(1.0, max(self.width - fixed, 1) / max(natural - fixed, 1))
         x = 10
         for title, tools in TOOLBAR_GROUPS:
             label = pygame_gui.elements.UILabel(
@@ -121,6 +138,7 @@ class EditorUI:
             x += label.relative_rect.width + 4
             buttons = []
             for attr, text, w, *style in tools:
+                w = max(44, int(w * scale))
                 button = pygame_gui.elements.UIButton(
                     relative_rect=pygame.Rect(x, 4, w, TOOLBAR_H - 10),
                     text=text,
@@ -148,7 +166,9 @@ class EditorUI:
         self.prop_rows = {}       # attr -> (name label, value label)
         self.live_rows = {}       # live readout name -> (name label, value label)
         self.io_rows = {}         # PLC signal name -> (Signal, value label / editor)
+        self.check_rows = {}      # a tracked load's simulator-side check: field -> value label
         self.io_source_buttons = {}   # Source button -> its `control` value
+        self.io_fill_buttons = {}     # a chute's fill-mode button -> its mode
         self._io_widgets = []
         self._io_shown = {}
         self.prop_title = pygame_gui.elements.UILabel(
@@ -216,6 +236,8 @@ class EditorUI:
 
     def show_props_for(self, item):
         self.selected_item = item
+        # the panel only while something is selected: the canvas is free otherwise
+        (self.prop_panel.show if item else self.prop_panel.hide)()
         self.hide_all_props()
         self._clear_io()
         self._live_shown = {}
@@ -254,7 +276,9 @@ class EditorUI:
             widget.kill()
         self._io_widgets = []
         self.io_rows = {}
+        self.check_rows = {}
         self.io_source_buttons = {}
+        self.io_fill_buttons = {}
         self._io_shown = {}
 
     def _io_widget(self, widget):
@@ -269,6 +293,19 @@ class EditorUI:
         signals = io_signals.signals(item)
         if not signals:
             return y
+        if isinstance(item, Sink) and item.capacity:
+            # A chute's fill mode: counted and deleted / kept in the bin / deleted, never full
+            y = self._place_header("Chute fill", y)
+            modes = io_signals.FILL_MODES
+            width = (PANEL_W - 20 - SCROLLBAR_W) // len(modes)
+            for i, mode in enumerate(modes):
+                button = self._io_widget(pygame_gui.elements.UIButton(
+                    pygame.Rect(8 + i * width, y + 1, width - 2, ROW_H - 2), mode, self.manager,
+                    container=self.prop_scroll, tool_tip_text=FILL_TIPS[mode]))
+                if mode == getattr(item, "fillMode", "count"):
+                    button.select()
+                self.io_fill_buttons[button] = mode
+            y += ROW_H + 2
         control = getattr(item, "control", None)
         options = io_signals.control_options(item)
         scroll = self.prop_scroll
@@ -305,10 +342,24 @@ class EditorUI:
                                                          object_id="#prop_value")
                 self.io_rows[signal.name] = (signal, self._io_widget(widget))
                 y += ROW_H
+        if isinstance(item, TrackedLoadView):                 # the simulator's own check, not on the exchange
+            y = self._place_header("Simulator check", y)
+            for name in ("lengthError", "widthError"):
+                self._io_widget(pygame_gui.elements.UILabel(
+                    pygame.Rect(8, y, 100, ROW_H), name, self.manager, container=scroll, object_id="#prop_name"))
+                self.check_rows[name] = self._io_widget(pygame_gui.elements.UILabel(
+                    pygame.Rect(110, y + 1, PANEL_W - 122 - SCROLLBAR_W, ROW_H - 2), "", self.manager,
+                    container=scroll, object_id="#prop_value"))
+                y += ROW_H
         return y
 
     def _update_io(self):
         item = self.selected_item
+        for name, widget in self.check_rows.items():
+            text = f"{float(getattr(item, name, 0.0)):.3f}"
+            if self._io_shown.get(name) != text:
+                self._io_shown[name] = text
+                widget.set_text(text)
         for name, (signal, widget) in self.io_rows.items():
             text = io_text(io_signals.value_of(item, signal))
             if isinstance(widget, pygame_gui.elements.UITextEntryLine):
@@ -338,6 +389,9 @@ class EditorUI:
             option = self.io_source_buttons.get(event.ui_element)
             if option is not None:
                 return ("SET_IO", item.id, "control", option)
+            mode = self.io_fill_buttons.get(event.ui_element)
+            if mode is not None:
+                return ("SET_IO", item.id, "fillMode", mode)
             for name, (signal, widget) in self.io_rows.items():
                 if widget is event.ui_element:
                     return ("SET_IO", item.id, name, not io_signals.value_of(item, signal))
@@ -463,7 +517,7 @@ class EditorUI:
 
     def is_ui_blocking_point(self, pos) -> bool:
         for panel in (self.prop_panel, self.toolbar_panel):
-            if panel and panel.rect.collidepoint(pos):
+            if panel and panel.visible and panel.rect.collidepoint(pos):
                 return True
         window = self.manager_window
         return bool(window and window.alive() and window.rect.collidepoint(pos))
@@ -537,6 +591,9 @@ class EditorUI:
             ("accumulator", "Accumulation", self.config.accumulators),
             ("door", "Guard Doors", self.config.doors),
             ("safety", "Safety Circuits", self.config.safety),
+            ("plcvalue", "PLC Values", self.config.plcValues),
+            ("watchdog", "Link Watchdogs", self.config.watchdogs),
+            ("trackedload", "Tracked Loads", self.config.trackedLoads),
         ]
         for kind, title, items in groups:
             if not items:
@@ -548,8 +605,8 @@ class EditorUI:
             if collapsed:
                 continue
             for idx, item in enumerate(items):
-                text = (getattr(item, "label", "") or "").strip()
-                label = f"      {item.id}" + (f"  ·  {text}" if text and text != item.id else "")
+                text = own_label(item)          # a label that only repeats the id is not shown twice
+                label = f"      {item.id}" + (f"  ·  {text}" if text else "")
                 rows.append(label)
                 self.manager_items[label] = (kind, idx, item)
         self.manager_list.set_item_list(rows)
@@ -611,7 +668,7 @@ class EditorUI:
             return io
         if event.type == pygame_gui.UI_BUTTON_PRESSED:
             for button, command in ((self.sim_play_btn, "TOGGLE_PLAY"), (self.sim_speed_btn, "CYCLE_SPEED"),
-                                    (self.sim_clear_btn, "CLEAR"),
+                                    (self.sim_clear_btn, "CLEAR"), (self.sim_stats_btn, "RESET_STATS"),
                                     (self.sim_reset_btn, "RESET"), (self.theme_btn, "TOGGLE_THEME"),
                                     (self.manager_btn, "OPEN_MANAGER"), (self.designer_btn, "OPEN_DESIGNER"),
                                     (self.drawing_btn, "TOGGLE_DRAWING"), (self.view3d_btn, "OPEN_3D")):

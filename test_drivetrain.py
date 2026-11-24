@@ -281,7 +281,7 @@ class ElevatorHoistTest(unittest.TestCase):
     def test_the_plc_interface_is_unchanged(self):
         self.assertEqual(st_export.device_type(self.lift(DriveConfig(gearRatio=40.0)), "in"), "Elevator_Command")
         frames = {f["name"]: f["fingerprint"] for f in st_export.contract(load_config("logistics_full.json"))["frames"]}
-        self.assertEqual((frames["Sim_Input"], frames["Sim_Output"]), (0x083EBF55, 0xC5E971E0))
+        self.assertEqual((frames["Sim_Input"], frames["Sim_Output"]), (0x083EBF55, 0xA188665C))
 
 
 class TurntableAndTransferDriveTest(unittest.TestCase):
@@ -316,6 +316,37 @@ class TurntableAndTransferDriveTest(unittest.TestCase):
         self.assertAlmostEqual(t, expected, delta=0.05 * expected)
         self.assertAlmostEqual(peak, 29.0, places=3)
         self.assertEqual((table.angle, table.turnVelocity), (table.angles[1], 0.0))
+
+    def test_the_motor_limits_cap_every_machine(self):
+        from config_parser import Elevator, Transfer, Turntable
+        table = Turntable(id="tt", x=0, y=0, turnSpeed=90.0,
+                          drive=DriveConfig(gearRatio=50.0, transmissionRatio=6.0, rampUpTime=0.5,
+                                            motorMaxSpeed=725.0, motorMaxAccel=1450.0))
+        self.assertAlmostEqual(drivetrain.machine_speed(table), 14.5, places=9)       # 725 rpm: half of 29 deg/s
+        self.assertAlmostEqual(drivetrain.machine_ramps(table)[0], 29.0, places=9)    # 1450 rpm/s, not 58 deg/s^2
+        self.assertAlmostEqual(drivetrain.machine_ramps(table)[1], 29.0, places=9)    # no ramp time: the motor's
+        lift = Elevator(id="lift", x=0, y=0, levels=2, levelHeight=1.2, liftSpeed=0.6,
+                        drive=DriveConfig(gearRatio=40.0, drumDiameter=0.2, motorMaxSpeed=1000.0))
+        self.assertAlmostEqual(drivetrain.lift_speed(lift), 1000.0 / 40.0 * math.pi * 0.2 / 60.0, places=9)
+        transfer = Transfer(id="tr", x=0, y=0, speed=0.5,
+                            drive=DriveConfig(gearRatio=30.0, drumDiameter=0.08, motorMaxAccel=3000.0))
+        self.assertAlmostEqual(drivetrain.machine_ramps(transfer)[0],
+                               3000.0 / 30.0 * math.pi * 0.08 / 60.0, places=9)
+        self.assertEqual(drivetrain.motor_limits(Transfer(id="t2", x=0, y=0, speed=0.5)), (math.inf, math.inf))
+
+    def test_the_designer_pins_a_belt_train_so_rpm_limits_act(self):
+        belt = Belt(id="b", type="linear", x=0, y=0, length=4, beltWidth=1, rotation=0, speed=0.8,
+                    directionAngle=0, color="#fff", commandFormat="vfd")
+        self.assertIsNone(drivetrain.train_of(belt))                              # m/s: no train
+        shown = drivetrain.train_of(belt, assume_drive=True)                     # what the designer shows
+        self.assertAlmostEqual(shown.speed_for_frequency(50.0), 0.8, places=9)
+        belt.drive = DriveConfig(motorMaxAccel=2900.0)
+        self.assertEqual(drivetrain.motor_limits(belt), (math.inf, math.inf))    # no train: no effect
+        drivetrain.pin_belt_train(belt)
+        self.assertEqual((belt.drive.gearRatio, belt.drive.drumDiameter), (shown.gear_ratio, shown.drum_diameter))
+        belt.speed = 0.3                                                          # the PLC's command now
+        self.assertAlmostEqual(drivetrain.motor_limits(belt)[1], 2900.0 * 0.8 / 1450.0, places=9)
+        self.assertIn("rpm/s", drivetrain.summary(belt)[0])
 
     def test_chain_speed_from_the_sprocket(self):
         from config_parser import Transfer

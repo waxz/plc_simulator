@@ -6,9 +6,8 @@ Scope: `_struct_endianness`, `PerformanceMetrics`, `_extract_latency_ms`, and
 itself is CLI/network orchestration (argparse, live MQTT/TCP connections, an
 infinite send loop) - not unit-tested here, consistent with how
 main.py/visualizer.py's own entry points aren't either;
-mqtt_manager_test.py already covers the live-broker round-trip path as a
-manual integration script, and test_mqtt_data_exchange.py covers the
-metrics channel's real-socket wiring end to end.
+test_mqtt_data_exchange.py covers the metrics channel's real-socket wiring
+end to end, and the TCP link's tests (test_tcp_exchange.py) the live path.
 """
 import io
 import time

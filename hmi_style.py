@@ -129,14 +129,16 @@ def apply_saved_theme() -> str:
 # inverter), how it moves, its signals, what it does, how it looks - and
 # last, its PLC I/O (the editor's own section).
 PROPERTY_GROUP_ORDER = ("Identity", "Layout", "Mechanics", "Devices", "Drive", "Motion", "Signal", "Operation",
-                        "Display")
+                        "Display", "AX / PLC geometry")
 PROPERTY_GROUPS = {
     # What it is.
     "id": "Identity", "label": "Identity", "sensorType": "Identity", "diverterType": "Identity",
     "scannerType": "Identity",
     # Where it stands and its footprint.
     "x": "Layout", "y": "Layout", "rotation": "Layout", "level": "Layout",
-    "length": "Layout", "beltWidth": "Layout", "cornerRadius": "Layout", "width": "Layout", "height": "Layout",
+    "length": "Layout", "beltWidth": "Layout", "mitre.end": "Layout", "mitre.start": "Layout",
+    "port.inX": "AX / PLC geometry", "port.inY": "AX / PLC geometry", "port.outX": "AX / PLC geometry",
+    "port.outY": "AX / PLC geometry", "cornerRadius": "Layout", "width": "Layout", "height": "Layout",
     "radius": "Layout", "startAngle": "Layout", "endAngle": "Layout", "beltShape": "Layout",
     "beltVertexs": "Layout", "depth": "Layout",
     # The mechanical design: carrying surface, transmission, lift, arm.
@@ -145,12 +147,15 @@ PROPERTY_GROUPS = {
     "mass": "Mechanics", "capacity": "Mechanics", "levels": "Mechanics", "levelHeight": "Mechanics",
     "reach": "Mechanics", "pickRadius": "Mechanics", "mountHeight": "Mechanics", "toolLength": "Mechanics",
     "divertAngle": "Mechanics",
+    # a wheel deck's wheels: they set its PLC commands (a speed and an angle per row with row control)
+    "rowControl": "Mechanics", "wheelRows": "Mechanics", "wheelColumns": "Mechanics",
+    "wheelPitchAlong": "Mechanics", "wheelPitchAcross": "Mechanics",
     # The devices built into it: a control panel's buttons, lamps and buzzers.
     "elements": "Devices",
     # The drive: how it is commanded, the motor, the inverter, the encoder.
     "commandFormat": "Drive", "drive.motorPreset": "Drive", "drive.motorRatedSpeed": "Drive",
     "drive.motorRatedFrequency": "Drive", "drive.maxFrequency": "Drive", "drive.rampUpTime": "Drive",
-    "drive.rampDownTime": "Drive", "drive.encoderCountsPerRev": "Drive", "drive.summary": "Drive",
+    "drive.rampDownTime": "Drive", "drive.motorMaxSpeed": "Drive", "drive.motorMaxAccel": "Drive", "drive.encoderCountsPerRev": "Drive", "drive.summary": "Drive",
     # How it moves.
     "speed": "Motion", "directionAngle": "Motion", "transition_momentum_duration": "Motion",
     "liftSpeed": "Motion", "cycleTime": "Motion", "actuationTime": "Motion", "speedOverride": "Motion",
@@ -183,7 +188,8 @@ COMBO_LABELS = {
 # Decimals a number box shows, where 3 (mm) would be noise.
 PROPERTY_DECIMALS = {"drive.motorRatedSpeed": 0, "drive.motorRatedFrequency": 1, "drive.maxFrequency": 1,
                      "drive.gearRatio": 2, "drive.transmissionRatio": 2, "drive.rampUpTime": 1,
-                     "drive.rampDownTime": 1}
+                     "drive.rampDownTime": 1, "drive.motorMaxSpeed": 0,
+                     "drive.motorMaxAccel": 0}
 
 
 def combo_label(attr: str, value) -> str:
@@ -200,7 +206,8 @@ def combo_value(attr: str, label: str):
 # Row labels the simulator's panel shares with the editor's property grid.
 PROPERTY_LABELS = {
     "id": "Id", "label": "Label", "x": "X", "y": "Y", "rotation": "Rotation",
-    "length": "Length", "beltWidth": "Width", "width": "Width", "height": "Height",
+    "length": "Length", "beltWidth": "Width", "mitre.end": "End angle", "mitre.start": "Start angle", "port.inX": "Inlet X",
+    "port.inY": "Inlet Y", "port.outX": "Outlet X", "port.outY": "Outlet Y", "width": "Width", "height": "Height",
     "radius": "Radius", "cornerRadius": "Corner radius", "startAngle": "Start angle", "endAngle": "End angle", "beltShape": "Shape",
     "beltVertexs": "Corners", "sensorType": "Type", "laserCount": "Beams", "beamDistance": "Beam pitch",
     "minWidth": "Min width", "maxWidth": "Max width", "minHeight": "Min length", "maxHeight": "Max length",
@@ -217,13 +224,15 @@ PROPERTY_LABELS = {
     "drive.motorRatedSpeed": "Motor speed", "drive.motorRatedFrequency": "Rated frequency",
     "drive.gearRatio": "Gear ratio", "drive.transmissionRatio": "Chain ratio", "drive.drumDiameter": "Drum Ø",
     "drive.maxFrequency": "Max frequency", "drive.rampUpTime": "Ramp up", "drive.rampDownTime": "Ramp down",
+    "drive.motorMaxSpeed": "Motor max speed", "drive.motorMaxAccel": "Motor max accel",
     "drive.encoderCountsPerRev": "Encoder/rev",
 }
 
 
 PROPERTY_UNITS = {
     "x": " m", "y": " m", "rotation": "\u00b0", "directionAngle": "\u00b0", "startAngle": "\u00b0",
-    "endAngle": "\u00b0", "length": " m", "beltWidth": " m", "width": " m", "height": " m", "radius": " m",
+    "endAngle": "\u00b0", "mitre.end": "\u00b0", "mitre.start": "\u00b0", "port.inX": " m", "port.inY": " m",
+    "port.outX": " m", "port.outY": " m", "length": " m", "beltWidth": " m", "width": " m", "height": " m", "radius": " m",
     "beamDistance": " m", "cornerRadius": " m", "minWidth": " m", "maxWidth": " m", "minHeight": " m", "maxHeight": " m",
     "speed": " m/s", "transition_momentum_duration": " s", "interval": " s", "onDelay": " s", "offDelay": " s",
     "depth": " m", "reach": " m", "pickRadius": " m", "levelHeight": " m", "pickX": " m", "pickY": " m",
@@ -232,6 +241,7 @@ PROPERTY_UNITS = {
     "holdTime": " s", "releaseTime": " s",
     "drive.motorRatedSpeed": " rpm", "drive.motorRatedFrequency": " Hz", "drive.drumDiameter": " m",
     "drive.maxFrequency": " Hz", "drive.rampUpTime": " s", "drive.rampDownTime": " s",
+    "drive.motorMaxSpeed": " rpm", "drive.motorMaxAccel": " rpm/s",
 }
 
 
@@ -250,7 +260,8 @@ def group_sort_key(attr: str) -> int:
 # -- type ---------------------------------------------------------------------
 
 UI_FONT_FAMILY = "Segoe UI"  # Qt widgets (falls back to the platform sans)
-LABEL_PX = 11                # canvas labels, screen pixels
+LABEL_PX = 11                # canvas labels, screen pixels, at the default zoom
+LABEL_MIN_PX, LABEL_MAX_PX = 9, 14   # ... scaled with the zoom within these
 HUD_PX = 13
 
 

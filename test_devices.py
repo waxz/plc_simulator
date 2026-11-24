@@ -26,7 +26,7 @@ from config_parser import (
 from drive import inject_fault, step_drive
 from mqtt_data_exchange import MQTTSyncEngine, apply_exchange_config, io_topics
 from mqtt_message_binding import (
-    ByteType, ComponentMessage, belt_feedback_mapping, custom_component_mapping,
+    ByteType, ComponentMessage, custom_component_mapping,
 )
 from physics import PhysicsEngine
 from plc_logic import DeliveryController
@@ -116,15 +116,17 @@ class ButtonTest(unittest.TestCase):
         devices.release(b)
         self.assertFalse(b.sensor_states)
 
-    def test_normally_closed_reads_one_until_pressed(self):
+    def test_normally_closed_is_the_simulators_detail(self):
+        """An NC button (STOP) sends the same final state as an NO one:
+        TRUE while pressed. The PLC never sees the contact type."""
         config = SimulatorConfig(buttons=[ControlButton(id="stop", x=0, y=0, label="STOP", normallyClosed=True)])
         PhysicsEngine(config)                         # sets the contacts at start
         stop = config.buttons[0]
-        self.assertIs(stop.sensor_states, True)
-        devices.press(stop)
         self.assertIs(stop.sensor_states, False)
-        self.assertTrue(devices.is_pressed_signal(stop, False))
-        self.assertFalse(devices.is_pressed_signal(stop, True))
+        devices.press(stop)
+        self.assertIs(stop.sensor_states, True)
+        self.assertTrue(devices.is_pressed_signal(stop, True))
+        self.assertFalse(devices.is_pressed_signal(stop, False))
 
     def test_plc_program_understands_an_nc_stop(self):
         config = SimulatorConfig(
@@ -135,12 +137,12 @@ class ButtonTest(unittest.TestCase):
         PhysicsEngine(config)
         plc = DeliveryController(config)
         plc.step(0.0)
-        self.assertFalse(plc.running, "an NC STOP reading 1 is not a press")
+        self.assertFalse(plc.running, "an unpressed NC STOP is not a press")
         devices.press(config.buttons[0])
         plc.step(0.1)
         devices.release(config.buttons[0])
         self.assertTrue(plc.running)
-        devices.press(config.buttons[1])               # signal goes 0
+        devices.press(config.buttons[1])               # signal goes 1: pressed
         plc.step(0.2)
         self.assertFalse(plc.running)
 
@@ -229,9 +231,17 @@ class MotorCommandTest(unittest.TestCase):
         self.assertTrue(belt.reversing and belt.atSpeed)
         self.assertLess(belt.encoderCount, 1 << 32)
 
-    def test_feedback_frame_layout(self):
-        config = SimulatorConfig(belts=[vfd_belt(), vfd_belt(id="belt_2")])
-        mapping = belt_feedback_mapping(config)
+    def test_feedback_is_in_the_input_frame(self):
+        """A belt with `feedback` on reports its drive in the input frame,
+        with every other device's feedback (no frame of its own)."""
+        from mqtt_data_exchange import io_topics
+        config = SimulatorConfig(belts=[vfd_belt(feedback=True), vfd_belt(id="belt_2", feedback=True),
+                                        vfd_belt(id="belt_3")])
+        inputs = io_topics(config)[0]["input"]["custom_ids"]
+        self.assertIn("belt_1", inputs)
+        self.assertIn("belt_2", inputs)
+        self.assertNotIn("belt_3", inputs, "feedback off: it reports nothing")
+        mapping = custom_component_mapping(config, ["belt_1", "belt_2"], direction="out")
         fields = [(f.address, f.path) for f in io_layout.layout_fields(mapping) if not f.is_padding]
         self.assertEqual(fields, [
             ("0.0", "belt_1/running"), ("0.1", "belt_1/atSpeed"), ("0.2", "belt_1/reversing"),
@@ -344,7 +354,7 @@ class TestConfigTest(unittest.TestCase):
         self.assertTrue(all(b.speed == 0 for b in commanded), "the PLC sets the speed")
         self.assertEqual(self.config.belts[-1].id, "belt_1_1_6")
         self.assertGreater(self.config.belts[-1].speed, 0, "the outfeed runs without the PLC")
-        self.assertFalse(self.config.mqttSettings.beltFeedback)
+        self.assertFalse(any(b.feedback for b in self.config.belts), "no drive feedback to the PLC")
 
     def test_station_delivers_and_every_sensor_counts(self):
         e = PhysicsEngine(self.config)
@@ -385,8 +395,8 @@ class MotorFeedbackOverTcpTest(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(tmp.cleanup)
         config = SimulatorConfig(
-            belts=[vfd_belt(drive=DriveConfig(accel=5, decel=5, tau=0.02)),
-                   vfd_belt(id="belt_2", reverse=True, drive=DriveConfig(accel=5, decel=5, tau=0.02))],
+            belts=[vfd_belt(drive=DriveConfig(accel=5, decel=5, tau=0.02), feedback=True),
+                   vfd_belt(id="belt_2", reverse=True, drive=DriveConfig(accel=5, decel=5, tau=0.02), feedback=True)],
             buttons=[ControlButton(id="go", x=0, y=0, label="START"),
                      ControlButton(id="halt", x=0, y=0, label="STOP", normallyClosed=True)],
             leds=[LedIndicator(id="run", x=0, y=0, label="RUN"),
@@ -397,8 +407,7 @@ class MotorFeedbackOverTcpTest(unittest.TestCase):
         exchange = os.path.join(tmp.name, "exchange.json")
         with open(exchange, "w", encoding="utf-8") as f:
             json.dump({"transport": "tcp", "enabled": True, "tcpBindHost": "127.0.0.1",
-                       "tcpServerHost": "127.0.0.1", "tcpPort": free_port(), "beltFeedback": True,
-                       "beltFeedbackIntervalMs": 10}, f)
+                       "tcpServerHost": "127.0.0.1", "tcpPort": free_port()}, f)
 
         sim = load_config(layout)
         apply_exchange_config(sim, exchange)
@@ -436,7 +445,7 @@ class MotorFeedbackOverTcpTest(unittest.TestCase):
         self.assertTrue(wait_for(lambda: abs(b2.actualSpeed + 1.5) < 0.005, 5), b2.actualSpeed)
         self.assertTrue(b2.reversing)
 
-        # A drive fault reaches the PLC through BELT_FEEDBACK; it stops the line,
+        # A drive fault reaches the PLC in its input frame (the belts' feedback); it stops the line,
         # the run command goes away, so the drive resets; the PLC says so.
         with lock:
             inject_fault(b1)

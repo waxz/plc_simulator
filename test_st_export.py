@@ -119,7 +119,7 @@ class EmitTest(unittest.TestCase):
         self.assertIn("Do not edit by hand", self.text)
         self.assertNotRegex(self.text, r"\bNone\b")
         structs = st_export.device_structs(self.config)
-        self.assertEqual([n for n, _t in structs["Diverter_Command"]], ["divert", "commandSpeed", "commandAngle"])
+        self.assertEqual([n for n, _t in structs["Diverter_Command"]], ["enable", "commandSpeed", "commandAngle"])
 
     def test_golden_vectors_hold_the_simulators_bytes(self):
         """The vector test's expected bytes (ax_export.pack_frame, from the
@@ -207,8 +207,50 @@ class EmitTest(unittest.TestCase):
         from config_parser import AxExport
         contract = st_export.contract(load_config(os.path.join(HERE, "logistics_full.json")))
         with self.assertRaisesRegex(ax_export.ExportError, "Sim_Output \\(247 bytes\\)"):
-            ax_export.export(contract, AxExport(output="x.st"))
+            ax_export.export(contract, AxExport(output="x.st", maxPayload=242))     # an older 256-byte client
+        self.assertEqual(ax_export.PLC_MAX_PAYLOAD, 4096)                          # the TcpClient's 4110 - 14
+        self.assertIn("x.st", ax_export.export(contract, AxExport(output="x.st")).files)
         self.assertIn("x.st", ax_export.export(contract, AxExport(output="x.st", maxPayload=0)).files)
+
+
+class TagArraysTest(unittest.TestCase):
+    """axExport.tagArrays: a kind's tags as arrays of its wire STRUCTs, the
+    device's index its place in its kind, named in <prefix>_TagIndex; the
+    wire stays the same."""
+
+    def export(self, arrays):
+        import ax_export
+        import control_panel
+        import plc_tags
+        config = load_config("merge_demo.json")
+        control_panel.refresh(config)
+        config.axExport.tagArrays = arrays
+        contract = st_export.contract(config, "merge_demo.json")
+        tags = plc_tags.tags_json(config)
+        text = next(iter(ax_export.export(contract, config.axExport, tags,
+                                          os.path.abspath("merge_demo.json")).files.values()))
+        return config, contract, tags, text
+
+    def test_arrays_index_and_copies(self):
+        config, contract, tags, text = self.export(["belts", "trackedLoads"])
+        ids = [b.id for b in config.belts]
+        path = {t["key"]: t["stPath"] for t in tags}
+        self.assertEqual(path["belt_5_a/speed"], f"beltVfdCommands[{ids.index('belt_5_a')}].speed")
+        self.assertEqual(path["belt_2/frequency"], f"beltFreqCommands[{ids.index('belt_2')}].frequency")
+        self.assertEqual(path["track_03/matched"], "trackedLoadFeedbacks[2].matched")
+        self.assertEqual(path["panel_start/sensor_states"], "panel_start")          # not a listed kind
+        self.assertIn(f"beltVfdCommands : ARRAY[0..{len(ids) - 1}] OF BeltVfd_Command;", text)
+        self.assertIn("trackedLoadCommands : ARRAY[0..15] OF TrackedLoad_Command;", text)
+        self.assertIn("CLASS PUBLIC Plant_TagIndex", text)
+        self.assertIn(f"belt_7 : INT := INT#{ids.index('belt_7')};", text)
+        self.assertIn(f"dest.belt_5_a := tags.beltVfdCommands[{ids.index('belt_5_a')}];", text)
+        self.assertIn("tags.trackedLoadFeedbacks[0] := source.track_01;", text)
+        self.assertNotIn("belt_5_a_speed :", text)                                   # no flat tag for it
+        _c, plain_contract, _t, plain = self.export([])
+        self.assertEqual([f["fingerprint"] for f in contract["frames"]],
+                         [f["fingerprint"] for f in plain_contract["frames"]], "the wire is the same")
+        self.assertIn("belt_5_a_speed :", plain)
+        self.assertNotIn("_TagIndex", plain)
 
 
 class MemberNameTest(unittest.TestCase):

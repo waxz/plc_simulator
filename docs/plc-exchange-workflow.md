@@ -97,14 +97,14 @@ The one `.st` file holds:
 | Part | Contents |
 |---|---|
 | Device STRUCTs | A STRUCT per kind of device and direction, its PLC interface (`Diverter_Command`: `divert`, `commandSpeed`, `commandAngle`; `Diverter_Feedback`, `BeltDrive_Command`, ...), one per `device_kinds.py` entry, so a new kind gets its STRUCTs without touching the generator |
-| Frame STRUCTs | `Sim_Input`, `Sim_Output`, `Belt_Feedback` when sent, the `Metric_Layout_*`s (or the chosen frames; `--prefix Station_1` names them `Station_1_*`), with a member per component named after it (an ST identifier, never a keyword, unique ignoring case): a device or belt of its kind's STRUCT, a sensor / button / lamp a BOOL, a laser banner an `ARRAY OF BYTE` (beam i = bit i MOD 8 of byte i DIV 8, any number of beams) |
+| Frame STRUCTs | `Sim_Input`, `Sim_Output`, the `Metric_Layout_*`s (or the chosen frames; `--prefix Station_1` names them `Station_1_*`), with a member per component named after it (an ST identifier, never a keyword, unique ignoring case): a device or belt of its kind's STRUCT, a sensor / button / lamp a BOOL, a laser banner an `ARRAY OF BYTE` (beam i = bit i MOD 8 of byte i DIV 8, any number of beams) |
 | Serializers | `DeserializeFromBytes` / `SerializeToBytes` per frame, from the contract's byte and bit offsets (not re-derived from member order), in the layout's byte order; each first checks that the buffer holds the frame from `startOffset` |
 | PLC tags | `Sim_Tags` with a variable per tag (the designer's PLC Tags), `ReadTags` / `WriteTags` |
 | `SimIoContract` | Constants: every `FrameType`, each frame's size and layout fingerprint (the CRC that `LAYOUT_CHECK` uses), the contract fingerprint |
 | Test file (optional) | An AxUnit test per frame: sample values must serialize to exactly the simulator packer's bytes, and back |
 
-A frame bigger than the AX `TcpClient`'s buffer carries (242 bytes) is
-refused with the reason. The file carries the contract fingerprint in its
+A frame bigger than the AX `TcpClient`'s buffer carries (a 4096-byte
+payload; ax_dev's `docs/frame-size.md`) is refused with the reason. The file carries the contract fingerprint in its
 header and a do-not-edit note.
 
 In the AX project's `apax.yml` (proposed; not applied), with
@@ -180,7 +180,7 @@ frame: the PLC starts the robot when it is blocked.
 - **Supervision:**
   - `tcpRxTimeoutMs` closes a client that has gone silent;
   - `client_info()` lists every client's node id, receive age and counters;
-  - a startup warning appears when a frame exceeds the PLC's 242-byte
+  - a startup warning appears when a frame exceeds the PLC's 4096-byte
     payload limit;
   - `tcpMaxPayload` drops (and counts) frames over a limit.
 - **Output ownership:** `tcpOutputOwner` accepts outputs from one node id
@@ -201,8 +201,8 @@ frame: the PLC starts the robot when it is blocked.
 4. Range-check the length as a DINT before `TO_INT` in `TryExtract`.
 5. Send `LAYOUT_CHECK` on connect using `SimIoContract` fingerprints, and
    refuse to drive outputs on a mismatch.
-6. Raise the 256-byte buffers. Layouts with robots or logistics equipment
-   exceed 242 payload bytes; the simulator now warns about it.
+6. Raise the 256-byte buffers. Done: the AX library takes 4096-byte
+   payloads now (frames of 4110; ax_dev's `docs/frame-size.md`).
 
 Next, versioned (both sides): a protocol v2 on a new magic, carrying a
 version byte, flags, a sequence number, the layout fingerprint and a CRC-32.

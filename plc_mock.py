@@ -41,7 +41,7 @@ import threading
 from dataclasses import dataclass
 from config_parser import load_config
 from mqtt_manager import FlexibleProtocolMQTTManager
-from mqtt_message_binding import ComponentMessage, MetricsMessage, belt_feedback_mapping, custom_component_mapping
+from mqtt_message_binding import ComponentMessage, MetricsMessage, custom_component_mapping
 from mqtt_data_exchange import (
     METRICS_CHANNELS,
     MetricLayout1,
@@ -201,6 +201,47 @@ def _build_layout3_sample(led_on: bool, led2_on: bool, value: float) -> MetricLa
     )
 
 
+class PlcImage:
+    """A PLC's I/O frames for a layout - the same channels the simulator
+    builds (io_topics): `input_msg` (simulator -> PLC: sensors, buttons,
+    feedback, the clock) and `output_msg` (PLC -> simulator: belts' and
+    devices' commands, lamps). `send(plc_config)` is the output frame's
+    bytes from a PLC's copy of the layout; `receive(payload, plc_config)`
+    reads an input frame into it. device_check.py drives the simulator
+    through these bytes, exactly as this mock PLC does over TCP."""
+
+    def __init__(self, config):
+        publish_topics, subscribe_topics = io_topics(config)
+        self.input_ids = publish_topics["input"]["custom_ids"]
+        self.input_mapping = custom_component_mapping(config, self.input_ids, direction="out")
+        self.input_msg = ComponentMessage(self.input_mapping,
+                                          endianness=_struct_endianness(publish_topics["input"], config))
+        self.output_ids = subscribe_topics["output"]["custom_ids"]
+        self.output_mapping = custom_component_mapping(config, self.output_ids, direction="in")
+        self.output_msg = ComponentMessage(self.output_mapping,
+                                           endianness=_struct_endianness(subscribe_topics["output"], config))
+
+    def send(self, plc_config) -> bytes:
+        return self.output_msg.serialize(plc_config)
+
+    def receive(self, payload: bytes, plc_config) -> None:
+        self.input_msg.deserialize(payload, plc_config)
+
+
+def make_program(config, program: str = "auto", jam_time: float = 5.0, autostart: bool = False,
+                 align: str = "head", land_offsets=None, max_length: float = 1.2,
+                 induct_speed: float = 1.0):
+    """The PLC program for a layout (--program): plc_merge's MergeTrainController
+    for a merge line whose inductions take slots, else plc_logic's."""
+    shows_slots = any(getattr(t, "role", "load") in ("slot", "sync") for t in getattr(config, "trackedLoads", []))
+    if program == "merge-train" or (program == "auto" and shows_slots):
+        from plc_merge import MergeTrainController
+        return MergeTrainController(config, jam_time=jam_time, autostart=autostart, align=align,
+                                    land_offsets=land_offsets, max_length=max_length,
+                                    induct_speed=induct_speed)
+    return make_controller(config, jam_time=jam_time, autostart=autostart)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Mock PLC Client for testing MQTT data exchange")
     parser.add_argument("config", help="Path to the JSON workspace configuration")
@@ -212,6 +253,22 @@ def main():
     parser.add_argument("--jam-time", type=float, default=5.0,
                         help="Seconds a sensor may stay blocked before it is a jam (belts stop)")
     parser.add_argument("--autostart", action="store_true", help="Run the belts without pressing Start")
+    parser.add_argument("--align", choices=("head", "center"), default="head",
+                        help="merge-train: a load's front to its car's front target (head: it asks as the gate "
+                             "sees it), or centre to centre (center: it asks once its length is measured)")
+    parser.add_argument("--induct-speed", type=float, default=1.0, metavar="M/S",
+                        help="merge-train: the metering belts (human-assisted induction) and a section while "
+                             "its load crosses the gate (default 1 m/s); past the gate the section speeds up")
+    parser.add_argument("--max-length", type=float, default=1.2, metavar="METRES",
+                        help="merge-train: a load longer than this (the gate still blocked) gets no car and is "
+                             "held until it is taken away (default 1.2 m, a car)")
+    parser.add_argument("--land-offset", action="append", default=[], metavar="FEED=METRES",
+                        help="merge-train: how far downstream of its port a feed's loads land (commissioned: "
+                             "python plc_merge.py LAYOUT --commission 120 prints them); repeat per feed")
+    parser.add_argument("--program", choices=("auto", "lines", "merge-train"), default="auto",
+                        help="The PLC program: merge-train (plc_merge.py: a merge line's inductions by a slot "
+                             "train), lines (plc_logic.py), auto: merge-train when the layout shows slots "
+                             "(a trackedLoads row of role slot or sync), else lines")
     parser.add_argument("--show-layout", action="store_true",
                         help="Print the input/output byte layouts (and the matching PLC STRUCTs)")
     parser.add_argument("--metrics-interval", type=float, default=5.0, help="Seconds between performance reports")
@@ -221,7 +278,7 @@ def main():
         help="This client's identity in the TCP frame header's Node ID byte (0-255, TCP transport only)",
     )
     parser.add_argument("--print-feedback", action="store_true",
-                        help="Print every received belt feedback frame (needs mqttSettings.beltFeedback on the simulator)")
+                        help="Print the drive feedback of every belt that reports it (Belt.feedback), each input frame")
     parser.add_argument("--bridge", metavar="HOST:PORT",
                         help="Also send this PLC's I/O images and metrics to plc_foxglove_bridge.py (e.g. 127.0.0.1:5002)")
     parser.add_argument("--bridge-interval", type=float, default=0.1,
@@ -244,22 +301,21 @@ def main():
     # Reconstruct the mappings that the simulator uses (io_topics: the same
     # channels for this layout as MQTTSyncEngine builds).
     publish_topics, subscribe_topics = io_topics(config)
+    image = PlcImage(config)
     # Simulator publishes to /plcsim/input (from PLC's perspective, this is input)
     input_topic = f"{prefix}input".replace("//", "/")
-    input_ids = publish_topics["input"]["custom_ids"]
-    input_mapping = custom_component_mapping(config, input_ids, direction="out")
-    input_msg = ComponentMessage(input_mapping, endianness=_struct_endianness(publish_topics["input"], config))
-
+    input_ids, input_mapping, input_msg = image.input_ids, image.input_mapping, image.input_msg
     # Simulator subscribes to /plcsim/output (from PLC's perspective, this is output)
     output_topic = f"{prefix}output".replace("//", "/")
-    output_ids = subscribe_topics["output"]["custom_ids"]
-    output_mapping = custom_component_mapping(config, output_ids, direction="in")
-    output_msg = ComponentMessage(output_mapping, endianness=_struct_endianness(subscribe_topics["output"], config))
+    output_ids, output_mapping, output_msg = image.output_ids, image.output_mapping, image.output_msg
 
     # The PLC program: reads buttons/sensors from `config` (filled by
     # input_msg.deserialize), writes belt speeds/LEDs into it (sent by
     # output_msg.serialize).
-    controller = make_controller(config, jam_time=args.jam_time, autostart=args.autostart)
+    from plc_merge import parse_offsets
+    controller = make_program(config, args.program, jam_time=args.jam_time, autostart=args.autostart,
+                              align=args.align, land_offsets=parse_offsets(args.land_offset),
+                              max_length=args.max_length, induct_speed=args.induct_speed)
     print(f"[PLC] Inputs: {', '.join(i for i in input_ids if i != 'clock')}")
     print(f"[PLC] Outputs: {', '.join(output_ids)}")
     print(f"[PLC] Program: {type(controller).__name__}")
@@ -291,11 +347,6 @@ def main():
     metric3_topic_suffix = METRICS_CHANNELS[FrameType.METRIC_LAYOUT_3]["topic_suffix"]
     metric3_topic = f"{prefix}{metric3_topic_suffix}".replace("//", "/")
     metric3_msg = MetricsMessage.from_layout(MetricLayout3, endianness=_struct_endianness({}, config))
-
-    # Belt drive feedback (actualSpeed + encoderCount per belt) - only sent
-    # by a simulator running with mqttSettings.beltFeedback enabled.
-    feedback_topic = f"{prefix}belt_feedback".replace("//", "/")
-    feedback_msg = ComponentMessage(belt_feedback_mapping(config), endianness=_struct_endianness({}, config))
 
     mqtt = None
     tcp = None
@@ -333,9 +384,6 @@ def main():
         # differently-typed TCP frame here would mean something is
         # misconfigured (e.g. pointed at the wrong port), so it's dropped
         # rather than fed to input_msg.deserialize() as if it matched.
-        if isinstance(raw, ParsedFrame) and raw.frame_type == FrameType.BELT_FEEDBACK:
-            handle_belt_feedback(raw.payload)
-            return
         if isinstance(raw, ParsedFrame):
             if raw.frame_type != FrameType.IO_MAPPING:
                 print(f"[<- RECV {input_topic}] Ignoring frame_type={raw.frame_type} from node {raw.node_id} "
@@ -362,22 +410,14 @@ def main():
         metrics.record_rx(len(payload), latency_ms)
         with lock:
             # Buttons/sensors land in `config`; the control loop below acts on them.
+            # (So does the drive feedback of every belt with `feedback` on.)
             input_msg.deserialize(payload, config)
-
-    def handle_belt_feedback(raw):
-        payload = raw if isinstance(raw, (bytes, bytearray)) else raw.encode()
-        if len(payload) != feedback_msg.payload_size:
-            metrics.record_malformed()
-            print(f"[<- RECV {feedback_topic}] Ignoring payload: "
-                  f"expected {feedback_msg.payload_size} bytes, got {len(payload)}")
-            return
-        metrics.record_rx(len(payload))
-        with lock:
-            feedback_msg.deserialize(payload, config)
             if args.print_feedback:
                 for belt in config.belts:
-                    print(f"[<- RECV {feedback_topic}] {belt.id} actual {belt.actualSpeed:.3f} m/s "
-                          f"(cmd {belt.speed:.2f}) encoder {belt.encoderCount}")
+                    if belt.feedback:
+                        print(f"[<- RECV {input_topic}] {belt.id} actual {belt.actualSpeed:.3f} m/s "
+                              f"(cmd {belt.speed:.2f}) encoder {belt.encoderCount}"
+                              f"{' FAULT' if belt.fault else ''}")
 
     bridge = None
     if args.bridge:
@@ -402,7 +442,6 @@ def main():
     if transport == "mqtt":
         mqtt = FlexibleProtocolMQTTManager(broker_url=broker_url, port=broker_port)
         mqtt.register_callback(input_topic, handle_input)
-        mqtt.register_callback(feedback_topic, handle_belt_feedback)
         print(f"Connecting to MQTT {broker_url}:{broker_port}")
         mqtt.start()
     elif transport == "tcp":

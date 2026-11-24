@@ -1,7 +1,7 @@
 import os
 import subprocess
 import sys
-from collections import deque
+from collections import OrderedDict, deque
 from contextlib import nullcontext
 import pygame
 import pygame_gui
@@ -22,6 +22,7 @@ from cad.checks import belt_footprint
 from cad.path import belt_world_path, path_length, segments as path_segments
 from cad.ports import centerline_points
 from editor_ui import EditorUI
+from id_utils import display_name
 
 
 SPEEDS = (1.0, 2.0, 4.0, 8.0, None)   # real-time factors the Speed button cycles; None = max
@@ -62,12 +63,16 @@ class Renderer:
         # label text) naturally produces a fresh cache entry instead of
         # needing manual invalidation.
         self._surface_cache = {}
-        self._text_cache = {}
+        self._text_cache = OrderedDict()   # LRU, TEXT_CACHE_MAX entries: labels change (counts, barcodes)
         self._surface_cache_zoom = None
 
         # Labels queued this frame (see _queue_label) and the [V] toggle.
         self._labels = []
+        self._label_blockers = []   # screen rects of buttons and lamps this frame: no label covers them
         self.show_values = False
+        self.show_tracks = True        # [B] the track boxes the PLC sends (TrackedLoadView: load, slot, sync)
+        import chute_stats
+        self.chute_stats = chute_stats.ChuteStats()   # each chute's total, per minute, per hour (Reset Stats)
         self.exchange = None  # set by main.run_pygame: the status bar shows the PLC link
         self.physics = None   # set by main.run_pygame: Clear Parcels / Reset act on it
         self.config_path = None  # set by main.run_pygame: "Edit in Designer" opens it
@@ -80,6 +85,17 @@ class Renderer:
         self.speed: Optional[float] = 1.0
         self.sim_lock = nullcontext()
         self._ratio_samples = deque()   # (wall, sim_time) over the last couple of seconds
+        # The debug panel (F3) and the status bar's HEALTH: frames drawn, recent
+        # frame intervals (wall, s), when each eye became blocked (wall), and the
+        # runner (simulation thread mode; with a simulation process its health
+        # comes in the snapshot, PhysicsProxy.health).
+        self.show_debug = False
+        self.frames = 0
+        self._frame_times = deque()
+        self._last_frame_at = None
+        self._blocked_since = {}
+        self.runner = None
+        self.tag_monitor = None          # the PLC tag monitor (F4, tag_monitor.py), made on first use
         self.show_drawing = True
         self._drawing_loaded = False
 
@@ -136,7 +152,8 @@ class Renderer:
             print("[Sim] The designer is still starting.")
             return
         editor = os.path.join(os.path.dirname(os.path.abspath(__file__)), "layout_editor.py")
-        args = [sys.executable, editor] + ([layout] if layout else [])
+        # it closes with this simulator (it asks to save first): no designers left behind
+        args = [sys.executable, editor] + ([layout] if layout else []) + ["--exit-with", str(os.getpid())]
         try:
             self._designer_process = subprocess.Popen(args, cwd=os.path.dirname(editor))
             print(f"[Sim] Opened the designer on {self.config_path or 'a new layout'} - save there, "
@@ -164,6 +181,9 @@ class Renderer:
             print(f"[Sim] Speed {speed_label(self.speed)}")
         elif cmd == "CLEAR" and self.physics is not None:
             self.physics.clear_parcels()
+        elif cmd == "RESET_STATS":
+            self.chute_stats.reset(self.chute_stats.now)
+            print("[Sim] Chute statistics reset.")
         elif cmd == "RESET" and self.physics is not None:
             self.physics.reset()
             self.play_real_time = 0.0
@@ -181,6 +201,24 @@ class Renderer:
         self.hud_font = pygame.font.Font(regular, hmi.HUD_PX)
         self.hud_bold = pygame.font.Font(bold, 12)
         self.hud_small = pygame.font.Font(regular, 11)
+
+    def _canvas_label_font(self):
+        """The canvas labels' font, sized with the zoom: LABEL_PX at the
+        default scale (100 px/m), the square root of the zoom around it,
+        LABEL_MIN_PX..LABEL_MAX_PX. Zoomed out the text shrinks with the
+        layout (and fewer labels fit); zoomed in it grows, but never to the
+        size of a button."""
+        px_per_m = self.scale * self.zoom
+        size = round(hmi.LABEL_PX * (px_per_m / 100.0) ** 0.5)
+        size = max(hmi.LABEL_MIN_PX, min(hmi.LABEL_MAX_PX, size))
+        font = self._sized_fonts.get(("regular", size))
+        if font is None:
+            font = self._sized_fonts[("regular", size)] = pygame.font.Font(self._font_paths[0], size)
+        return font
+
+    def _block_labels(self, rect: pygame.Rect):
+        """A control (button, lamp) drawn at rect: labels go around it."""
+        self._label_blockers.append(pygame.Rect(rect))
 
     def _label_font_px(self, size: int):
         font = self._sized_fonts.get(size)
@@ -222,6 +260,8 @@ class Renderer:
         self._surface_cache[key] = rotated
         return rotated
 
+    TEXT_CACHE_MAX = 4096
+
     def _cached_text(self, font, text: str, color: tuple):
         """Rendered text, cached by (font, text, color) - covers labels
         that repeat identically frame after frame (button/LED labels, the
@@ -230,9 +270,12 @@ class Renderer:
         key = (font, text, color)
         cached = self._text_cache.get(key)
         if cached is not None:
+            self._text_cache.move_to_end(key)
             return cached
         surf = font.render(text, True, color)
         self._text_cache[key] = surf
+        if len(self._text_cache) > self.TEXT_CACHE_MAX:   # the least recently drawn goes: a long run's
+            self._text_cache.popitem(last=False)          # changing labels never pile up
         return surf
 
     def _zoom_at(self, factor: float, mouse_pos: Tuple[int, int]):
@@ -262,15 +305,16 @@ class Renderer:
                 
             self.manager.process_events(event)
             ui_cmd = self.editor_ui.handle_event(event)
-            if ui_cmd in ("TOGGLE_PLAY", "CLEAR", "RESET", "TOGGLE_THEME", "TOGGLE_DRAWING", "CYCLE_SPEED"):
+            if ui_cmd in ("TOGGLE_PLAY", "CLEAR", "RESET", "RESET_STATS", "TOGGLE_THEME", "TOGGLE_DRAWING",
+                          "CYCLE_SPEED"):
                 cmd = self.run_command(ui_cmd)
                 continue
             if isinstance(ui_cmd, tuple) and ui_cmd[0] == "SET_IO":
                 # The inspector's PLC I/O section: a Source or a command set by hand.
                 _, component_id, name, value = ui_cmd
                 self.set_io(component_id, name, value)
-                if name == "control":
-                    self.editor_ui.show_props_for(self.selected_item)    # editors <-> readouts
+                if name in ("control", "fillMode"):
+                    self.editor_ui.show_props_for(self.selected_item)    # editors <-> readouts, the mode shown
                 continue
             if ui_cmd:
                 cmd = ui_cmd
@@ -296,6 +340,8 @@ class Renderer:
                     cmd = self.run_command('RESET')
                 elif event.key == pygame.K_v:
                     self.show_values = not self.show_values
+                elif event.key == pygame.K_b:
+                    self.show_tracks = not self.show_tracks
                 elif event.key == pygame.K_t:
                     cmd = self.run_command('TOGGLE_THEME')
                 elif event.key == pygame.K_d:
@@ -306,11 +352,17 @@ class Renderer:
                     cmd = self.run_command('SPEED_DOWN')
                 elif event.key == pygame.K_c:
                     cmd = self.run_command('CLEAR')
+                elif event.key == pygame.K_F3:
+                    self.show_debug = not self.show_debug
+                elif event.key == pygame.K_F4:
+                    self.monitor().cycle()
                     
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1: # Left click
                     # Check if clicked on UI panels
                     if self.editor_ui.is_ui_blocking_point(event.pos):
+                        continue
+                    if self.tag_monitor is not None and self.tag_monitor.contains(event.pos):
                         continue
                         
                     # Hit testing logic for selection
@@ -337,6 +389,8 @@ class Renderer:
                     self.camera_start = (self.camera_x, self.camera_y)
                 elif event.button in (4, 5) and self.editor_ui.is_ui_blocking_point(event.pos):
                     continue                    # the wheel scrolls the panel under it
+                elif event.button in (4, 5) and self.tag_monitor is not None and self.tag_monitor.contains(event.pos):
+                    self.tag_monitor.scroll_by(-3 if event.button == 4 else 3)   # the tag monitor scrolls
                 elif event.button == 4: # Scroll up
                     self._zoom_at(1.1, event.pos)
                 elif event.button == 5: # Scroll down
@@ -496,25 +550,43 @@ class Renderer:
 
     PRIORITY_SELECTED, PRIORITY_ALARM, PRIORITY_DEVICE, PRIORITY_BELT = 0, 1, 2, 3
 
-    def _queue_label(self, text: str, pos, priority: int, color=None, align: str = "center", force: bool = False):
+    def _queue_label(self, text: str, pos, priority: int, color=None, align: str = "center", force: bool = False,
+                     fallbacks=()):
+        """fallbacks: further ((x, y), align) places, tried in order when
+        the first is taken (a button's caption: beside it, else above or
+        below it)."""
         if text:
-            self._labels.append((priority, len(self._labels), text, pos, color or hmi.TEXT, align, force))
+            places = ((pos, align),) + tuple(fallbacks)
+            self._labels.append((priority, len(self._labels), text, places, color or hmi.TEXT, force))
 
     def _flush_labels(self):
         """Draw the queued labels; returns the texts that were placed."""
         placed, texts = [], []
-        for _prio, _i, text, (x, y), color, align, force in sorted(self._labels):
-            surf = self._cached_text(self.label_font, text, color)
+        font = self._canvas_label_font()
+        # Buttons and lamps first: a label never covers a control (its own
+        # label sits beside it). A forced label (an alarm) still shows.
+        blockers = list(self._label_blockers)
+        canvas = self._canvas_rect()
+        for _prio, _i, text, places, color, force in sorted(self._labels, key=lambda item: item[:2]):
+            surf = self._cached_text(font, text, color)
             w, h = surf.get_width() + 8, surf.get_height() + 2
-            if align == "left":
-                rect = pygame.Rect(int(x), int(y - h / 2), w, h)
-            elif align == "below":
-                rect = pygame.Rect(int(x - w / 2), int(y), w, h)
-            else:
-                rect = pygame.Rect(int(x - w / 2), int(y - h / 2), w, h)
-            # Touching is fine (stacked buttons / lamps), overlapping is not.
-            if not force and (rect.inflate(-2, -4).collidelist(placed) != -1
-                              or not self._canvas_rect().contains(rect)):
+            rect = None
+            for (x, y), align in places:
+                if align == "left":
+                    candidate = pygame.Rect(int(x), int(y - h / 2), w, h)
+                elif align == "below":
+                    candidate = pygame.Rect(int(x - w / 2), int(y), w, h)
+                elif align == "above":
+                    candidate = pygame.Rect(int(x - w / 2), int(y - h), w, h)
+                else:
+                    candidate = pygame.Rect(int(x - w / 2), int(y - h / 2), w, h)
+                # Touching is fine (stacked buttons / lamps), overlapping is not.
+                if force or (candidate.inflate(-2, -4).collidelist(placed) == -1
+                             and candidate.collidelist(blockers) == -1
+                             and canvas.contains(candidate)):
+                    rect = candidate
+                    break
+            if rect is None:
                 continue
             placed.append(rect)
             backdrop = self._surface_cache.get(("tag", w, h))
@@ -526,6 +598,7 @@ class Renderer:
             self.screen.blit(surf, (rect.x + 4, rect.y + 1))
             texts.append(text)
         self._labels = []
+        self._label_blockers = []
         return texts
 
     def _canvas_rect(self) -> pygame.Rect:
@@ -601,7 +674,7 @@ class Renderer:
             self._polygon_outline(outline, hmi.shade(color, 0.55), 1)
         self._draw_flow(belt)
         # Its id, only where the belt is long enough on screen to carry it.
-        if self._scale_val(self._belt_run_length(belt)) >= self.label_font.size(belt.id)[0] + 40:
+        if self._scale_val(self._belt_run_length(belt)) >= self._canvas_label_font().size(belt.id)[0] + 40:
             self._queue_label(belt.id, self._world_to_screen(belt.x, belt.y), self.PRIORITY_BELT, hmi.TEXT_DIM)
 
     @staticmethod
@@ -671,13 +744,13 @@ class Renderer:
             for end in (p0, p1):
                 pygame.draw.rect(self.screen, hmi.TEXT_FAINT, pygame.Rect(end[0] - 3, end[1] - 3, 6, 6))
             blocked_any = blocked
-        label = sensor.label if sensor.label and sensor.label.upper() != "SENSOR" else sensor.id
+        label = display_name(sensor)
         lx, ly = max(p0, p1, key=lambda p: p[1])
         self._queue_label(label, (lx, ly + 6), self.PRIORITY_DEVICE,
                           hmi.ALARM if blocked_any else hmi.TEXT_DIM, align="below")
 
     def _fit_font(self, text: str, w: int, h: int):
-        for size in (13, 12, 11):
+        for size in (13, 12, 11, 10, 9, 8):    # 8 px still reads on a button face
             font = self._label_font_px(size)
             if font.size(text)[0] <= w - 6 and font.get_height() <= h:
                 return font
@@ -708,10 +781,13 @@ class Renderer:
             rotated_surf = pygame.transform.rotate(surf, button.rotation)
             self._surface_cache[key] = rotated_surf
         center = self._world_to_screen(button.x, button.y)
-        self.screen.blit(rotated_surf, rotated_surf.get_rect(center=center))
+        button_rect = rotated_surf.get_rect(center=center)
+        self.screen.blit(rotated_surf, button_rect)
+        self._block_labels(button_rect)
         if font is None:   # too small for its text: a tag beside it, if there is room
-            self._queue_label(text, (center[0] + w // 2 + 4, center[1]), self.PRIORITY_DEVICE, hmi.TEXT_DIM,
-                              align="left")
+            self._queue_label(text, (button_rect.right + 4, center[1]), self.PRIORITY_DEVICE, hmi.TEXT_DIM,
+                              align="left", fallbacks=(((center[0], button_rect.top - 2), "above"),
+                                                       ((center[0], button_rect.bottom + 2), "below")))
 
     def draw_control_panel(self, panel):
         """An operator panel's enclosure (control_panel.py); its buttons,
@@ -730,6 +806,8 @@ class Renderer:
         cx, cy = self._world_to_screen(led.x, led.y)
         radius = max(3, self._scale_val(led.radius))
         base = self._hex_to_rgb(led.color)
+        bezel = radius + max(1, radius // 4)
+        self._block_labels(pygame.Rect(cx - bezel, cy - bezel, 2 * bezel, 2 * bezel))
         if getattr(led, "indicator", "lamp") == "buzzer":
             self._draw_buzzer(led, cx, cy, radius, base)
             return
@@ -746,8 +824,10 @@ class Renderer:
             pygame.draw.circle(self.screen, hmi.shade(base, 1.5), (cx - radius // 3, cy - radius // 3),
                                max(1, radius // 4))
         if led.label:
-            self._queue_label(led.label, (cx + radius + 6, cy), self.PRIORITY_DEVICE,
-                              hmi.TEXT if led.isOn else hmi.TEXT_DIM, align="left")
+            bezel = radius + max(1, radius // 4)
+            self._queue_label(led.label, (cx + bezel + 6, cy), self.PRIORITY_DEVICE,
+                              hmi.TEXT if led.isOn else hmi.TEXT_DIM, align="left",
+                              fallbacks=(((cx, cy + bezel + 2), "below"),))
 
     def _draw_buzzer(self, led: LedIndicator, cx: int, cy: int, radius: int, base):
         """A horn: a dark body with its grille; while sounding, rings
@@ -765,8 +845,10 @@ class Renderer:
                 pygame.draw.circle(surf, (*base, alpha), (r + 2, r + 2), r, 2)
                 self.screen.blit(surf, (cx - r - 2, cy - r - 2))
         if led.label:
-            self._queue_label(led.label, (cx + radius + 6, cy), self.PRIORITY_DEVICE,
-                              hmi.TEXT if led.isOn else hmi.TEXT_DIM, align="left")
+            bezel = radius + max(1, radius // 4)
+            self._queue_label(led.label, (cx + bezel + 6, cy), self.PRIORITY_DEVICE,
+                              hmi.TEXT if led.isOn else hmi.TEXT_DIM, align="left",
+                              fallbacks=(((cx, cy + bezel + 2), "below"),))
 
     def draw_source(self, source):
         w = self._scale_val(source.maxWidth if hasattr(source, 'maxWidth') else 0.5)
@@ -782,6 +864,12 @@ class Renderer:
         self._queue_label(getattr(source, "label", "") or source.id, (rect.centerx, rect.bottom + 2),
                           self.PRIORITY_DEVICE, hmi.TEXT_DIM, align="below")
 
+    def update_chute_stats(self, physics_engine) -> None:
+        """Each chute's statistics from the simulation's delivered counts (chute_stats.py)."""
+        if physics_engine is not None:
+            self.chute_stats.update(float(getattr(physics_engine, "sim_time", 0.0)),
+                                    dict(getattr(physics_engine, "delivered", {}) or {}))
+
     def draw_sink(self, sink):
         w = self._scale_val(sink.width)
         h = self._scale_val(sink.height)
@@ -793,6 +881,11 @@ class Renderer:
         pygame.draw.rect(self.screen, hmi.SINK, rect, 1)
         self._queue_label(getattr(sink, "label", "") or sink.id, (rect.centerx, rect.bottom + 2),
                           self.PRIORITY_DEVICE, hmi.TEXT_DIM, align="below")
+        # its statistics since the last Reset Stats: total | per minute | per hour
+        import chute_stats
+        self._queue_label(chute_stats.text(self.chute_stats.row(sink.id)), (rect.centerx, rect.bottom + 22),
+                          self.PRIORITY_DEVICE, hmi.TEXT, align="below",
+                          fallbacks=(((rect.centerx, rect.top - 2), "above"),))
 
     def draw_grid(self):
         grid_spacing = getattr(self.config, 'gridSize', 0.5)
@@ -1007,6 +1100,35 @@ class Renderer:
                 sx, sy = self._world_to_screen(parcel.x, parcel.y)
                 self._queue_label(text, (sx, sy), self.PRIORITY_DEVICE, hmi.ALARM if lagging else hmi.TEXT)
 
+    TRACK_COLORS = {"load": (244, 114, 182), "slot": (34, 211, 238), "sync": (251, 146, 60)}
+
+    def draw_tracks(self):
+        """[B] Where the PLC has its loads, the slots on a merge line and the
+        loads it synchronises (TrackedLoadView by its role): outlined boxes,
+        a slot filled faintly."""
+        if not self.show_tracks:
+            return
+        for t in getattr(self.config, "trackedLoads", []):
+            if not t.active or t.loadLength <= 0 or t.loadWidth <= 0:
+                continue
+            role = getattr(t, "role", "load")
+            color = self.TRACK_COLORS.get(role, self.TRACK_COLORS["load"])
+            yaw = math.radians(t.loadYaw)
+            c, s = math.cos(yaw), math.sin(yaw)
+            hl, hw = t.loadLength / 2.0, t.loadWidth / 2.0
+            corners = [(t.loadX + c * a - s * b, t.loadY + s * a + c * b)
+                       for a, b in ((hl, hw), (-hl, hw), (-hl, -hw), (hl, -hw))]
+            points = [self._world_to_screen(x, y) for x, y in corners]
+            if role == "slot":
+                xs, ys = [p[0] for p in points], [p[1] for p in points]
+                left, top = min(xs), min(ys)
+                w, h = max(xs) - left + 1, max(ys) - top + 1
+                if 0 < w < 4000 and 0 < h < 4000:
+                    fill = pygame.Surface((w, h), pygame.SRCALPHA)
+                    pygame.draw.polygon(fill, (*color, 60), [(x - left, y - top) for x, y in points])
+                    self.screen.blit(fill, (left, top))
+            pygame.draw.polygon(self.screen, color, points, 2)
+
     def _recent_ratio(self, sim_time: float) -> float:
         """Simulated seconds per wall second over the last ~2 s (0 while
         paused) - follows a speed change at once, unlike a since-start mean."""
@@ -1032,6 +1154,7 @@ class Renderer:
     def render(self, physics_engine=None):
         if self.headless:
             return
+        self._note_frame()
 
         if self.zoom != self._surface_cache_zoom:
             # Every cached surface's (w, h) was derived from the OLD zoom -
@@ -1044,10 +1167,15 @@ class Renderer:
         # writes: draw it under the physics lock (a few ms), everything else
         # (panels, status bar, flip, frame pacing) without it.
         with self.sim_lock:
+            self.update_chute_stats(physics_engine)
             self._draw_scene(physics_engine)
         self.editor_ui.sync_sim_buttons(self.playing, hmi.THEME, self.show_drawing, speed_label(self.speed))
         self.manager.draw_ui(self.screen)
         self._draw_status_bar(physics_engine)
+        if self.show_debug:
+            self._draw_debug_panel(physics_engine)
+        if self.tag_monitor is not None and self.tag_monitor.visible:
+            self.tag_monitor.draw(self, CANVAS_TOP + 10, self.height - BOTTOM_BAR - 10)
         self._draw_hint_bar()
 
         pygame.display.flip()
@@ -1092,13 +1220,13 @@ class Renderer:
             self.draw_led(led)
         if physics_engine:
             self.draw_parcels(physics_engine)
+        self.draw_tracks()
         for robot in self.config.robots:
             self.draw_robot(robot)
 
         # The selected item: outline, origin/heading and its coordinates.
         if self.selected_item is not None:
             self._draw_selection_overlay(self.selected_item)
-            self.draw_origin_and_direction(self.selected_item)
         self._flush_labels()
 
         if physics_engine:
@@ -1256,6 +1384,9 @@ class Renderer:
                                hmi.RUNNING if clients else hmi.WARNING))
             if stats.get("rx_size_errors"):
                 fields.append(("LAYOUT", "mismatch", hmi.ALARM))
+        health = self.health_status(physics_engine)
+        if health is not None:
+            fields.append(("HEALTH", health[0], health[1]))
         for name, value, value_color in fields:
             n = self._cached_text(self.hud_small, name, hmi.TEXT_FAINT)
             v = self.hud_font.render(value, True, value_color)
@@ -1268,6 +1399,158 @@ class Renderer:
         r = self.hud_small.render(right, True, hmi.TEXT_FAINT)
         self.screen.blit(r, (self.width - r.get_width() - 12, (TOP_BAR - r.get_height()) // 2 + 1))
 
+    # -- health: the status bar's HEALTH and the debug panel (F3) ---------------------------
+
+    EYE_WARN_S, EYE_JAM_S = 1.5, 3.0     # an eye blocked this long: amber; as long as the PLC's jam time: red
+
+    def _note_frame(self) -> None:
+        now = time.perf_counter()
+        if self._last_frame_at is not None:
+            self._frame_times.append((now, now - self._last_frame_at))
+        self._last_frame_at = now
+        while self._frame_times and now - self._frame_times[0][0] > 5.0:
+            self._frame_times.popleft()
+        self.frames += 1
+        for sensor in self.config.sensors:          # how long each eye has been blocked (wall time, as a PLC sees it)
+            states = sensor.sensor_states
+            blocked = any(states) if isinstance(states, (list, tuple)) else bool(states)
+            if blocked:
+                self._blocked_since.setdefault(sensor.id, now)
+            else:
+                self._blocked_since.pop(sensor.id, None)
+
+    def _sim_health(self, physics_engine) -> dict:
+        health = getattr(physics_engine, "health", None)
+        if health is None and self.runner is not None:
+            health = self.runner.health()
+        return health if isinstance(health, dict) else {}
+
+    @staticmethod
+    def _snapshot_age(physics_engine):
+        at = getattr(physics_engine, "last_snapshot_at", None)
+        return None if at is None else time.monotonic() - at
+
+    def _exchange_stats(self) -> dict:
+        exchange = getattr(self, "exchange", None)
+        if exchange is None or not getattr(exchange, "_enabled", False):
+            return {}
+        try:
+            return exchange.stats() or {}
+        except Exception:  # noqa: BLE001 - status display only
+            return {}
+
+    def health_status(self, physics_engine):
+        """(text, colour) for the status bar's HEALTH, or None when there is nothing to say."""
+        tripped = [w.id for w in getattr(self.config, "watchdogs", []) if w.tripped]
+        if tripped:
+            return f"PLC WATCHDOG {', '.join(tripped)}", hmi.ALARM
+        age = self._snapshot_age(physics_engine)
+        if age is not None and age > 1.0:
+            return f"SIM NOT RESPONDING {age:.1f} s", hmi.ALARM
+        health = self._sim_health(physics_engine)
+        stall = health.get("last_stall")
+        if stall and stall["ago_s"] < 10.0:
+            return f"STALL {stall['length_s']:.1f} s", hmi.ALARM if stall["length_s"] >= 1.0 else hmi.WARNING
+        stats = self._exchange_stats()
+        if stats.get("clients") and stats.get("rx_age_ms", 0) > 1000:
+            return f"PLC SILENT {stats['rx_age_ms'] / 1000:.1f} s", hmi.WARNING
+        if health or age is not None:
+            return "OK", hmi.RUNNING
+        return None
+
+    def debug_lines(self, physics_engine):
+        """The debug panel's lines: (text, colour), or (text, None) for a heading."""
+        now = time.perf_counter()
+        lines = [("WINDOW", None)]
+        frames = [d for _t, d in self._frame_times]
+        if frames:
+            avg, worst = 1000 * sum(frames) / len(frames), 1000 * max(frames)
+            lines.append((f"frame {avg:5.1f} ms avg, {worst:6.1f} max  ({self.clock.get_fps():.0f} fps)",
+                          hmi.ALARM if worst > 1000 else hmi.WARNING if worst > 250 else hmi.TEXT))
+        age = self._snapshot_age(physics_engine)
+        if age is not None:
+            lines.append((f"last snapshot {age * 1000:6.0f} ms ago", hmi.ALARM if age > 1.0 else hmi.TEXT))
+        health = self._sim_health(physics_engine)
+        lines.append(("SIMULATION", None))
+        if health:
+            ratio = health.get("ratio", 0.0)
+            behind = self.playing and self.speed is not None and ratio < 0.9 * self.speed
+            lines.append((f"sim / real {ratio:4.2f}x   ticks {health.get('tick_hz', 0):5.0f} /s",
+                          hmi.WARNING if behind else hmi.TEXT))
+            worst = health.get("tick_ms_max", 0.0)
+            lines.append((f"tick {health.get('tick_ms_avg', 0):5.2f} ms avg, {worst:6.1f} max "
+                          f"(physics {health.get('physics_ms_max', 0):5.1f})",
+                          hmi.WARNING if worst > 100 else hmi.TEXT))
+            dropped = health.get("dropped_s", 0.0)
+            lines.append((f"dropped {dropped:6.2f} s of sim time", hmi.WARNING if dropped > 0 else hmi.TEXT))
+            stall = health.get("last_stall")
+            text = (f"stalls {health.get('stall_count', 0)}, longest {health.get('longest_stall_s', 0):.2f} s"
+                    + (f"; last {stall['length_s']:.2f} s, {stall['ago_s']:.0f} s ago" if stall else ""))
+            lines.append((text, hmi.WARNING if stall and stall["ago_s"] < 10 else hmi.TEXT))
+        else:
+            lines.append(("(no timing from the simulation loop)", hmi.TEXT_FAINT))
+        stats = self._exchange_stats()
+        if stats:
+            lines.append(("PLC LINK", None))
+            rx_age = stats.get("rx_age_ms")
+            lines.append((f"clients {stats.get('clients', '-')}   frames in {stats.get('rx_frames', 0)}, "
+                          f"out {stats.get('sent', '-')}", hmi.TEXT))
+            lines.append((f"last frame from the PLC: {'-' if rx_age is None else f'{rx_age} ms ago'}",
+                          hmi.WARNING if rx_age is not None and rx_age > 1000 else hmi.TEXT))
+            errors = (stats.get("rx_errors", 0), stats.get("rx_size_errors", 0), stats.get("dropped", 0))
+            lines.append((f"errors {errors[0]}, size errors {errors[1]}, dropped {errors[2]}",
+                          hmi.ALARM if any(errors) else hmi.TEXT))
+        for w in getattr(self.config, "watchdogs", []):
+            from logistics_draw import watchdog_text
+            lines.append((watchdog_text(w) + f"  heartbeats: PLC {w.plcHeartbeat}, sim {w.simHeartbeat}; "
+                          f"latency {w.latencyMs:.0f} ms (max {w.latencyMaxMs:.0f})",
+                          hmi.ALARM if w.tripped else hmi.TEXT))
+        lines.append(("PLANT", None))
+        fault = next((led for led in self.config.leds if "fault" in led.id.lower()), None)
+        if fault is not None:
+            on = fault.isOn or getattr(fault, "mode", 0)
+            lines.append((f"{fault.id}: {'ON' if on else 'off'}", hmi.ALARM if on else hmi.TEXT))
+        tripped = [b.id for b in self.config.belts if b.fault]
+        if tripped:
+            lines.append((f"drive faults: {', '.join(tripped)}", hmi.ALARM))
+        manual = [c.id for kind in ("diverters", "sinks", "stoppers", "belts")
+                  for c in getattr(self.config, kind, []) if getattr(c, "control", None) == "manual"]
+        if manual:
+            lines.append((f"manual (PLC ignored): {', '.join(manual[:4])}", hmi.WARNING))
+        long_blocked = sorted(((now - since, sid) for sid, since in self._blocked_since.items()
+                               if now - since >= self.EYE_WARN_S), reverse=True)
+        for held, sid in long_blocked[:6]:
+            lines.append((f"{sid} blocked {held:4.1f} s", hmi.ALARM if held >= self.EYE_JAM_S else hmi.WARNING))
+        if not long_blocked:
+            lines.append((f"no eye blocked over {self.EYE_WARN_S:g} s", hmi.TEXT_FAINT))
+        return lines
+
+    def monitor(self):
+        """The PLC tag monitor (F4)."""
+        if self.tag_monitor is None:
+            from tag_monitor import TagMonitor
+            self.tag_monitor = TagMonitor(self.config)
+        return self.tag_monitor
+
+    def _draw_debug_panel(self, physics_engine):
+        lines = self.debug_lines(physics_engine)
+        font, bold = self.hud_small, self.hud_bold
+        line_h = font.get_height() + 3
+        width = max((bold if c is None else font).size(text)[0] for text, c in lines) + 20
+        height = line_h * len(lines) + 12
+        props = getattr(self.editor_ui, "prop_panel", None)
+        right = (props.rect.left if props is not None else self.width) - 10
+        box = pygame.Rect(right - width, CANVAS_TOP + 10, width, height)
+        surf = pygame.Surface(box.size, pygame.SRCALPHA)
+        pygame.draw.rect(surf, (*hmi.PANEL_DARK, 235), surf.get_rect(), border_radius=6)
+        pygame.draw.rect(surf, (*hmi.PANEL_BORDER, 255), surf.get_rect(), 1, border_radius=6)
+        self.screen.blit(surf, box)
+        y = box.y + 6
+        for text, color in lines:
+            label = bold.render(text, True, hmi.TEXT_DIM) if color is None else font.render(text, True, color)
+            self.screen.blit(label, (box.x + 10, y))
+            y += line_h
+
     def _draw_hint_bar(self):
         bar = pygame.Rect(0, self.height - BOTTOM_BAR, self.width, BOTTOM_BAR)
         pygame.draw.rect(self.screen, hmi.PANEL_DARK, bar)
@@ -1276,7 +1559,7 @@ class Renderer:
             self.hud_small,
             "SPACE start / pause    [ ] speed    C clear parcels    R reset    V parcel speeds "
             + ("on" if self.show_values else "off")
-            + "    D drawing    T theme    wheel zoom    drag pan    click a button to press it", hmi.TEXT_FAINT)
+            + "    D drawing    T theme    F3 debug    F4 PLC tags    wheel zoom    drag pan    click a button to press it", hmi.TEXT_FAINT)
         self.screen.blit(hint, (12, bar.y + (BOTTOM_BAR - hint.get_height()) // 2))
 
     def quit(self):

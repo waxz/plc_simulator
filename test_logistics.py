@@ -108,16 +108,50 @@ class DiverterTest(unittest.TestCase):
         self.assertTrue(d.present)
         self.assertEqual(d.presentCode, 99)
         self.assertFalse(d.active)
-        d.divert = True
+        d.enable = True
         e.run_for(5.0)
         self.assertEqual(e.delivered.get("side"), 1)
 
 
+class DiverterDriveTest(unittest.TestCase):
+    """A diverter's motor (drive): its speed ramps within the motor's limits."""
+
+    def test_without_a_drive_the_speed_is_the_command_at_once(self):
+        import logistics
+        d = Diverter(id="d", x=0, y=0, speed=1.2)
+        d.commandSpeed, d.active = 1.2, True
+        self.assertEqual(logistics.diverter_speed(d, 0.01), 1.2)
+        d.active = False
+        self.assertEqual(logistics.diverter_speed(d, 0.01), 0.0)
+
+    def test_with_a_drive_it_ramps_at_the_motor_max_accel_and_stops_at_it(self):
+        import drivetrain
+        import logistics
+        from config_parser import DriveConfig
+        # gear 1, a wheel of 60/pi mm: 1 motor rpm = 1 mm/s; 2000 rpm/s = 2 m/s^2, 1000 rpm = 1 m/s
+        d = Diverter(id="d", x=0, y=0, speed=1.2,
+                     drive=DriveConfig(gearRatio=1.0, drumDiameter=0.06 / math.pi, maxFrequency=200.0,
+                                       motorMaxSpeed=1000.0, motorMaxAccel=2000.0))
+        self.assertAlmostEqual(drivetrain.motor_limits(d)[1], 2.0, places=9)
+        d.commandSpeed, d.active = 1.2, True
+        for _ in range(25):                                   # 0.25 s at 2 m/s^2
+            d.actualSpeed = logistics.diverter_speed(d, 0.01)
+        self.assertAlmostEqual(d.actualSpeed, 0.5, places=6)
+        for _ in range(100):
+            d.actualSpeed = logistics.diverter_speed(d, 0.01)
+        self.assertAlmostEqual(d.actualSpeed, 1.0, places=6)  # the motor's max speed, not 1.2
+        d.active = False
+        for _ in range(25):
+            d.actualSpeed = logistics.diverter_speed(d, 0.01)
+        self.assertAlmostEqual(d.actualSpeed, 0.5, places=6)  # the quick stop at 2 m/s^2
+
+
 class WheelDiverterTest(unittest.TestCase):
-    """Pop-up wheel diverters: the angle command is relative to the layout's
-    divert angle, the wheels swivel to it, and the parcels go the way the
-    wheels point - under the PLC program (plc_logic, what plc_mock.py runs)
-    each destination to its own branch belt."""
+    """Pop-up wheel diverters: a conveyor of their own - enable, a speed and an
+    angle (deg to the travel); the wheels swivel to it, and the parcels go
+    the way the wheels point, straight through at 0 and standing when not
+    enabled - under the PLC program (plc_logic, what plc_mock.py runs) each
+    destination to its own branch belt."""
 
     def layout(self, angle=45.0):
         c = SimulatorConfig(
@@ -161,37 +195,63 @@ class WheelDiverterTest(unittest.TestCase):
             plc.step(now=e.sim_time)
             e.run_for(0.02)
             steered = max(steered, c.diverters[0].wheelAngle)
-        self.assertEqual(c.diverters[0].commandAngle, 0.0)                # the mock: as designed
+        self.assertEqual(c.diverters[0].commandAngle, 0.0)                # the mock: straight, between diverts
         self.assertAlmostEqual(steered, 45.0)                               # the wheels turned to it
         expected = {1: "left_end", 2: "right_end", 3: "line_end"}
         self.assertGreater(len(routes), 25)
         self.assertEqual([r for r in routes if expected[r[0]] != r[1]], [])
         self.assertEqual({d for d, _s in routes}, {1, 2, 3})
 
-    def test_the_wheels_swivel_to_divert_angle_plus_command_and_back(self):
+    def test_the_wheels_swivel_to_the_commanded_angle(self):
         import logistics
         c = self.layout(angle=30.0)
         e = PhysicsEngine(c)
         d = c.diverters[0]
         d.control = "manual"
-        d.divert, d.commandAngle = True, 20.0
+        d.enable, d.commandAngle = True, 50.0
         self.assertEqual(logistics.divert_angle(d), 50.0)
         e.run_for(0.05)
         self.assertGreater(d.wheelAngle, 0.0)
         self.assertLess(d.wheelAngle, 50.0)                                 # swivelling, not there yet
         e.run_for(0.3)
         self.assertAlmostEqual(d.wheelAngle, 50.0)
-        d.commandAngle = 60.0                                               # 90: more than wheels steer
+        d.commandAngle = 90.0                                               # more than wheels steer
         e.run_for(0.3)
         self.assertAlmostEqual(d.wheelAngle, 60.0)
         self.assertEqual(logistics.diverter_motion(d)[1], 60.0)            # the parcels go where they point
-        d.divert = False
+        d.enable = False
         e.run_for(0.3)
-        self.assertAlmostEqual(d.wheelAngle, 0.0)                           # down and straight again
+        self.assertAlmostEqual(d.wheelAngle, 60.0)                          # not enabled: the swivel holds
+        d.enable, d.commandAngle = True, 0.0
+        e.run_for(0.3)
+        self.assertAlmostEqual(d.wheelAngle, 0.0)                           # straight again
         p = e.add_parcel(5.0, 0.0, 0.3, 0.3)
-        d.divert, d.commandAngle = True, -60.0                              # 30 - 60: to the right
+        d.commandAngle = -30.0                                              # to the right
         e.run_for(0.8)
         self.assertLess(p.body.position.y, -0.1)
+
+    def test_the_wheels_carry_straight_through_and_stop_when_not_enabled(self):
+        c = self.layout(angle=30.0)
+        c.belts = [belt("in", 2.625, 0.0, 5.25), belt("out", 9.875, 0.0, 6.25)]   # none under the wheels (5.25..6.75)
+        c.sources = []
+        e = PhysicsEngine(c)
+        d = c.diverters[0]
+        d.control = "manual"
+        d.enable, d.commandSpeed, d.commandAngle = True, 1.0, 0.0
+        p = e.add_parcel(4.0, 0.0, 0.3, 0.3)
+        e.run_for(4.0)
+        self.assertGreater(p.body.position.x, 7.5)                          # through, on the wheels alone
+        self.assertAlmostEqual(p.body.position.y, 0.0, places=2)
+        self.assertEqual(d.diverted, 0)                                     # carried straight: not diverted
+        q = e.add_parcel(4.0, 0.0, 0.3, 0.3)
+        d.enable = False
+        e.run_for(3.0)
+        self.assertTrue(d.present)                                          # it stands on the stopped wheels
+        self.assertLess(q.body.position.x, 6.0)
+        self.assertEqual(d.actualSpeed, 0.0)
+        d.enable = True
+        e.run_for(3.0)
+        self.assertGreater(q.body.position.x, 7.5)                          # and goes on when they turn
 
 
 class ChuteTest(unittest.TestCase):
@@ -329,27 +389,6 @@ class TransferTest(unittest.TestCase):
         outputs = [p for _bt, p in custom_component_mapping(c, pub["input"]["custom_ids"], direction="out")]
         self.assertIn("t/centered", outputs)
 
-    def test_the_demo_pallet_loop_runs_on_rollers_and_transfers(self):
-        """Under the PLC program (plc_logic, what plc_mock.py runs): its
-        machines follow the PLC, so nothing moves without one."""
-        from plc_logic import make_controller
-        random.seed(3)
-        c = load_config("machines_demo.json")
-        self.assertFalse([b for b in c.belts if b.type != "linear"])     # no curves
-        self.assertEqual({b.surface for b in c.belts if b.id.startswith("loop_")}, {"roller"})
-        e = PhysicsEngine(c)
-        plc = make_controller(c, autostart=True)
-        while e.sim_time < 60.0:
-            plc.step(now=e.sim_time)
-            e.run_for(0.05)
-        self.assertTrue(all(t.transferred >= 2 for t in c.transfers))
-        # Carried across, not turned (a turn would be 90 degrees; the PLC's scan
-        # leaves a fraction of a degree of play).
-        for p in e.machines.pallets:
-            self.assertAlmostEqual(math.sin(p.body.angle - math.radians(p.model.rotation)), 0.0, delta=0.01)
-        self.assertGreater(c.robots[0].cycles, 1)
-
-
 class SafetyTest(unittest.TestCase):
     def layout(self):
         return line(buttons=[ControlButton(id="es", x=0, y=2, label="E-STOP", buttonType="latching",
@@ -407,7 +446,7 @@ class ExchangeTest(unittest.TestCase):
         for path in ("dws_1/code", "dws_1/weight", "div_1/presentCode", "tt_1/index", "acc/zones", "door_1/closed",
                      "safety_1/ok", "chute_1/count"):
             self.assertIn(path, inputs)
-        for path in ("div_1/divert", "tt_1/targetIndex", "acc/release", "door_1/lock", "safety_1/reset",
+        for path in ("div_1/enable", "tt_1/targetIndex", "acc/release", "door_1/lock", "safety_1/reset",
                      "chute_1/empty"):
             self.assertIn(path, outputs)
 

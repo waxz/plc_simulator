@@ -6,10 +6,11 @@ clients (TcpFramedClient, or a raw socket where a test needs byte-level
 control).
 
 Covers: closed-loop belt speed control (PLC setpoint in -> drive ramp ->
-BELT_FEEDBACK out), publish rate with the runner thread, a stalled client
-not blocking the simulation or other clients, latest-frame-wins delivery,
-fragmented inbound frames, a bad inbound frame not killing the connection,
-and the belt feedback channel staying opt-in (IO_MAPPING layout unchanged).
+the belt's feedback back in the input frame), publish rate with the runner
+thread, a stalled client not blocking the simulation or other clients,
+latest-frame-wins delivery, fragmented inbound frames, a bad inbound frame
+not killing the connection, and a belt's feedback being its own (Belt.feedback:
+in the input frame, nothing else changed).
 """
 import socket
 import threading
@@ -17,8 +18,8 @@ import time
 import unittest
 
 from config_parser import DriveConfig, load_config
-from mqtt_data_exchange import PUBLISH_TOPICS, SUBSCRIBE_TOPICS, MQTTSyncEngine
-from mqtt_message_binding import ByteType, ComponentMessage, belt_feedback_mapping, custom_component_mapping
+from mqtt_data_exchange import PUBLISH_TOPICS, SUBSCRIBE_TOPICS, MQTTSyncEngine, io_topics
+from mqtt_message_binding import ByteType, ComponentMessage, custom_component_mapping
 from physics import PhysicsEngine
 from sim_runner import SimulationRunner
 from tcp_framed_transport import (
@@ -43,7 +44,7 @@ def make_config(port: int, belt_feedback: bool = False):
     settings.tcpBindHost = "127.0.0.1"
     settings.tcpServerHost = "127.0.0.1"
     settings.tcpPort = port
-    settings.beltFeedback = belt_feedback
+    next(b for b in config.belts if b.id == BELT).feedback = belt_feedback   # its drive feedback to the PLC
     return config
 
 
@@ -90,9 +91,13 @@ class ExchangeFixture(unittest.TestCase):
 
     port = None
     belt_feedback = False
+    every_belt_feedback = False          # a bigger input frame: every belt reports its drive
 
     def setUp(self):
         self.config = make_config(self.port, belt_feedback=self.belt_feedback)
+        if self.every_belt_feedback:
+            for belt in self.config.belts:
+                belt.feedback = True
         self.lock = threading.Lock()
         self.physics = PhysicsEngine(self.config, lock=self.lock)
         self.engine = MQTTSyncEngine(self.config, lock=self.lock)
@@ -140,16 +145,18 @@ class ClosedLoopBeltSpeedTest(ExchangeFixture):
         self.send_belt_setpoint(client, 2.0)
         self.assertTrue(wait_for(lambda: belt.speed == 2.0), "setpoint never applied")
 
-        decoder_config = load_config("station_1.json")
-        decoder = ComponentMessage(belt_feedback_mapping(decoder_config), endianness=endian(self.config))
-        self.assertTrue(wait_for(lambda: len(recorder.of(FrameType.BELT_FEEDBACK)) > 0))
+        decoder_config = make_config(self.port, belt_feedback=True)          # the PLC's copy of the layout
+        inputs = io_topics(decoder_config)[0]["input"]["custom_ids"]
+        decoder = ComponentMessage(custom_component_mapping(decoder_config, inputs, direction="out"),
+                                   endianness=endian(self.config))
+        self.assertTrue(wait_for(lambda: len(recorder.of(FrameType.IO_MAPPING)) > 0))
 
         samples = []
 
         def decode_all():
             samples.clear()
             fb_belt = next(b for b in decoder_config.belts if b.id == BELT)
-            for t, frame in recorder.of(FrameType.BELT_FEEDBACK):
+            for t, frame in recorder.of(FrameType.IO_MAPPING):
                 self.assertEqual(len(frame.payload), decoder.payload_size)
                 decoder.deserialize(frame.payload, decoder_config)
                 samples.append((t - t_cmd, fb_belt.actualSpeed, fb_belt.encoderCount))
@@ -203,7 +210,7 @@ class PublishRateTest(ExchangeFixture):
 
 class StalledClientTest(ExchangeFixture):
     port = 19403
-    belt_feedback = True
+    every_belt_feedback = True           # enough bytes a second to fill a stalled client's buffers
 
     def test_a_client_that_stops_reading_blocks_neither_sync_nor_other_clients(self):
         # Raw socket that connects and never reads, with a tiny receive window
@@ -219,6 +226,9 @@ class StalledClientTest(ExchangeFixture):
         self.clients.append(healthy)
         self.assertTrue(wait_for(lambda: self.engine.stats().get("clients") == 2))
 
+        # Frames ten times as often as normal: the stalled client's buffers fill in a second.
+        for channel in self.engine._pub_channels:
+            channel.interval_s = 0.001
         # Drive sync() directly so each call can be timed.
         worst = 0.0
         deadline = time.perf_counter() + 4.0
@@ -303,28 +313,32 @@ class InboundRobustnessTest(ExchangeFixture):
         self.assertEqual(self.engine.rx_errors, 0)
 
 
-class BeltFeedbackOptInTest(unittest.TestCase):
-    def test_disabled_by_default_and_io_mapping_layout_is_unchanged(self):
-        sizes = {}
+class BeltFeedbackTest(unittest.TestCase):
+    """A belt's drive feedback is the belt's own (Belt.feedback), in the
+    input frame: off by default, nothing else changes when it is on, and
+    there is no frame of its own."""
+
+    def test_off_by_default_and_on_it_adds_only_the_belts_fields(self):
+        mappings, channels = {}, {}
         for port, enabled in ((19405, False), (19406, True)):
             config = make_config(port, belt_feedback=enabled)
+            inputs = io_topics(config)[0]["input"]["custom_ids"]
+            mappings[enabled] = custom_component_mapping(config, inputs, direction="out")
             engine = MQTTSyncEngine(config)
             try:
-                sizes[enabled] = [(ch.frame_type, ch.message.payload_size) for ch in engine._pub_channels]
+                channels[enabled] = sorted({ch.frame_type for ch in engine._pub_channels})
             finally:
                 engine.stop()
-        self.assertEqual(make_config(19407).mqttSettings.beltFeedback, False)
-        self.assertNotIn(int(FrameType.BELT_FEEDBACK), [ft for ft, _ in sizes[False]])
-        io_only = [entry for entry in sizes[True] if entry[0] == FrameType.IO_MAPPING]
-        self.assertEqual(io_only, sizes[False])
-        feedback = [size for ft, size in sizes[True] if ft == FrameType.BELT_FEEDBACK]
-        config = make_config(19408)
-        # 4 status bits per belt (rounded up to bytes), then REAL + DWORD each.
-        self.assertEqual(feedback, [(len(config.belts) * 4 + 7) // 8 + len(config.belts) * (4 + 4)])
+        self.assertFalse(any(b.feedback for b in make_config(19407).belts))
+        self.assertEqual(channels[True], channels[False], "no channel of its own")
+        added = [path for _bt, path in mappings[True] if path not in {p for _b, p in mappings[False]}]
+        self.assertEqual([p for p in added if not p.startswith("padding")],
+                         [f"{BELT}/running", f"{BELT}/atSpeed", f"{BELT}/reversing", f"{BELT}/fault",
+                          f"{BELT}/actualSpeed", f"{BELT}/encoderCount"])
 
     def test_feedback_mapping_types(self):
         config = load_config("station_1.json")
-        mapping = belt_feedback_mapping(config, [BELT])
+        mapping = custom_component_mapping(config, [BELT], direction="out")
         self.assertEqual(mapping, [(ByteType.BIT, f"{BELT}/running"), (ByteType.BIT, f"{BELT}/atSpeed"),
                                    (ByteType.BIT, f"{BELT}/reversing"), (ByteType.BIT, f"{BELT}/fault"),
                                    (ByteType.BIT, "padding_0/bit"), (ByteType.BIT, "padding_1/bit"),

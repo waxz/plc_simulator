@@ -1,7 +1,6 @@
 {
   "version": "1.0.0",
-  "useSurfaceVelocity": true,
-  "tractionModel": "kinematic",
+  "savedAt": 0,
   "belts": [
     {
       "id": "infeed",
@@ -12,10 +11,30 @@
       "length": 6.0,
       "beltWidth": 1.0,
       "rotation": 0.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
       "speed": 1.0,
       "directionAngle": 0.0,
       "direction": 1,
-      "color": "#64748b"
+      "color": "#64748b",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "belt",
+      "rollerPitch": 0.125,
+      "level": 0
     },
     {
       "id": "acc_1",
@@ -26,10 +45,30 @@
       "length": 1.5,
       "beltWidth": 1.0,
       "rotation": 0.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
       "speed": 1.0,
       "directionAngle": 0.0,
       "direction": 1,
-      "color": "#3f7a52"
+      "color": "#3f7a52",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "belt",
+      "rollerPitch": 0.125,
+      "level": 0
     },
     {
       "id": "acc_2",
@@ -40,10 +79,30 @@
       "length": 1.5,
       "beltWidth": 1.0,
       "rotation": 0.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
       "speed": 1.0,
       "directionAngle": 0.0,
       "direction": 1,
-      "color": "#3f7a52"
+      "color": "#3f7a52",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "belt",
+      "rollerPitch": 0.125,
+      "level": 0
     },
     {
       "id": "acc_3",
@@ -54,10 +113,30 @@
       "length": 1.5,
       "beltWidth": 1.0,
       "rotation": 0.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
       "speed": 1.0,
       "directionAngle": 0.0,
       "direction": 1,
-      "color": "#3f7a52"
+      "color": "#3f7a52",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "belt",
+      "rollerPitch": 0.125,
+      "level": 0
     },
     {
       "id": "scan",
@@ -68,10 +147,30 @@
       "length": 1.5,
       "beltWidth": 1.0,
       "rotation": 0.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
       "speed": 1.0,
       "directionAngle": 0.0,
       "direction": 1,
-      "color": "#64748b"
+      "color": "#64748b",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "belt",
+      "rollerPitch": 0.125,
+      "level": 0
     },
     {
       "id": "sorter",
@@ -82,10 +181,30 @@
       "length": 12.0,
       "beltWidth": 1.0,
       "rotation": 0.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
       "speed": 1.0,
       "directionAngle": 0.0,
       "direction": 1,
-      "color": "#64748b"
+      "color": "#64748b",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "belt",
+      "rollerPitch": 0.125,
+      "level": 0
     },
     {
       "id": "branch_1",
@@ -96,10 +215,30 @@
       "length": 3.0,
       "beltWidth": 1.0,
       "rotation": -90.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
       "speed": 0.8,
       "directionAngle": 0.0,
       "direction": 1,
-      "color": "#64748b"
+      "color": "#64748b",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "belt",
+      "rollerPitch": 0.125,
+      "level": 0
     },
     {
       "id": "branch_2",
@@ -110,10 +249,30 @@
       "length": 3.0,
       "beltWidth": 1.0,
       "rotation": 90.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
       "speed": 0.8,
       "directionAngle": 0.0,
       "direction": 1,
-      "color": "#64748b"
+      "color": "#64748b",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "belt",
+      "rollerPitch": 0.125,
+      "level": 0
     },
     {
       "id": "branch_3",
@@ -124,10 +283,30 @@
       "length": 3.0,
       "beltWidth": 1.0,
       "rotation": -90.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
       "speed": 0.8,
       "directionAngle": 0.0,
       "direction": 1,
-      "color": "#64748b"
+      "color": "#64748b",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "belt",
+      "rollerPitch": 0.125,
+      "level": 0
     },
     {
       "id": "tt_belt",
@@ -138,10 +317,30 @@
       "length": 1.5,
       "beltWidth": 1.0,
       "rotation": 0.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
       "speed": 0.8,
       "directionAngle": 0.0,
       "direction": 1,
-      "color": "#64748b"
+      "color": "#64748b",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "belt",
+      "rollerPitch": 0.125,
+      "level": 0
     },
     {
       "id": "reject",
@@ -152,17 +351,93 @@
       "length": 3.0,
       "beltWidth": 1.0,
       "rotation": 90.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
       "speed": 0.8,
       "directionAngle": 0.0,
       "direction": 1,
-      "color": "#64748b"
+      "color": "#64748b",
+      "vertexs": null,
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.6,
+      "commandFormat": "speed",
+      "control": "plc",
+      "run": false,
+      "reverse": false,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "belt",
+      "rollerPitch": 0.125,
+      "level": 0
+    },
+    {
+      "id": "belt_1",
+      "type": "linear",
+      "shape": "quadrilateral",
+      "x": 1.3464466094067262,
+      "y": -1.2071067811865477,
+      "length": 1.0,
+      "beltWidth": 3.0,
+      "rotation": -45.0,
+      "radius": 0.0,
+      "startAngle": 0.0,
+      "endAngle": 0.0,
+      "speed": 1.0,
+      "directionAngle": 90.0,
+      "direction": 1,
+      "color": "#3b82f6",
+      "vertexs": [
+        {
+          "x": -2.842170943040401e-16,
+          "y": 1.0
+        },
+        {
+          "x": -0.5,
+          "y": 0.5
+        },
+        {
+          "x": -0.5,
+          "y": -1.5
+        },
+        {
+          "x": 0.5,
+          "y": -1.5
+        },
+        {
+          "x": 0.5,
+          "y": 1.5
+        }
+      ],
+      "path": null,
+      "closed": false,
+      "cornerRadius": 0.0,
+      "speedBinding": null,
+      "directionAngleBinding": null,
+      "directionBinding": null,
+      "transition_momentum_duration": 0.5,
+      "commandFormat": "speed",
+      "control": "manual",
+      "run": false,
+      "reverse": false,
+      "drive": null,
+      "friction": 0.5,
+      "surface": "belt",
+      "rollerPitch": 0.125,
+      "level": 0
     }
   ],
+  "sensors": [],
   "sources": [
     {
       "id": "induct",
-      "x": 0.6,
-      "y": 0.0,
+      "x": 0.7781648641459905,
+      "y": -1.7750000000000004,
       "rotation": 0.0,
       "interval": 1.6,
       "minWidth": 0.3,
@@ -170,8 +445,12 @@
       "minHeight": 0.3,
       "maxHeight": 0.45,
       "label": "Induct",
+      "colorScheme": null,
+      "triggerBinding": null,
+      "intervalBinding": null,
       "minMass": 0.5,
       "maxMass": 12.0,
+      "level": 0,
       "destinations": [
         1,
         2,
@@ -182,7 +461,8 @@
         0.35,
         0.25
       ],
-      "noReadRate": 0.08
+      "noReadRate": 0.08,
+      "barcodeStart": 1000001
     }
   ],
   "sinks": [
@@ -194,7 +474,9 @@
       "height": 1.0,
       "label": "Chute 1",
       "capacity": 8,
-      "emptyTime": 6.0
+      "emptyTime": 6.0,
+      "control": "plc",
+      "empty": false
     },
     {
       "id": "chute_2",
@@ -204,7 +486,9 @@
       "height": 1.0,
       "label": "Chute 2",
       "capacity": 8,
-      "emptyTime": 6.0
+      "emptyTime": 6.0,
+      "control": "plc",
+      "empty": false
     },
     {
       "id": "chute_3",
@@ -214,7 +498,9 @@
       "height": 1.0,
       "label": "Chute 3",
       "capacity": 8,
-      "emptyTime": 6.0
+      "emptyTime": 6.0,
+      "control": "plc",
+      "empty": false
     },
     {
       "id": "reject_bin",
@@ -222,32 +508,64 @@
       "y": 4.3,
       "width": 1.2,
       "height": 1.0,
-      "label": "No-read"
+      "label": "No-read",
+      "capacity": 0,
+      "emptyTime": 0.0,
+      "control": "plc",
+      "empty": false
     }
   ],
+  "buttons": [
+    {
+      "id": "estop",
+      "x": 2.0,
+      "y": -2.2,
+      "width": 0.4,
+      "height": 0.4,
+      "rotation": 0.0,
+      "label": "SORT E-STOP",
+      "color": "#dc2626",
+      "sensor_states": null,
+      "stateBinding": null,
+      "packFormat": "bit",
+      "buttonType": "latching",
+      "normallyClosed": true,
+      "key": null
+    },
+    {
+      "id": "reset",
+      "x": 2.5,
+      "y": -2.2,
+      "width": 0.4,
+      "height": 0.4,
+      "rotation": 0.0,
+      "label": "SORT RESET",
+      "color": "#3b82f6",
+      "sensor_states": null,
+      "stateBinding": null,
+      "packFormat": "bit",
+      "buttonType": "momentary",
+      "normallyClosed": false,
+      "key": null
+    }
+  ],
+  "leds": [],
+  "pallets": [],
+  "stoppers": [],
+  "robots": [],
+  "elevators": [],
   "scanners": [
     {
       "id": "dws_1",
       "x": 11.25,
       "y": 0.0,
+      "rotation": 0.0,
       "width": 0.4,
       "height": 1.2,
       "scannerType": "dws",
-      "label": "DWS"
-    }
-  ],
-  "accumulators": [
-    {
-      "id": "acc",
-      "x": 8.25,
-      "y": -1.2,
-      "beltIds": [
-        "acc_1",
-        "acc_2",
-        "acc_3"
-      ],
-      "mode": "singulation",
-      "label": "Accumulation"
+      "label": "DWS",
+      "color": "#0ea5e9",
+      "level": 0
     }
   ],
   "diverters": [
@@ -255,37 +573,52 @@
       "id": "div_1",
       "x": 14.5,
       "y": 0.0,
+      "rotation": 0.0,
       "width": 1.0,
       "height": 1.0,
+      "diverterType": "pusher",
       "divertAngle": -90.0,
       "speed": 1.0,
       "destination": 1,
-      "diverterType": "pusher",
-      "label": "Divert 1"
+      "label": "Divert 1",
+      "color": "#f97316",
+      "level": 0,
+      "control": "plc",
+      "divert": false
     },
     {
       "id": "div_2",
       "x": 18.0,
       "y": 0.0,
+      "rotation": 0.0,
       "width": 1.0,
       "height": 1.0,
+      "diverterType": "wheels",
       "divertAngle": 60.0,
       "speed": 1.2,
       "destination": 2,
-      "diverterType": "wheels",
-      "label": "Divert 2"
+      "label": "Divert 2",
+      "color": "#f97316",
+      "level": 0,
+      "control": "plc",
+      "divert": false
     },
     {
       "id": "div_3",
       "x": 21.5,
       "y": 0.0,
+      "rotation": 0.0,
       "width": 1.0,
       "height": 1.0,
+      "diverterType": "pusher",
       "divertAngle": -90.0,
       "speed": 1.0,
       "destination": 3,
-      "diverterType": "pusher",
-      "label": "Divert 3"
+      "label": "Divert 3",
+      "color": "#f97316",
+      "level": 0,
+      "control": "plc",
+      "divert": false
     }
   ],
   "turntables": [
@@ -300,9 +633,33 @@
         90.0
       ],
       "turnSpeed": 120.0,
-      "label": "Turntable"
+      "label": "Turntable",
+      "color": "#64748b",
+      "level": 0,
+      "control": "plc",
+      "autoFrom": 0,
+      "autoTo": 1,
+      "targetIndex": 0
     }
   ],
+  "accumulators": [
+    {
+      "id": "acc",
+      "x": 8.25,
+      "y": -1.2,
+      "beltIds": [
+        "acc_1",
+        "acc_2",
+        "acc_3"
+      ],
+      "mode": "singulation",
+      "label": "Accumulation",
+      "color": "#22c55e",
+      "control": "plc",
+      "release": true
+    }
+  ],
+  "transfers": [],
   "doors": [
     {
       "id": "door_1",
@@ -310,7 +667,10 @@
       "y": 1.6,
       "rotation": 0.0,
       "width": 1.2,
-      "label": "Guard door"
+      "label": "Guard door",
+      "color": "#facc15",
+      "control": "plc",
+      "lock": false
     }
   ],
   "safety": [
@@ -324,30 +684,45 @@
       "doorIds": [
         "door_1"
       ],
+      "curtainIds": [],
+      "beltIds": [],
       "resetButtonId": "reset",
-      "label": "Safety relay"
+      "label": "Safety relay",
+      "color": "#eab308",
+      "control": "plc",
+      "reset": false
     }
   ],
-  "buttons": [
-    {
-      "id": "estop",
-      "x": 2.0,
-      "y": -2.2,
-      "width": 0.4,
-      "height": 0.4,
-      "label": "SORT E-STOP",
-      "color": "#dc2626",
-      "buttonType": "latching",
-      "normallyClosed": true
-    },
-    {
-      "id": "reset",
-      "x": 2.5,
-      "y": -2.2,
-      "width": 0.4,
-      "height": 0.4,
-      "label": "SORT RESET",
-      "color": "#3b82f6"
-    }
-  ]
+  "mqttSettings": {
+    "enabled": false,
+    "transport": "mqtt",
+    "brokerUrl": "ws://localhost",
+    "port": 5000,
+    "topicPrefix": "",
+    "tcpBindHost": "0.0.0.0",
+    "tcpServerHost": "127.0.0.1",
+    "tcpPort": 5001,
+    "endianness": "LE",
+    "topics": [],
+    "nodeId": 0,
+    "tcpLengthEndianness": null,
+    "tcpRxTimeoutMs": 0,
+    "tcpMaxPayload": 0,
+    "tcpOutputOwner": null,
+    "tcpRequireLayoutCheck": false
+  },
+  "connections": [],
+  "sketch": [],
+  "background": null,
+  "simulatorBackend": "matter",
+  "simulationSteps": 4,
+  "kineticFriction": false,
+  "collisionEnabled": true,
+  "gridSnap": true,
+  "gridSize": 0.5,
+  "useSurfaceVelocity": true,
+  "tractionModel": "kinematic",
+  "floorFriction": 0.6,
+  "physicsDt": 0.004,
+  "maxStepsPerAdvance": 50
 }

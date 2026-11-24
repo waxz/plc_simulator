@@ -22,11 +22,13 @@ hand ("manual"). The decisions of a sorter's controller are functions below
 """
 import math
 import random
+import time
 import zlib
 from typing import Dict, List, Optional, Tuple
 
 import drivetrain
 import equipment_geometry as geo
+from device_kinds import wheel_rows
 from config_parser import Accumulator, Diverter, SimulatorConfig, Transfer, Turntable
 from math_utils import get_rect_vertices, point_in_polygon
 
@@ -86,21 +88,45 @@ def _in_rect(x: float, y: float, cx: float, cy: float, along: float, across: flo
 WHEEL_SWIVEL = 400.0     # deg/s a pop-up wheel module's wheels turn at (60 deg in 0.15 s)
 
 
+DIVERTED_DEG = 10.0      # wheels pointing further than this off the travel: a parcel on them counts as diverted
+
+
 def divert_angle(d: Diverter) -> float:
     """The angle (deg to the travel) the diverter is told to steer at: its
-    divertAngle plus the commanded correction (commandAngle, 0 = as
-    designed); pop-up wheels steer at most 60 degrees each way."""
-    angle = d.divertAngle + d.commandAngle
-    return geo.wheel_steer(angle) if d.diverterType == "wheels" else angle
+    commandAngle; pop-up wheels steer at most 60 degrees each way."""
+    return geo.wheel_steer(d.commandAngle) if d.diverterType == "wheels" else d.commandAngle
 
 
 def diverter_motion(d: Diverter):
-    """(speed m/s, angle deg to the travel) the parcels in an active
-    diverter's zone go at: a pusher's divert_angle; pop-up wheels move them
-    the way the wheels point now (wheelAngle, swivelling to divert_angle)."""
+    """(speed m/s, angle deg to the travel) the parcels in a diverter's zone
+    go at: an active pusher's divert_angle; pop-up wheels move them the way
+    the wheels point now (wheelAngle, swivelling to divert_angle), at the
+    wheels' speed - 0 when not enabled: they stand."""
     if d.diverterType == "wheels":
-        return d.commandSpeed, d.wheelAngle
-    return d.commandSpeed, divert_angle(d)
+        return d.actualSpeed, d.wheelAngle
+    return d.actualSpeed, divert_angle(d)
+
+
+def diverter_speed(d: Diverter, h: float, v: Optional[float] = None, command: Optional[float] = None) -> float:
+    """The wheels' / pusher's speed after `h` s: commandSpeed while active, 0
+    when not - at once without a drive; with one, on its ramps (none steeper
+    than the motor's max acceleration; a stop brakes at it) and no faster
+    than the motor's max speed (drivetrain.py). A row of a deck: its own
+    speed now `v` and its command."""
+    target = (d.commandSpeed if command is None else command) if d.active else 0.0
+    if drivetrain.train_of(d) is None:
+        return target
+    vmax, amax = drivetrain.motor_limits(d)
+    target = max(-vmax, min(vmax, target))
+    accel, decel = drivetrain.machine_ramps(d)
+    if target == 0.0 and amax != math.inf:
+        decel = amax                                    # the quick stop
+    v = d.actualSpeed if v is None else v
+    shrinking = abs(target) < abs(v) or target * v < 0.0
+    rate = decel if shrinking else accel
+    if rate == math.inf:
+        return target
+    return v + max(-rate * h, min(rate * h, target - v))
 
 
 class LogisticsRuntime:
@@ -114,7 +140,13 @@ class LogisticsRuntime:
         self._sinks: Dict[str, dict] = {}
         self._safety: Dict[str, dict] = {}
         self._diverting: List[Tuple[Diverter, float, float]] = []
+        self._decks: List[Diverter] = []          # decks of wheel rows this step (steer: per parcel)
+        self._positions_key = None                  # _positions(): (parcel, x, y), read once per step
+        self._positions_cache: List[Tuple[object, float, float]] = []
         self._transfers: Dict[str, dict] = {}
+        self._watchdogs: Dict[str, dict] = {}
+        from tracking import TrackingCheck
+        self.tracking = TrackingCheck()             # the PLC's tracked loads against the parcels
         # Parcels moved by transfers this step: (parcels, vx, vy) - (0, 0) holds them.
         self._moves: List[Tuple[list, float, float]] = []
 
@@ -122,21 +154,34 @@ class LogisticsRuntime:
     def active(self) -> bool:
         c = self.config
         return bool(c.scanners or c.diverters or c.turntables or c.accumulators or c.doors or c.safety
-                    or c.transfers or any(s.capacity for s in c.sinks))
+                    or c.transfers or any(s.capacity for s in c.sinks) or getattr(c, "watchdogs", None)
+                    or getattr(c, "trackedLoads", None))
 
     # -- lifecycle ---------------------------------------------------------------------
 
     def reset(self) -> None:
         c = self.config
         self._serial = {}
+        self._watchdogs = {}
+        for w in getattr(c, "watchdogs", []):                 # the link's watchdog: as at power-on
+            w.simHeartbeat, w.plcAlive, w.tripped, w.trips = 0, False, False, 0
+            w.latencyMs, w.latencyMaxMs = 0.0, 0.0
+        self.tracking.reset()
+        for s in getattr(c, "trackedLoads", []):
+            s.matched, s.alongError, s.lateralError = False, 0.0, 0.0
         self._scanners = {s.id: {"seen": set()} for s in c.scanners}
         for s in c.scanners:
             s.code = s.destination = s.readCount = 0
             s.noRead = s.present = False
             s.weight = s.measuredLength = s.measuredWidth = s.measuredHeight = 0.0
         for d in c.diverters:
+            n = wheel_rows(d)
+            rows = n if n > 1 else 0                                   # a deck of rows: all straight
+            d.rowSpeeds = [d.speed] * rows
+            d.rowAngles, d.rowWheelAngles, d.rowActualSpeeds = [0.0] * rows, [0.0] * rows, [0.0] * rows
             d.active = d.present = False
-            d.commandSpeed, d.commandAngle = d.speed, 0.0              # as designed, until commanded otherwise
+            d.commandSpeed = d.speed                                  # as designed, until commanded otherwise
+            d.commandAngle = 0.0 if d.diverterType == "wheels" else d.divertAngle   # wheels straight on
             d.wheelAngle = 0.0
             d.presentCode = d.diverted = 0
         belts = {b.id: b for b in c.belts}
@@ -198,10 +243,44 @@ class LogisticsRuntime:
         k = (zlib.crc32(str(parcel.barcode).encode()) % 1000) / 999.0
         parcel.weight = source.minMass + k * (source.maxMass - source.minMass)
 
+    # -- the PLC link's watchdog ------------------------------------------------------------
+
+    def _step_watchdog(self, w, h: float) -> None:
+        """Every physics step: our heartbeat up; the PLC's watched in wall
+        time (the PLC runs in real time, whatever the simulation's speed);
+        the latency from its echo of our heartbeat."""
+        w.simHeartbeat = (int(w.simHeartbeat) + 1) & 0xFFFF
+        echo = int(w.simHeartbeatEcho) & 0xFFFF
+        if echo:                                # the age of what the PLC answered, in simulated ms
+            w.latencyMs = round(((w.simHeartbeat - echo) & 0xFFFF) * h * 1000.0, 3)
+            w.latencyMaxMs = max(w.latencyMaxMs, w.latencyMs)
+        state = self._watchdogs.setdefault(w.id, {"last": None, "since": 0.0, "armed": False})
+        now = time.monotonic()
+        beat = int(w.plcHeartbeat) & 0xFFFF
+        if state["last"] is None:
+            state["last"], state["since"] = beat, now
+        elif beat != state["last"]:
+            state["last"], state["since"], state["armed"] = beat, now, True
+        stale = state["armed"] and (now - state["since"]) * 1000.0 > max(1, w.timeoutMs)
+        w.plcAlive = state["armed"] and not stale
+        if stale and not w.tripped:
+            w.tripped = True
+            w.trips += 1
+            print(f"[WATCHDOG] {time.strftime('%H:%M:%S')} {w.id}: the PLC's heartbeat stood still for "
+                  f"{w.timeoutMs} ms - its commands are put at rest until it moves again", flush=True)
+        elif not stale and w.tripped:
+            w.tripped = False
+            print(f"[WATCHDOG] {time.strftime('%H:%M:%S')} {w.id}: the PLC's heartbeat moves again", flush=True)
+        if w.tripped:
+            import io_signals                                   # here: logistics stays light to import
+            io_signals.at_rest(self.config)                     # every PLC command at rest, this step
+
     # -- per step --------------------------------------------------------------------------
 
     def before_drives(self, h: float) -> None:
         c = self.config
+        for w in getattr(c, "watchdogs", []):
+            self._step_watchdog(w, h)
         if c.safety:
             for belt in c.belts:
                 belt._safety_stop = False
@@ -217,6 +296,7 @@ class LogisticsRuntime:
         for table in c.turntables:
             self._step_table(table, h)
         self._diverting = []
+        self._decks = []
         for d in c.diverters:
             self._step_diverter(d, h)
         self._moves = []
@@ -232,9 +312,28 @@ class LogisticsRuntime:
                 if bd.get("target_v_enable"):
                     bd["target_v"] = (vx, vy)
                     bd["target_w"] = 0.0
+                    bd["steered"] = True        # the machine's, not the belt's friction (drive_toward_target)
                 else:
                     parcel.body.velocity = (vx, vy)
                     parcel.body.angular_velocity = 0.0
+        for d in self._decks:
+            travel = math.radians(d.rotation)
+            for parcel in self._parcels_in(d.x, d.y, d.width, d.height, d.rotation, d.level):
+                v = self._deck_velocity(d, parcel)
+                if v is None:
+                    continue
+                bd = parcel.body.__dict__
+                if bd.get("target_v_enable"):
+                    bd["target_v"] = v
+                    bd["target_w"] = 0.0
+                    bd["steered"] = True
+                else:
+                    parcel.body.velocity = v
+                off = math.degrees(math.atan2(v[1], v[0]) - travel)
+                off = (off + 180.0) % 360.0 - 180.0
+                if math.hypot(*v) > 0.05 and abs(off) >= DIVERTED_DEG and bd.get("_diverted_by") != d.id:
+                    bd["_diverted_by"] = d.id
+                    d.diverted = (d.diverted + 1) & 0xFFFF
         if not self._diverting:
             return
         for d, vx, vy in self._diverting:
@@ -243,8 +342,11 @@ class LogisticsRuntime:
                 if bd.get("target_v_enable"):
                     bd["target_v"] = (vx, vy)
                     bd["target_w"] = 0.0
+                    bd["steered"] = True        # the machine's, not the belt's friction (drive_toward_target)
                 else:
                     parcel.body.velocity = (vx, vy)
+                if d.diverterType == "wheels" and abs(d.wheelAngle) < DIVERTED_DEG:
+                    continue                    # straight on: carried, not diverted
                 if not bd.get("_diverted_by") == d.id:
                     bd["_diverted_by"] = d.id
                     d.diverted = (d.diverted + 1) & 0xFFFF
@@ -252,6 +354,11 @@ class LogisticsRuntime:
     def after_step(self, h: float) -> None:
         for scanner in self.config.scanners:
             self._step_scanner(scanner)
+        slots = getattr(self.config, "trackedLoads", None)
+        watchdogs = getattr(self.config, "watchdogs", None)
+        if slots and watchdogs:             # the parcels as the input frame of this step shows them
+            self.tracking.record(watchdogs[0].simHeartbeat, self.engine.parcels)
+            self.tracking.check([s for s in slots if getattr(s, "role", "load") != "slot"])
         for table in self.config.turntables:
             state = self._tables.get(table.id)
             if state is not None:
@@ -259,9 +366,31 @@ class LogisticsRuntime:
 
     # -- helpers -------------------------------------------------------------------------------
 
+    def _positions(self) -> List[Tuple[object, float, float]]:
+        """(parcel, x, y) of every parcel, read once per physics step (every
+        device's zone test reads them: a pymunk position costs a call each).
+        Read again when the step, or the parcels, changed, or a turntable
+        moved what is on it (_step_table)."""
+        parcels = self.engine.parcels
+        key = (self.engine.sim_time, len(parcels), id(parcels[-1]) if parcels else 0)
+        if key != self._positions_key:
+            self._positions_key = key
+            self._positions_cache = [(p, *p.body.position) for p in parcels]
+        return self._positions_cache
+
     def _parcels_in(self, x, y, along, across, rotation, level) -> List:
-        return [p for p in self.engine.parcels
-                if p.level == level and _in_rect(*p.body.position, x, y, along, across, rotation)]
+        a = math.radians(rotation)
+        ca, sa = math.cos(a), math.sin(a)
+        half_u, half_v = along / 2.0, across / 2.0
+        reach = half_u + half_v                          # no point further than this is inside
+        out = []
+        for p, px, py in self._positions():
+            dx, dy = px - x, py - y
+            if abs(dx) > reach or abs(dy) > reach or p.level != level:
+                continue
+            if abs(dx * ca + dy * sa) <= half_u and abs(-dx * sa + dy * ca) <= half_v:
+                out.append(p)
+        return out
 
     # -- scanners -----------------------------------------------------------------------------
 
@@ -299,15 +428,70 @@ class LogisticsRuntime:
         d.present = bool(inside)
         first = inside[0] if inside else None
         d.presentCode = getattr(first, "barcode", 0) if first is not None and getattr(first, "readable", True) else 0
-        d.active = bool(d.divert)
-        if d.diverterType == "wheels":          # the wheels swivel to the divert angle, back to straight
-            target = divert_angle(d) if d.active else 0.0
-            turn = WHEEL_SWIVEL * h
-            d.wheelAngle += max(-turn, min(turn, target - d.wheelAngle))
-        if d.active:
+        d.active = bool(d.enable)
+        if wheel_rows(d) > 1:                   # a deck of rows: each swivels and turns on its own
+            self._step_rows(d, h)
+            return
+        if d.diverterType == "wheels":          # the swivel motor: to the commanded angle while enabled
+            if d.active:
+                turn = WHEEL_SWIVEL * h
+                d.wheelAngle += max(-turn, min(turn, divert_angle(d) - d.wheelAngle))
+        d.actualSpeed = diverter_speed(d, h)
+        if d.active or d.diverterType == "wheels":     # wheels carry what is on them, stopped or not
             speed, angle = diverter_motion(d)
             a = math.radians(d.rotation + angle)
             self._diverting.append((d, speed * math.cos(a), speed * math.sin(a)))
+
+    def _step_rows(self, d: Diverter, h: float) -> None:
+        n = wheel_rows(d)
+        for name, fill in (("rowSpeeds", d.speed), ("rowAngles", 0.0), ("rowWheelAngles", 0.0),
+                           ("rowActualSpeeds", 0.0)):
+            values = list(getattr(d, name) or [])
+            if len(values) != n:
+                setattr(d, name, (values + [fill] * n)[:n])
+        turn = WHEEL_SWIVEL * h
+        wheel, speed = list(d.rowWheelAngles), list(d.rowActualSpeeds)
+        for i in range(n):
+            if d.active:
+                target = geo.wheel_steer(d.rowAngles[i])
+                wheel[i] += max(-turn, min(turn, target - wheel[i]))
+            speed[i] = diverter_speed(d, h, speed[i], d.rowSpeeds[i])
+        d.rowWheelAngles, d.rowActualSpeeds = wheel, speed
+        d.wheelAngle, d.actualSpeed = wheel[0], max(speed, key=abs)
+        self._decks.append(d)
+
+    def _deck_velocity(self, d: Diverter, parcel):
+        """A parcel on a deck of rows goes the average way of the wheels under it: its footprint
+        sampled (5 x 3 points), each point on the deck moved by its row's wheels."""
+        n = wheel_rows(d)
+        a = math.radians(d.rotation)
+        ca, sa = math.cos(a), math.sin(a)
+        verts = [(v.x, v.y) for v in parcel.shape.get_vertices()]
+        pa = parcel.body.angle
+        cpa, spa = math.cos(pa), math.sin(pa)
+        px, py = parcel.body.position
+        xs = [x for x, _y in verts]
+        ys = [y for _x, y in verts]
+        bounds = geo.row_bounds(float(d.width), geo.grid_of(d)[0])
+        vx = vy = 0.0
+        count = 0
+        for fu in (0.1, 0.3, 0.5, 0.7, 0.9):
+            for fv in (0.2, 0.5, 0.8):
+                lx = min(xs) + fu * (max(xs) - min(xs))
+                ly = min(ys) + fv * (max(ys) - min(ys))
+                wx, wy = px + lx * cpa - ly * spa, py + lx * spa + ly * cpa
+                dx, dy = wx - d.x, wy - d.y
+                u, v = dx * ca + dy * sa, -dx * sa + dy * ca
+                if abs(u) > d.width / 2.0 or abs(v) > d.height / 2.0:
+                    continue
+                i = geo.row_at(bounds, u)
+                if i is None or i >= n:
+                    continue
+                speed, angle = d.rowActualSpeeds[i], math.radians(d.rotation + d.rowWheelAngles[i])
+                vx += speed * math.cos(angle)
+                vy += speed * math.sin(angle)
+                count += 1
+        return (vx / count, vy / count) if count else None
 
     # -- right-angle transfers ----------------------------------------------------------------
 
@@ -401,6 +585,8 @@ class LogisticsRuntime:
         table.motorSpeed = drivetrain.motor_speed_of(table, table.turnVelocity)
         table.angle += turn
         a = math.radians(turn)
+        if state["riders"]:
+            self._positions_key = None                       # they move: zones read them again
         for part in state["riders"]:                         # what is on it turns with it
             px, py = part.body.position
             dx, dy = px - table.x, py - table.y
@@ -455,8 +641,17 @@ class LogisticsRuntime:
         sink.full = sink.count >= sink.capacity
         return True
 
+    def chute_generation(self, sink) -> int:
+        """How often this chute has been emptied: a load kept in it ("keep")
+        from an earlier generation is gone (physics.handle_sinks)."""
+        return self._sinks.setdefault(sink.id, {"full_s": 0.0}).get("generation", 0)
+
     def _step_chute(self, sink, h: float) -> None:
         state = self._sinks.setdefault(sink.id, {"full_s": 0.0})
+        if getattr(sink, "fillMode", "count") == "delete":
+            sink.full = False                                  # deleted: never full
+            state["full_s"] = 0.0
+            return
         emptied = sink.empty and not state.get("last_empty", False)
         state["last_empty"] = sink.empty
         if sink.full and sink.emptyTime > 0:
@@ -465,6 +660,7 @@ class LogisticsRuntime:
                 emptied = True
         if emptied:
             sink.count, sink.full, state["full_s"] = 0, False, 0.0
+            state["generation"] = state.get("generation", 0) + 1     # "keep": its loads go
 
     # -- safety ---------------------------------------------------------------------------------
 

@@ -56,7 +56,7 @@ class EditorTreesTest(unittest.TestCase):
         self.assertEqual([conveyors.child(i).text(0) for i in range(conveyors.childCount())],
                          ["Belts", "Rollers", "Transfers"])
         belts = conveyors.child(0)
-        self.assertEqual([belts.child(i).text(0) for i in range(belts.childCount())], ["Linear Belt", "Curved Belt"])
+        self.assertEqual([belts.child(i).text(0) for i in range(belts.childCount())], ["Linear Belt", "Curved Belt", "Merge Belt"])
         rollers = conveyors.child(1)
         self.assertEqual([rollers.child(i).text(0) for i in range(rollers.childCount())],
                          ["Roller Conveyor", "Curved Roller Conveyor", "Accumulation Conveyor"])
@@ -182,7 +182,7 @@ class SimulatorTreesTest(unittest.TestCase):
         bar = self.ui.toolbar_panel.get_abs_rect()
         self.assertEqual((bar.x, bar.y, bar.width), (0, TOP_BAR, self.r.width))
         buttons = [b for _label, group in self.ui.toolbar_groups for b in group]
-        self.assertEqual(len(buttons), 9)                     # incl. VIEW > 3D View
+        self.assertEqual(len(buttons), 10)                    # incl. SIMULATION > Reset Stats, VIEW > 3D View
         for left, right in zip(buttons, buttons[1:]):
             self.assertLess(left.get_abs_rect().right, right.get_abs_rect().left)   # left to right
         for b in buttons:

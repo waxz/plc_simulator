@@ -413,7 +413,7 @@ _MACHINE_KIND = {kind.model.__name__: name for name, kind in DEVICE_KINDS.items(
 def machine_fields(machine, direction: str) -> Tuple[List[Tuple[ByteType, str]], List[Tuple[ByteType, str]]]:
     """(bits, values) a machine / device contributes to a frame: its
     command ("in") or its feedback ("out")."""
-    return kind_of(machine).fields(direction)
+    return kind_of(machine).fields(direction, machine)
 
 
 # Belt fields per channel direction (channel_registry's convention: "in" =
@@ -443,15 +443,6 @@ def belt_fields(belt, direction: str) -> Tuple[List[Tuple[ByteType, str]], List[
     if command_format == "vfd":
         return VFD_COMMAND_BITS, VFD_COMMAND_FIELDS
     return [], BELT_COMMAND_FIELDS
-
-
-def belt_feedback_mapping(config: SimulatorConfig, belt_ids: Optional[List[str]] = None) -> List[Tuple[ByteType, str]]:
-    """The BELT_FEEDBACK frame's payload: every belt's status bits (running,
-    atSpeed, reversing, fault) first, padded to a byte, then per belt
-    actualSpeed (REAL) + encoderCount (DWORD) - in config order (or
-    `belt_ids` order)."""
-    ids = belt_ids if belt_ids is not None else [b.id for b in config.belts]
-    return paddng_component(config, sensor_id=list(ids), direction="out")
 
 
 def custom_component_mapping(config: SimulatorConfig, component_ids: List[str], direction: str = "in") -> List[Tuple[ByteType, str]]:
@@ -609,6 +600,8 @@ class ComponentMessage:
                 component = find_component_by_id(component_name, config)
                 if component and component is not True:
                     value = getattr(component, variable)
+                    if index is not None and isinstance(value, list):     # an ARRAY member: its entry
+                        value = value[index] if index < len(value) else 0.0
                 else:
                     print("Component '{}' not found in config".format(component_name))
 
@@ -703,7 +696,11 @@ class ComponentMessage:
             if skip_manual and getattr(component, "control", None) == "manual":
                 continue
             current = getattr(component, variable)
-            if isinstance(current, (str, bool)):
+            if index is not None and isinstance(current, list):            # an ARRAY member: its entry
+                current = list(current) + [0.0] * max(0, index + 1 - len(current))
+                current[index] = value
+                setattr(component, variable, current)
+            elif isinstance(current, (str, bool)):
                 setattr(component, variable, _int_to_matching_shape(int(value), current))
             else:
                 setattr(component, variable, value)

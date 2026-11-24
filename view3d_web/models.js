@@ -536,9 +536,14 @@ function buildWheelModule(d, g, unit, color) {
   // Rows of wheels (axles along local y: they roll along x until steered),
   // each in a slot of the deck that turns with it - the steer angle is seen
   // from above even with the wheels down.
-  const nx = Math.max(2, Math.round(d.w * DIV.inset / DIV.pitchX)), ny = Math.max(2, Math.round(d.h * DIV.inset / DIV.pitchY));
-  const w = d.w * DIV.inset, h = d.h * DIV.inset, centres = [];
-  for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) centres.push([(i + 0.5) / nx * w - w / 2, (j + 0.5) / ny * h - h / 2]);
+  // the wheels as the simulator lays them out (equipment_geometry.grid_of); fitted here when not sent
+  let centres = d.wheels ? d.wheels.slice() : [];
+  if (!d.wheels) {
+    const nx = Math.max(2, Math.round(d.w * DIV.inset / DIV.pitchX)), ny = Math.max(2, Math.round(d.h * DIV.inset / DIV.pitchY));
+    const w = d.w * DIV.inset, h = d.h * DIV.inset;
+    for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) centres.push([(i + 0.5) / nx * w - w / 2, (j + 0.5) / ny * h - h / 2]);
+  }
+  unit.wheelRow = d.wheelRow || null;
   const wheels = new THREE.InstancedMesh(wheelGeometry(),
                                          new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7 }),
                                          centres.length);
@@ -565,7 +570,7 @@ export function buildDiverter(d) {
   g.position.set(d.x, d.y, d.z);
   g.rotation.z = deg(d.rot);
   const color = new THREE.Color(d.color).getHex();
-  const unit = { group: g, type: d.type, stroke: 0, target: 0 };
+  const unit = { group: g, type: d.type, stroke: 0, target: 0, width: d.w, rows: d.rows || 1, rowSteer: null };
   if (d.type === "pusher") buildPusher(d, g, unit, color);
   else buildWheelModule(d, g, unit, color);
   g.traverse((o) => { o.userData.label = `${d.label || d.id} (${d.type === "pusher" ? "pusher" : "wheel diverter"}, to ${d.destination})`; });
@@ -576,9 +581,11 @@ export function buildDiverter(d) {
 // Live: [active, the angle it is told to steer at (divertAngle + commandAngle),
 // where its wheels point now, parcels diverted, the commanded speed] - the
 // wheels swivel in the simulation and roll at the speed while up.
-export function setDiverter(unit, [active, angle, wheel, _count, speed]) {
+// A deck of rows: then also where each row points now (each row swivels on its own).
+export function setDiverter(unit, [active, angle, wheel, _count, speed, rows]) {
   unit.target = active ? 1 : 0;
   unit.speed = speed || 0;
+  unit.rowSteer = Array.isArray(rows) ? rows.map(deg) : null;
   if (unit.wheels && angle != null) {
     unit.paint.rotation.z = deg(angle);                 // the arrow shows where it sends them
     unit.live = wheel != null;
@@ -602,7 +609,15 @@ export function stepDiverter(unit, dt) {
   unit.roll = (unit.roll + (unit.speed / DIV.wheelR) * dt * unit.stroke) % (2 * Math.PI);
   _wq.setFromAxisAngle(_zAxis, steer).multiply(_spin.setFromAxisAngle(_yAxis, unit.roll));
   _sq.setFromAxisAngle(_zAxis, steer);
+  const spin = new THREE.Quaternion().setFromAxisAngle(_yAxis, unit.roll);
   unit.centres.forEach(([x, y], i) => {
+    if (unit.rowSteer) {                                 // its row's angle
+      const row = unit.wheelRow ? unit.wheelRow[i]
+        : Math.min(unit.rows - 1, Math.max(0, Math.floor((x + unit.width / 2) / (unit.width / unit.rows))));
+      const a = unit.rowSteer[row] ?? 0;
+      _wq.setFromAxisAngle(_zAxis, a).multiply(spin);
+      _sq.setFromAxisAngle(_zAxis, a);
+    }
     _p.set(x, y, z);
     unit.wheels.setMatrixAt(i, _m.compose(_p, _wq, _s));
     _p.set(x, y, 0.0078);
@@ -641,8 +656,8 @@ export function buildEye(e) {
 export function buildChute(c) {
   const g = new THREE.Group();
   g.position.set(c.x, c.y, 0);
-  const bin = mat(0x5b6470, { metalness: 0.5, roughness: 0.5 });
-  const h = 0.55, t = 0.03;
+  const bin = mat(c.binColor ?? 0x5b6470, { metalness: 0.5, roughness: 0.5 });
+  const h = c.wallHeight ?? 0.55, t = 0.03;            // style.js: colour and wall height
   g.add(cuboid(c.w, c.h, t, bin, 0, 0, t / 2));
   for (const [x, y, w, l] of [[0, -c.h / 2, c.w, t], [0, c.h / 2, c.w, t], [-c.w / 2, 0, t, c.h], [c.w / 2, 0, t, c.h]]) {
     g.add(cuboid(w, l, h, bin, x, y, h / 2));

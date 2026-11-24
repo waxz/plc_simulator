@@ -24,6 +24,7 @@ from typing import Dict, List, Optional, Tuple
 import control_panel
 import st_export
 from config_parser import PlcTag
+from id_utils import own_label
 
 COLUMNS = ("Name", "Tag table", "Data type", "Address", "Comment", "Component", "Signal", "ST member")
 NAME, TABLE, DATA_TYPE, ADDRESS, COMMENT, COMPONENT, SIGNAL, MEMBER = range(len(COLUMNS))
@@ -31,12 +32,27 @@ EDITABLE = (NAME, TABLE, COMMENT)
 DEFAULT_TABLE = "Default tag table"
 ALL_TAGS = "Show all tags"
 # The frames the PLC exchanges I/O in, and their area seen from the PLC.
-FRAMES = {"Sim_Input": "I", "Sim_Output": "Q", "Belt_Feedback": "I"}
+FRAMES = {"Sim_Input": "I", "Sim_Output": "Q"}
 INDEX = re.compile(r"\[(\d+)\]$")
 # Contract type -> (TIA data type, size in bytes, address width letter).
 TYPES = {"bit": ("Bool", 0, ""), "byte": ("Byte", 1, "B"), "uint16": ("UInt", 2, "W"), "uint32": ("UDInt", 4, "D"),
          "uint64": ("ULInt", 8, ""), "float": ("Real", 4, "D")}
 MAX_NAME = 128
+# The unit of a signal's value, by its name, as the simulator uses it (and
+# so the PLC must): lengths m, speeds m/s, angles DEGREES, times ns. Put in
+# every generated tag comment, so a PLC programmer never has to guess (the
+# AX network library works in um and radians: convert at the tags).
+UNITS = {"latencyMs": "ms, simulated", "speed": "m/s", "commandSpeed": "m/s", "actualSpeed": "m/s", "frequency": "Hz", "outputFrequency": "Hz",
+         "motorSpeed": "rpm", "encoderCount": "counts", "commandAngle": "deg to the travel, + left",
+         "directionAngle": "deg", "targetYaw": "deg", "targetX": "m", "targetY": "m", "targetZ": "m",
+         "tcpX": "m", "tcpY": "m", "tcpZ": "m", "j1": "deg", "j2": "deg", "j3": "deg", "j4": "deg", "j5": "deg",
+         "j6": "deg", "speedOverride": "%", "weight": "kg", "measuredLength": "m", "measuredWidth": "m",
+         "measuredHeight": "m", "clock": "ns",
+         "plcHeartbeat": "counter: +1 every PLC scan", "simHeartbeat": "counter: +1 every simulation step",
+         "plcAlive": "the simulator sees the PLC's heartbeat",
+         "loadX": "m", "loadY": "m", "loadYaw": "deg", "loadLength": "m", "loadWidth": "m",
+         "frame": "the simHeartbeat its values are of", "alongError": "m, PLC - parcel along the travel",
+         "lateralError": "m, PLC - parcel across, + left"}
 
 
 @dataclass
@@ -88,9 +104,9 @@ def _labels(config) -> Dict[str, str]:
     labels = {}
     for attr in ("belts", "sensors", "sources", "sinks", "buttons", "leds", "pallets", "stoppers", "robots",
                  "elevators", "scanners", "diverters", "turntables", "accumulators", "transfers", "doors",
-                 "safety", "controlPanels"):
+                 "safety", "controlPanels", "plcValues", "watchdogs", "trackedLoads"):
         for model in getattr(config, attr, []):
-            label = getattr(model, "label", "")
+            label = own_label(model)             # a label repeating the id is no comment
             if label:
                 labels.setdefault(model.id, str(label))
     return labels
@@ -152,17 +168,27 @@ def _name(tags: List[Tag], config) -> None:
     for tag in tags:
         per_component[tag.component] = per_component.get(tag.component, 0) + 1
     labels = _labels(config)
+    value_units = {v.id: v.unit for v in getattr(config, "plcValues", [])}   # a PLC value: its own unit
     edits = {t.key: t for t in getattr(config, "plcTags", [])}
     taken = {e.name for e in edits.values() if e.name}
     for tag in tags:
         edit = edits.get(tag.key)
         tag.table = (edit.table if edit is not None and edit.table else DEFAULT_TABLE)
-        default = "Simulated time (ns)" if tag.component == "clock" else labels.get(tag.component, "")
+        if tag.component == "clock":
+            default = "Simulator PC clock, wall time [ns]"        # clock/nanoseconds: time.time_ns(), not sim time
+        else:
+            unit = value_units.get(tag.component) or UNITS.get(INDEX.sub("", tag.signal.split("[")[0]))
+            if tag.component in value_units:
+                unit = f"{unit}, shown only" if unit else "shown only"     # drives nothing
+            default = " ".join(part for part in (labels.get(tag.component, ""), f"[{unit}]" if unit else "") if part)
         tag.comment = edit.comment if edit is not None and edit.comment else default
         if edit is not None and edit.name:
             tag.name = edit.name
             continue
         signal = INDEX.sub("", tag.signal.split("[")[0])
+        entry = re.fullmatch(r"[^\[]+\[(\d+)\]", tag.signal)       # one entry of a REAL array: its index
+        if entry and tag.data_type != "Bool":
+            signal = f"{signal}_{entry.group(1)}"
         name = tag.component if per_component[tag.component] == 1 else f"{tag.component}_{signal}"
         unique, n = name, 2
         while unique in taken:
@@ -238,13 +264,90 @@ def st_names(tags: List["Tag"]) -> Dict[str, str]:
     return names
 
 
+def array_name(struct_type: str) -> str:
+    """A tag array's name from its element STRUCT: BeltVfd_Command ->
+    beltVfdCommands, TrackedLoad_Feedback -> trackedLoadFeedbacks."""
+    stem, _sep, side = struct_type.rpartition("_")
+    return stem[:1].lower() + stem[1:] + side + "s"
+
+
+def tag_paths(config, tags: List[Tag], names: Dict[str, str]) -> Dict[str, str]:
+    """key -> where the tag is in the generated PLC tags STRUCT: its ST name,
+    or, for a device of a kind in the layout's axExport.tagArrays, an
+    element of the array of its wire STRUCT: "beltVfdCommands[3].speed" -
+    the index the device's place in its kind's list (every array of a kind
+    indexed alike; an entry of a device of another type stays unused)."""
+    kinds = list(getattr(getattr(config, "axExport", None), "tagArrays", None) or [])
+    index: dict[str, int] = {}
+    for kind in kinds:
+        for i, model in enumerate(getattr(config, kind, None) or []):
+            index[model.id] = i
+    paths = {}
+    by_id = {}
+    for kind in kinds:
+        for model in getattr(config, kind, None) or []:
+            by_id[model.id] = model
+    for t in tags:
+        model = by_id.get(t.component)
+        member = t.member[len(t.frame) + 1:]
+        top, dot, field = member.partition(".")
+        struct = st_export.device_type(model, "out" if t.is_input else "in") if model is not None else None
+        if struct and dot:
+            paths[t.key] = f"{array_name(struct)}[{index[t.component]}].{field}"
+        else:
+            paths[t.key] = names[t.key]
+    return paths
+
+
 def tags_json(config) -> List[dict]:
     """The tags as data for the AX generator (st_export.py --tags): per tag
     its key, name, ST name, table, comment, TIA type and address, frame, the
     frame member it is (without the frame: "div_1.present",
-    "sensor_1_2_1") and whether the PLC reads it."""
+    "sensor_1_2_1"), whether the PLC reads it, and where it is in the PLC
+    tags STRUCT (stPath: its ST name, or an array element - tag_paths)."""
     tags, _ = tags_of(config)
     names = st_names(tags)
-    return [{"key": t.key, "name": t.name, "stName": names[t.key], "table": t.table, "comment": t.comment,
-             "dataType": t.data_type, "address": t.address, "frame": t.frame,
+    paths = tag_paths(config, tags, names)
+    return [{"key": t.key, "name": t.name, "stName": names[t.key], "stPath": paths[t.key], "table": t.table,
+             "comment": t.comment, "dataType": t.data_type, "address": t.address, "frame": t.frame,
              "member": t.member[len(t.frame) + 1:], "input": t.is_input} for t in tags]
+
+
+def read_values(config, tags: List[Tag]) -> Tuple[List[float], List[str]]:
+    """Every tag's value now: (numbers, texts), in the tags' order. The
+    number plots it (a Bool 0 / 1, an array of bits: how many are 1); the
+    text shows it (TRUE / FALSE, the bits, a REAL to 3 decimals)."""
+    import io_signals                                   # here: plc_tags stays light to import
+    ids = sorted({t.component for t in tags if t.component != "clock"})
+    values = io_signals.read(config, ids) if ids else {}
+    numbers, texts = [], []
+    for tag in tags:
+        if tag.component == "clock":
+            numbers.append(0.0)
+            texts.append("(PC clock)")
+            continue
+        signal = INDEX.sub("", tag.signal.split("[")[0])
+        v = values.get(tag.component, {}).get("values", {}).get(signal)
+        if v is None:
+            numbers.append(0.0)
+            texts.append("-")
+        elif tag.count > 1:
+            bits = v if isinstance(v, str) else "".join("1" if b else "0" for b in v)
+            bits = bits[:tag.count]
+            numbers.append(float(bits.count("1")))
+            texts.append(bits)
+        elif tag.data_type == "Bool":
+            on = (v[:1] == "1") if isinstance(v, str) else bool(v[0] if isinstance(v, (list, tuple)) and v else v)
+            numbers.append(1.0 if on else 0.0)
+            texts.append("TRUE" if on else "FALSE")
+        else:
+            try:
+                number = float(v)
+            except (TypeError, ValueError):
+                numbers.append(0.0)
+                texts.append(str(v))
+                continue
+            numbers.append(number)
+            texts.append(f"{number:.3f}" if tag.data_type == "Real" else str(int(number)))
+    return numbers, texts
+

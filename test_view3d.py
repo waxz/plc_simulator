@@ -134,14 +134,32 @@ class LogisticsSceneTest(unittest.TestCase):
         self.assertEqual(state["doors"]["door_1"], [True, False])
         self.assertTrue(any(row[10] > 1000000 for row in state["bodies"]))   # barcodes on the parcels
         self.assertEqual(len(state["belts"]["tt_belt"]), 3)              # speed, z, table angle
-        # A diverter: active, the angle it is told to steer at (divertAngle +
-        # commandAngle) and where its wheels point now.
+        # A diverter: active, the angle it is told to steer at (commandAngle,
+        # deg to the travel; wheels start straight) and where its wheels point now.
         wheels = next(d for d in config.diverters if d.diverterType == "wheels")
-        self.assertEqual(state["diverters"][wheels.id][1], wheels.divertAngle)
+        self.assertEqual(state["diverters"][wheels.id][1], 0.0)
         wheels.control, wheels.commandAngle = "manual", -30.0
         wheels.wheelAngle = 12.5
         state = scene3d.dynamic_state(config, engine.parcel_views(), engine.sim_time)
-        self.assertEqual(state["diverters"][wheels.id][1:3], [wheels.divertAngle - 30.0, 12.5])
+        self.assertEqual(state["diverters"][wheels.id][1:3], [-30.0, 12.5])
+
+    def test_track_boxes_reach_the_view_by_their_role(self):
+        """What the PLC shows of its loads, slots and synchronised loads
+        (TrackedLoadView by role): every active one with a size, as a box."""
+        config = load_config(os.path.join(HERE, "merge_demo.json"))
+        load, slot, sync = config.trackedLoads[:3]
+        slot.role, sync.role = "slot", "sync"
+        for row, x in ((load, 1.0), (slot, 2.0), (sync, 3.0)):
+            row.active, row.loadId, row.loadX, row.loadY, row.loadYaw = True, 7, x, 0.25, -30.0
+            row.loadLength, row.loadWidth = 0.4, 0.3
+        slot.loadLength = 1.2
+        config.trackedLoads[3].active = True               # active but no size: nothing to draw
+        state = scene3d.dynamic_state(config, [], 0.0)
+        rows = {r[0]: r for r in state["tracks"]}
+        self.assertEqual(set(rows), {load.id, slot.id, sync.id})
+        self.assertEqual([rows[i][1] for i in (load.id, slot.id, sync.id)], ["load", "slot", "sync"])
+        self.assertEqual(rows[slot.id][2:4] + rows[slot.id][5:8], [2.0, 0.25, -30.0, 1.2, 0.3])
+        self.assertEqual(rows[sync.id][8], 7)
 
 
 class ServerTest(unittest.TestCase):

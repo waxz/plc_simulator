@@ -21,6 +21,9 @@ from surface import (
 )
 from traction import FrictionTraction
 
+GRAVITY_MPS2 = 9.81            # a parcel's weight per kg: friction's normal force (handoff "friction")
+
+
 class Parcel:
     """A body on the belts: a parcel, or (kind "pallet") a pallet, whose
     `loads` ride on it out of the space (machines.py)."""
@@ -160,11 +163,43 @@ def drive_toward_target(body, dt) -> bool:
     momentum_v = bd.get("transition_momentum_v", None)
     momentum_time = bd.get("transition_momentum_time", 0.0)
     momentum_duration = bd.get("transition_momentum_duration", 0.2)
+    accel = bd.get("handoff_accel")
+    if bd.pop("steered", False):
+        accel = None            # a machine set it this step (logistics.steer): at once, not by friction
 
-    if momentum_v is not None and momentum_time > 0.0 and momentum_duration > 0.01:
+    if accel is not None:
+        # handoff "friction": the velocity goes toward the belt's by at most
+        # mu g dt per step (Coulomb friction, sliding until it matches)
+        v = body.velocity
+        dx, dy = target_v.x - v.x, target_v.y - v.y
+        d = math.hypot(dx, dy)
+        step = accel * dt
+        if accel <= 0.0 or d <= step:
+            _set_velocity(body, target_v)
+        else:
+            k = step / d
+            _set_velocity(body, Vec2d(v.x + dx * k, v.y + dy * k))
+    elif momentum_v is not None and momentum_time > 0.0 and momentum_duration > 0.01:
         alpha = _smootherstep(momentum_time / momentum_duration)
         original_v = Vec2d(*momentum_v)
-        _set_velocity(body, original_v * alpha + target_v * (1.0 - alpha))
+        speed_duration = bd.get("transition_speed_duration")
+        if speed_duration is None:
+            _set_velocity(body, original_v * alpha + target_v * (1.0 - alpha))
+        else:
+            # handoff "scaled": the momentum across the belt eases over the whole duration (a merge
+            # slides in), the speed along it over its own, shorter one (a speed step costs little slip)
+            elapsed = momentum_duration - momentum_time
+            alpha_speed = _smootherstep(1.0 - elapsed / speed_duration) if speed_duration > 0.01 else 0.0
+            dx, dy = original_v.x - target_v.x, original_v.y - target_v.y
+            norm = math.hypot(target_v.x, target_v.y)
+            if norm > 1e-9:
+                ux, uy = target_v.x / norm, target_v.y / norm
+                along = dx * ux + dy * uy
+                across_x, across_y = dx - along * ux, dy - along * uy
+                _set_velocity(body, Vec2d(target_v.x + along * alpha_speed * ux + across_x * alpha,
+                                          target_v.y + along * alpha_speed * uy + across_y * alpha))
+            else:
+                _set_velocity(body, original_v * alpha + target_v * (1.0 - alpha))
         bd["transition_momentum_time"] = max(0.0, momentum_time - dt)
     else:
         _set_velocity(body, target_v)
@@ -247,7 +282,7 @@ class PhysicsEngine:
         self.multi_level = machines.is_multi_level(config)
         # self.build_walls()
         self._setup_collision_handlers()
-        # Buttons start released: an NC contact (STOP, E-stop) reads 1.
+        # Buttons start released: every one reads 0 (NO or NC).
         for button in self.config.buttons:
             devices.sync_button(button)
         # Pallets, stoppers, robot arms, elevators (machines.py).
@@ -372,6 +407,145 @@ class PhysicsEngine:
             return found
         wanted = {id(b) for b in belts}
         return [b for b in found if id(b) in wanted]
+
+    STRADDLE_GRID = (-0.9, -0.45, 0.0, 0.45, 0.9)    # where across a parcel's footprint it is sampled (of its half sizes)
+
+    def _in_machine_zone(self, px: float, py: float) -> bool:
+        """In a machine's zone the machine moves a parcel, not a belt's
+        friction: a diverter's wheels or pusher (logistics.steer when it
+        diverts, straight on otherwise: the outlet beside its bed takes a
+        parcel only when diverted), a transfer's chains, a turntable."""
+        for d in self.config.diverters + self.config.transfers:
+            if abs(px - d.x) <= d.width + d.height and abs(py - d.y) <= d.width + d.height:
+                a = math.radians(d.rotation)
+                u = (px - d.x) * math.cos(a) + (py - d.y) * math.sin(a)
+                v = -(px - d.x) * math.sin(a) + (py - d.y) * math.cos(a)
+                if abs(u) <= d.width / 2.0 and abs(v) <= d.height / 2.0:
+                    return True
+        return any(math.hypot(px - table.x, py - table.y) <= table.radius for table in self.config.turntables)
+
+    def _straddle_velocity(self, parcel, pos, linear_v, own=None):
+        """handoff "friction": the surface velocity that drives a parcel lying
+        on more than one straight belt (a joint, a side merge) - each belt's,
+        weighted by how much of the parcel is on it (5 x 5 points over its
+        footprint; points over no belt carry nothing). The parcel slides on
+        both until it is off one: the side belt keeps pushing it while part
+        of it is still there. None: one belt only (its centre's), or a curved
+        / drawn belt under it (their own model). The corners are tested
+        first: a parcel whose four corners are on one belt costs four
+        lookups; one with a corner over nothing (at a joint turned at an
+        angle, or over an open edge) is sampled across. Where belts overlap
+        (a corner square) a point is on `own`, the belt under its centre, if
+        that is one of them."""
+        if self._in_machine_zone(pos.x, pos.y):
+            return None
+        half = parcel.__dict__.get("_half_size")
+        if half is None:
+            xs = [v.x for v in parcel.shape.get_vertices()]
+            ys = [v.y for v in parcel.shape.get_vertices()]
+            half = parcel.__dict__["_half_size"] = ((max(xs) - min(xs)) / 2.0, (max(ys) - min(ys)) / 2.0)
+        a = parcel.body.angle
+        ca, sa = math.cos(a), math.sin(a)
+        level = parcel.level if self.multi_level else None
+
+        def belts_at(u, v):
+            px = pos.x + (u * half[0]) * ca - (v * half[1]) * sa
+            py = pos.y + (u * half[0]) * sa + (v * half[1]) * ca
+            found = self._belts_under(px, py)
+            if level is not None:
+                found = [b for b in found if b.level == level]
+            if own is not None and len(found) > 1 and own in found:
+                return [own]
+            if found and self._in_machine_zone(px, py):
+                return None                                  # the machine moves that part: no belt's vote
+            return found
+
+        corners = [belts_at(u, v) for u in (-1.0, 1.0) for v in (-1.0, 1.0)]
+        ids = {id(found[0]) for found in corners if found}
+        corners = [found for found in corners if found is not None]
+        if len(ids) <= 1 and all(corners):
+            return None                                  # all four corners on one belt: that belt
+        if not ids:
+            return None                                  # no corner on a belt: its centre's belt decides
+        sx = sy = 0.0
+        n = 0
+        for u in self.STRADDLE_GRID:
+            for v in self.STRADDLE_GRID:
+                found = belts_at(u, v)
+                if not found:
+                    continue                             # over no belt (or a machine's): no surface drives it there
+                belt = found[0]
+                if belt.type != "linear":
+                    return None
+                bv = linear_v.get(id(belt))
+                if bv is None:
+                    speed = belt_surface_speed(belt)
+                    rad = math.radians(belt.rotation + belt.directionAngle)
+                    bv = linear_v[id(belt)] = (speed * math.cos(rad), speed * math.sin(rad))
+                sx += bv[0]
+                sy += bv[1]
+                n += 1
+        if n == 0:
+            return None
+        return (sx / n, sy / n)
+
+    GUIDE_RESPONSE_S = 0.05     # a side guide pushes a parcel back on at its overhang / this (m/s) ...
+    GUIDE_MAX_MPS = 0.5         # ... at most this fast
+
+    def _guide(self, parcel, pos, belt, bd) -> None:
+        """A belt's side guides (Belt.guides): a parcel whose corners reach
+        past the belt's side edge over nothing gets a velocity back toward
+        it, added to its target (the friction limit still applies) - a rail
+        stopping it from going over the side. A corner over another belt is
+        supported (a merge opening, an outlet): no guide there. Only across
+        the belt: its ends are open (a hand-over, a chute)."""
+        if not getattr(belt, "guides", True) or belt.type not in ("linear", "curved"):
+            return
+        half = parcel.__dict__.get("_half_size")
+        if half is None:
+            xs = [v.x for v in parcel.shape.get_vertices()]
+            ys = [v.y for v in parcel.shape.get_vertices()]
+            half = parcel.__dict__["_half_size"] = ((max(xs) - min(xs)) / 2.0, (max(ys) - min(ys)) / 2.0)
+        a = parcel.body.angle
+        ca, sa = math.cos(a), math.sin(a)
+        hw = belt.beltWidth / 2.0
+        if belt.type == "linear":
+            rad = math.radians(belt.rotation)
+            nx, ny = -math.sin(rad), math.cos(rad)        # the belt's left
+            centre = (belt.x, belt.y)
+        out_left = out_right = 0.0
+        for u in (-1.0, 1.0):
+            for v in (-1.0, 1.0):
+                px = pos.x + u * half[0] * ca - v * half[1] * sa
+                py = pos.y + u * half[0] * sa + v * half[1] * ca
+                if belt.type == "linear":
+                    across = (px - centre[0]) * nx + (py - centre[1]) * ny
+                else:                                     # a curve: across = the radius from its centre line
+                    across = math.hypot(px - belt.x, py - belt.y) - belt.radius
+                over = abs(across) - hw
+                if over <= 0.0:
+                    continue
+                found = self._belts_under(px, py)
+                if self.multi_level:
+                    found = [b for b in found if b.level == parcel.level]
+                if found:
+                    continue                              # another belt holds it there
+                if across > 0.0:
+                    out_left = max(out_left, over)
+                else:
+                    out_right = max(out_right, over)
+        push = out_right - out_left                       # + : toward the left (+ across)
+        if push == 0.0:
+            return
+        speed = max(-self.GUIDE_MAX_MPS, min(self.GUIDE_MAX_MPS, push / self.GUIDE_RESPONSE_S))
+        if belt.type == "curved":
+            dx, dy = pos.x - belt.x, pos.y - belt.y
+            r = math.hypot(dx, dy)
+            if r < 1e-9:
+                return
+            nx, ny = dx / r, dy / r                       # outward: + across on a curve
+        tx, ty = bd.get("target_v", (0.0, 0.0))
+        bd["target_v"] = (tx + nx * speed, ty + ny * speed)
 
     def _parcel_belts(self, parcel):
         """The belts under a parcel's center this step (found once per step)."""
@@ -505,7 +679,11 @@ class PhysicsEngine:
                 
                 temp_body = pymunk.Body(body_type=pymunk.Body.STATIC)
                 temp_body.position = (sx, sy)
-                temp_shape = pymunk.Poly.create_box(temp_body, (w, h))
+                # only while its detection area is clear (Source.clear_area): a
+                # rectangle centred on the source, turned with it
+                along, across = source.clear_area()
+                temp_body.angle = math.radians(source.rotation)
+                temp_shape = pymunk.Poly.create_box(temp_body, (along, across))
                 
                 query_results = self.space.shape_query(temp_shape)
 
@@ -697,6 +875,29 @@ class PhysicsEngine:
         margin = 20.0  # meters - generous, well beyond any legitimate belt-edge overshoot
         return (min(xs) - margin, min(ys) - margin, max(xs) + margin, max(ys) + margin)
 
+    def _keep_in_chute(self, parcel, chute) -> None:
+        """A load a "keep" chute takes: set into the bin's next slot (a grid
+        filling its box, capacity slots), frozen there - out of the belts'
+        drive and the solver (its shape a sensor), so it blocks no other -
+        until the chute is emptied."""
+        slot = max(0, chute.count - 1)
+        capacity = max(1, chute.capacity)
+        cols = max(1, math.ceil(math.sqrt(capacity * chute.width / max(chute.height, 1e-6))))
+        rows = max(1, math.ceil(capacity / cols))
+        col, row = slot % cols, (slot // cols) % rows
+        x = chute.x - chute.width / 2.0 + (col + 0.5) * chute.width / cols
+        y = chute.y - chute.height / 2.0 + (row + 0.5) * chute.height / rows
+        if parcel.traction is not None:
+            self.friction.detach(parcel.traction)
+            parcel.traction = None
+        parcel.body.position = (x, y)
+        parcel.body.angle = 0.0                          # squared to the bin's rows
+        parcel.body.velocity = (0.0, 0.0)
+        parcel.body.angular_velocity = 0.0
+        parcel.shape.sensor = True
+        parcel.body.__dict__["target_v_enable"] = False
+        parcel.binned_in = (chute.id, self.logistics.chute_generation(chute))
+
     def handle_sinks(self):
         to_remove = []
         bounds = self._play_area_bounds()
@@ -716,15 +917,31 @@ class PhysicsEngine:
                                 self.machines.take_loads(parcel)
                             break
                 continue
+            binned = getattr(parcel, "binned_in", None)
+            if binned is not None:              # kept in a chute ("keep"): there until it is emptied
+                chute = chutes.get(binned[0])
+                if chute is None or self.logistics.chute_generation(chute) != binned[1]:
+                    to_remove.append(parcel)
+                else:
+                    parcel.body.velocity = (0.0, 0.0)
+                    parcel.body.angular_velocity = 0.0
+                continue
             in_a_sink = held = False
             for sink_id, x0, y0, x1, y1 in boxes:
                 if x0 <= px <= x1 and y0 <= py <= y1:
                     chute = chutes.get(sink_id)
-                    if chute is not None and not self.logistics.chute_takes(chute):
+                    mode = getattr(chute, "fillMode", "count") if chute is not None else "count"
+                    if chute is not None and mode == "delete":
+                        chute.count = (chute.count + 1) & 0xFFFF          # counted, never full
+                    elif chute is not None and not self.logistics.chute_takes(chute):
                         held = True             # a full chute: it waits in front of it
                         break
-                    in_a_sink = True
                     self.delivered[sink_id] = self.delivered.get(sink_id, 0) + 1
+                    if chute is not None and mode == "keep":
+                        self._keep_in_chute(parcel, chute)
+                        held = True             # kept: it stays (in its slot)
+                        break
+                    in_a_sink = True
                     break
             if in_a_sink:
                 to_remove.append(parcel)
@@ -762,6 +979,9 @@ class PhysicsEngine:
         (useSurfaceVelocity: sets the target dynamic_velocity_modifier
         drives the parcel toward inside the solver step)."""
         surface_drive = getattr(self.config, 'useSurfaceVelocity', False)
+        handoff = getattr(self.config, "handoff", "scaled")
+        friction_handoff = handoff == "friction"
+        scaled_handoff = handoff == "scaled"
         linear_v = getattr(self, "_linear_v", None)
         if linear_v is None:
             linear_v = {}
@@ -769,6 +989,8 @@ class PhysicsEngine:
         for parcel in self.parcels:
             if parcel.traction is not None:
                 continue  # friction-traction parcel (see apply_friction_traction)
+            if getattr(parcel, "binned_in", None) is not None:
+                continue  # kept in a chute ("keep"): it stays in its slot
             # The per-parcel drive fields live in the body's __dict__: reading /
             # writing them there skips pymunk's pass-through __setattr__ /
             # __getattr__ hooks (a Python call per access - or a caught
@@ -801,6 +1023,11 @@ class PhysicsEngine:
                     bd["target_v_enable"] = True
                     bd["target_v"] = v
                     bd["target_w"] = 0.0
+                    if friction_handoff:
+                        straddle = self._straddle_velocity(parcel, pos, linear_v, belt)
+                        if straddle is not None:
+                            bd["target_v"] = straddle
+                        self._guide(parcel, pos, belt, bd)
                     continue
                 touching_belts:Dict[str, Belt] = {}
                 for belt in under:
@@ -930,7 +1157,11 @@ class PhysicsEngine:
                             bd["momentum_intersection_ids"] = set()
 
                         previous_belt_id = bd.get("current_belt_id", None)
-                        if previous_belt_id and previous_belt_id != selected_belt.id:
+                        if friction_handoff:
+                            # the belt it is on drives it through friction: see drive_toward_target
+                            bd["handoff_accel"] = max(0.0, float(getattr(selected_belt, "friction", 0.5))) \
+                                * GRAVITY_MPS2
+                        elif previous_belt_id and previous_belt_id != selected_belt.id:
                             # Start a fresh momentum-blend window using the
                             # *new* belt's own configured transition time.
                             # This used to set transition_momentum_time to a
@@ -946,13 +1177,35 @@ class PhysicsEngine:
                             # followed by 0.6s of blending - 0.9s total,
                             # ignoring the configured value entirely).
                             current_v = vel
+                            duration = selected_belt.transition_momentum_duration
+                            bd["transition_speed_duration"] = None
+                            if scaled_handoff:
+                                # handoff "scaled": the momentum across the new belt eases over its
+                                # whole duration (a merge slides in, as "blend"); the speed along it
+                                # over duration x |dv along| / |v_belt| (a speed step: short; an equal
+                                # belt: none; what a short belt left of a change: the rest)
+                                tvx, tvy = best_belt[0], best_belt[1]
+                                norm = max(math.hypot(tvx, tvy), 0.1)
+                                along = ((current_v.x - tvx) * tvx + (current_v.y - tvy) * tvy) / norm
+                                across = math.hypot(current_v.x - tvx - along * tvx / norm,
+                                                    current_v.y - tvy - along * tvy / norm)
+                                speed_duration = duration * min(1.0, abs(along) / norm)
+                                if across < 0.01:              # no momentum across: the speed's time only
+                                    duration = speed_duration
+                                bd["transition_speed_duration"] = speed_duration
                             bd["transition_momentum_v"] = (current_v.x, current_v.y)
-                            bd["transition_momentum_duration"] = selected_belt.transition_momentum_duration
-                            bd["transition_momentum_time"] = bd["transition_momentum_duration"]
+                            bd["transition_momentum_duration"] = duration
+                            bd["transition_momentum_time"] = duration
                         bd["current_belt_id"] = selected_belt.id
                         bd["target_v_enable"] = True
                         bd["target_v"] = (best_belt[0], best_belt[1])
                         bd["target_w"] = best_belt[2]
+                        if friction_handoff and selected_belt.type == "linear":
+                            straddle = self._straddle_velocity(parcel, pos, linear_v, selected_belt)
+                            if straddle is not None:
+                                bd["target_v"] = straddle
+                        if friction_handoff:
+                            self._guide(parcel, pos, selected_belt, bd)
                         # print(f"Parcel {parcel.id} target_v: {bd["target_v"]}, target_w: {bd["target_w"]}")
                 else:
                     bd["target_v_enable"] = False

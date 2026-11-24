@@ -12,6 +12,10 @@ check_layout(config) returns a list of Issue, most severe first:
                                  no sink
   warning  sensor off belt     - a sensor that no belt passes under
   warning  source off belt     - a source that drops parcels onto the floor
+  warning  side speed          - a belt or wheel diverter meeting a line at an
+                                 angle whose speed along it is not the line's
+                                 (v_line / cos(angle): side_speeds.py)
+  error    side speed          - ... and its drive's speedMax cannot run it
 
 Footprints use the same geometry the simulator does (math_utils polygons,
 arcs buffered to the belt width), so "overlap" here means overlap in physics.
@@ -22,6 +26,7 @@ from typing import List, Optional, Tuple
 
 from shapely import STRtree
 from shapely.geometry import LineString, Point, Polygon, box
+from shapely.affinity import rotate
 
 from config_parser import Belt, SimulatorConfig
 from cad.path import belt_world_path, footprint as path_footprint, segments
@@ -82,8 +87,23 @@ def _rect(x, y, w, h, rotation) -> Polygon:
     return Polygon(get_rect_vertices(x, y, w, h, rotation))
 
 
+def _side_speed_issues(config: SimulatorConfig) -> List[Issue]:
+    import side_speeds
+    issues = []
+    for ident, speed, expected, why in side_speeds.problems(config):
+        issues.append(Issue("warning", "side speed",
+                            f"{ident} runs {speed:.3f} m/s; it {why}, so it needs {expected:.3f} m/s "
+                            f"(the line's speed / cos of the angle).", [ident]))
+    for ident, expected, top in side_speeds.beyond_drive(config):
+        issues.append(Issue("error", "side speed",
+                            f"{ident} needs {expected:.3f} m/s at its angle, above its drive's speedMax "
+                            f"{top:.3f} m/s.", [ident]))
+    return issues
+
+
 def check_layout(config: SimulatorConfig) -> List[Issue]:
     issues: List[Issue] = []
+    issues.extend(_side_speed_issues(config))
     belts = {b.id: b for b in config.belts}
     footprints = {b.id: belt_footprint(b) for b in config.belts}
     ids = list(footprints)
@@ -128,6 +148,9 @@ def check_layout(config: SimulatorConfig) -> List[Issue]:
 
     # Outlets that drop parcels into nothing.
     sinks = [box(s.x - s.width / 2, s.y - s.height / 2, s.x + s.width / 2, s.y + s.height / 2) for s in config.sinks]
+    # a wheel deck carries what lands on it (pop-up wheels: a conveyor of their own)
+    sinks += [rotate(box(d.x - d.width / 2, d.y - d.height / 2, d.x + d.width / 2, d.y + d.height / 2),
+                     d.rotation, origin=(d.x, d.y)) for d in config.diverters if d.diverterType == "wheels"]
     for belt in config.belts:
         ports = belt_ports(belt)
         if ports is None or belt.id in connected_from:
@@ -139,6 +162,20 @@ def check_layout(config: SimulatorConfig) -> List[Issue]:
             issues.append(Issue("warning", "open outlet",
                                 f"Parcels leaving {belt.id} at ({ports.outlet.x:.2f}, {ports.outlet.y:.2f}) "
                                 f"land on no belt and no sink.", [belt.id], (ports.outlet.x, ports.outlet.y)))
+
+    # Wheel decks: their wheels (rows x wheels at a pitch) within the deck.
+    import equipment_geometry as geo
+    for d in config.diverters:
+        if d.diverterType != "wheels":
+            continue
+        us, vs = geo.grid_of(d)
+        along = max(abs(u) for u in us) + geo.WHEEL_R
+        across = max(abs(v) for v in vs) + geo.WHEEL_T / 2.0
+        if along > d.width / 2.0 + 1e-6 or across > d.height / 2.0 + 1e-6:
+            issues.append(Issue("warning", "wheels off the deck",
+                                f"{d.id}: {len(us)} rows x {len(vs)} wheels reach {2 * along:.3f} m along and "
+                                f"{2 * across:.3f} m across - more than its {d.width:.3f} x {d.height:.3f} m deck "
+                                f"(fewer wheels or a smaller pitch).", [d.id], (d.x, d.y)))
 
     # Drawn belts: an arc tighter than half the belt width folds the inner edge.
     for belt in config.belts:

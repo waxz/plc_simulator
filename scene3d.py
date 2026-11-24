@@ -29,6 +29,7 @@ import math
 import re
 from typing import Dict, List, Optional, Sequence
 
+import equipment_geometry as geo
 import logistics
 import robot6
 from config_parser import SimulatorConfig
@@ -253,7 +254,12 @@ def logistics_scene(config: SimulatorConfig, lh: float) -> dict:
                       "label": s.label} for s in config.scanners],
         "diverters": [{"id": d.id, "x": d.x, "y": d.y, "w": d.width, "h": d.height, "rot": d.rotation,
                        "angle": d.divertAngle, "type": d.diverterType, "z": surface_z(config, d.level, lh),
-                       "color": d.color, "label": d.label, "destination": d.destination} for d in config.diverters],
+                       "color": d.color, "label": d.label, "destination": d.destination,
+                       "rows": logistics.wheel_rows(d),
+                       # the wheels (equipment_geometry.grid_of): their centres, row by row, and each one's row
+                       "wheels": [[_r(u), _r(v)] for u, v in geo.centres_of(d)],
+                       "wheelRow": [i for i in range(len(geo.grid_of(d)[0])) for _v in geo.grid_of(d)[1]]}
+                      for d in config.diverters],
         "transfers": [{"id": t.id, "x": t.x, "y": t.y, "w": t.width, "h": t.height, "rot": t.rotation,
                        "cross": t.crossAngle, "z": surface_z(config, t.level, lh), "color": t.color, "label": t.label}
                       for t in config.transfers],
@@ -310,6 +316,12 @@ def dynamic_state(config: SimulatorConfig, views: Sequence, sim_time: float = 0.
         bodies.append([v.id, kind, _r(v.x), _r(v.y), _r(z), _r(yaw), _r(w), _r(l), _r(h), v.color,
                        getattr(v, "barcode", 0), getattr(v, "destination", 0)])
 
+    # Track boxes: what the PLC shows of its loads, slots and synchronised
+    # loads (TrackedLoadView): id, role, centre, heading, length, width, load id.
+    tracks = [[t.id, getattr(t, "role", "load"), _r(t.loadX), _r(t.loadY), _r(base_z(t.level)), _r(t.loadYaw),
+               _r(t.loadLength), _r(t.loadWidth), int(t.loadId)]
+              for t in getattr(config, "trackedLoads", []) if t.active and t.loadLength > 0 and t.loadWidth > 0]
+
     lift_of_belt = {e.beltId: e for e in config.elevators if e.beltId}
     tables = {t.beltId: t for t in config.turntables if t.beltId}
     belts = {}
@@ -327,6 +339,7 @@ def dynamic_state(config: SimulatorConfig, views: Sequence, sim_time: float = 0.
     return {
         "t": round(sim_time, 3), "layout": version,
         "bodies": bodies,
+        "tracks": tracks,
         "belts": belts,
         "sensors": {s.id: (s.sensor_states if isinstance(s.sensor_states, str) and len(s.sensor_states) > 1
                            else on(s.sensor_states)) for s in config.sensors},
@@ -339,8 +352,9 @@ def dynamic_state(config: SimulatorConfig, views: Sequence, sim_time: float = 0.
         # Active, and the angle it steers at now (commands can change it).
         # active, the angle it is told to steer at, where its wheels point now, parcels diverted,
         # the commanded speed (the wheels roll at it)
+        # ... and a deck of rows: where each row points now
         "diverters": {d.id: [bool(d.active), _r(logistics.divert_angle(d)), _r(d.wheelAngle), d.diverted,
-                             _r(d.commandSpeed)]
+                             _r(d.commandSpeed)] + ([[_r(a) for a in d.rowWheelAngles]] if d.rowWheelAngles else [])
                       for d in config.diverters},
         "turntables": {t.id: _r(t.angle) for t in config.turntables},
         "transfers": {t.id: [_r(t.lift), bool(t.up)] for t in config.transfers},

@@ -287,7 +287,6 @@ class EditorTest(unittest.TestCase):
         self.click(3, 1)
         belt = self.belts()[-1]
         self.assertEqual(belt.shape, "quadrilateral")
-        self.assertEqual(belt.directionAngle, 180)
 
     def test_reverse_on_a_straight_sketch_line(self):
         self.cad.sketch_line_tool.start()

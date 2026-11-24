@@ -74,16 +74,36 @@ class Train:
         return self.output_speed(frequency) / self.transmission_ratio * 6.0
 
 
-def machine_kind(component) -> str:
-    """What the drive moves: "lift" (an elevator's hoist), "turntable" (a
-    slewing drive, rotary), "transfer" (a transfer's chains) or "belt"."""
-    if hasattr(component, "liftSpeed"):
+_KIND_OF_CLASS = {}      # a pydantic model class -> its machine_kind (by its fields: fixed per class)
+
+
+def _kind_by_fields(has) -> str:
+    if has("diverterType"):
+        return "diverter"
+    if has("liftSpeed"):
         return "lift"
-    if hasattr(component, "turnSpeed"):
+    if has("turnSpeed"):
         return "turntable"
-    if hasattr(component, "crossAngle"):
+    if has("crossAngle"):
         return "transfer"
     return "belt"
+
+
+def machine_kind(component) -> str:
+    """What the drive moves: "lift" (an elevator's hoist), "turntable" (a
+    slewing drive, rotary), "transfer" (a transfer's chains), "diverter"
+    (its wheels' or pusher's motor) or "belt".
+    Called for every belt every physics step: decided once per model class
+    (its fields), as hasattr on a pydantic model costs a raised and caught
+    AttributeError per missing name."""
+    cls = type(component)
+    kind = _KIND_OF_CLASS.get(cls)
+    if kind is None:
+        fields = getattr(cls, "model_fields", None)
+        if not isinstance(fields, dict):                 # not a pydantic model (a test's stand-in): ask it
+            return _kind_by_fields(lambda name: hasattr(component, name))
+        kind = _KIND_OF_CLASS[cls] = _kind_by_fields(lambda name: name in fields)
+    return kind
 
 
 def is_lift(component) -> bool:
@@ -107,10 +127,11 @@ def design_speed(component) -> float:
 def train_of(component, assume_drive: bool = False) -> Optional[Train]:
     """The component's drive train, or None. A belt has one with gearRatio
     and drumDiameter set, or when commanded in Hz; a machine (elevator,
-    turntable, transfer) as soon as it has a `drive`. Missing values are
-    derived from the design speed at the rated frequency.
-    `assume_drive`: a machine without a drive yet, as it would be (the
-    designer's display)."""
+    turntable, transfer, diverter) as soon as it has a `drive`. Missing
+    values are derived from the design speed at the rated frequency.
+    `assume_drive`: one without a drive yet, as it would be (the designer's
+    display) - a belt commanded in m/s too, from its speed now (the designer
+    pins that train when a drive value is first edited: pin_belt_train)."""
     drive = getattr(component, "drive", None)
     rotary = is_rotary(component)
     if drive is not None and drive.gearRatio and (drive.drumDiameter or rotary):
@@ -119,7 +140,7 @@ def train_of(component, assume_drive: bool = False) -> Optional[Train]:
     if machine_kind(component) != "belt":
         if drive is None and not assume_drive:
             return None
-    elif getattr(component, "commandFormat", "speed") != "frequency":
+    elif getattr(component, "commandFormat", "speed") != "frequency" and not assume_drive:
         return None
     rated_speed = drive.motorRatedSpeed if drive is not None else 1450.0
     rated_frequency = drive.motorRatedFrequency if drive is not None else 50.0
@@ -142,6 +163,36 @@ def train_of(component, assume_drive: bool = False) -> Optional[Train]:
         drum_rpm = design / (math.pi * diameter) * 60.0
         gear = rated_speed / transmission / drum_rpm
     return Train(rated_speed, rated_frequency, gear, transmission, diameter, max_frequency)
+
+
+def pin_belt_train(belt) -> None:
+    """A belt commanded in m/s gets a train only from explicit gearRatio and
+    drumDiameter (its `speed` is the PLC's command, so nothing may be derived
+    from it while it runs). The designer pins them, from the speed it has
+    now, when a drive value is first edited - then the motor's limits in rpm
+    act on it."""
+    if machine_kind(belt) != "belt" or getattr(belt, "commandFormat", "speed") == "frequency":
+        return
+    drive = belt.drive
+    if drive is None or (drive.gearRatio and drive.drumDiameter):
+        return
+    train = train_of(belt, assume_drive=True)
+    drive.gearRatio, drive.drumDiameter = train.gear_ratio, train.drum_diameter
+
+
+def limits_text(component) -> str:
+    """The motor's limits and what they are at the output, for the designer."""
+    drive = getattr(component, "drive", None)
+    if drive is None or not (drive.motorMaxSpeed or drive.motorMaxAccel):
+        return ""
+    vmax, amax = motor_limits(component)
+    unit = "\u00b0/s" if is_rotary(component) else "m/s"
+    parts = []
+    if drive.motorMaxSpeed:
+        parts.append(f"max {drive.motorMaxSpeed:g} rpm = {vmax:.3f} {unit}")
+    if drive.motorMaxAccel:
+        parts.append(f"{drive.motorMaxAccel:g} rpm/s = {amax:.2f} {unit}\u00b2")
+    return "\nmotor: " + ", ".join(parts)
 
 
 # Common induction-motor nameplates (rated speed at rated frequency, with
@@ -168,19 +219,36 @@ def _speed_at(component, train: Train, frequency: float) -> float:
     return train.turn_speed(frequency) if is_rotary(component) else train.speed_for_frequency(frequency)
 
 
+def motor_limits(component) -> tuple:
+    """(max speed, max accel) in the component's unit - m/s and m/s^2, a
+    turntable deg/s and deg/s^2 - from its motor's motorMaxSpeed (rpm) and
+    motorMaxAccel (rpm/s) through its train; inf where unset or without a
+    train (an rpm means nothing without the gearing)."""
+    drive = getattr(component, "drive", None)
+    train = train_of(component) if drive is not None else None
+    if train is None:
+        return math.inf, math.inf
+    per_rpm = abs(_speed_at(component, train, 1.0) / train.motor_speed(1.0))
+    vmax = drive.motorMaxSpeed * per_rpm if drive.motorMaxSpeed else math.inf
+    amax = drive.motorMaxAccel * per_rpm if drive.motorMaxAccel else math.inf
+    return vmax, amax
+
+
 def machine_speed(component) -> float:
     """The speed a machine moves at - m/s, a turntable deg/s: its drive's at
-    the rated frequency (no higher than the max frequency), else its own
-    speed setting."""
+    the rated frequency (no higher than the max frequency nor the motor's
+    max speed), else its own speed setting."""
     train = train_of(component)
     if train is None:
         return design_speed(component)
-    return _speed_at(component, train, min(train.motor_rated_frequency, train.max_frequency))
+    return min(_speed_at(component, train, min(train.motor_rated_frequency, train.max_frequency)),
+               motor_limits(component)[0])
 
 
 def machine_ramps(component) -> tuple:
     """(accel, decel) per second^2 in the machine's unit (m or deg): from
-    the inverter's ramp times (0 to the rated frequency), inf without."""
+    the inverter's ramp times (0 to the rated frequency), inf without; none
+    steeper than the motor's max acceleration."""
     drive = getattr(component, "drive", None)
     train = train_of(component)
     if drive is None or train is None:
@@ -188,7 +256,8 @@ def machine_ramps(component) -> tuple:
     rated = _speed_at(component, train, train.motor_rated_frequency)
     accel = rated / drive.rampUpTime if drive.rampUpTime else math.inf
     decel = rated / drive.rampDownTime if drive.rampDownTime else math.inf
-    return accel, decel
+    amax = motor_limits(component)[1]
+    return min(accel, amax), min(decel, amax)
 
 
 def motor_speed_of(component, velocity: float) -> float:
@@ -247,7 +316,8 @@ def summary(component) -> tuple:
     belt = component
     train = train_of(belt)
     if train is None:
-        return "", ""
+        return (f"{getattr(belt, 'speed', 0.0):g} m/s, set directly (an ideal drive). Edit a drive value to "
+                f"model the motor: its gear ratio and drum are then taken from this speed."), ""
     rated = train.motor_rated_frequency
     carrier = "rollers" if getattr(belt, "surface", "belt") == "roller" else "drum"
     text = (f"{rated:g} Hz \u2192 motor {train.motor_speed(rated):.0f} rpm \u2192 "
@@ -262,7 +332,7 @@ def summary(component) -> tuple:
         if needed > train.max_frequency + 1e-9:
             warning = (f"The design speed {design:g} m/s needs {needed:.1f} Hz, above the inverter's "
                        f"max {train.max_frequency:g} Hz: the belt only reaches {train.max_speed:.3f} m/s.")
-    return text, warning
+    return text + limits_text(belt), warning
 
 
 _MACHINE_WORDS = {
@@ -270,6 +340,7 @@ _MACHINE_WORDS = {
     "lift": ("drum", "m/s", "liftSpeed", None),
     "transfer": ("sprocket", "m/s", "speed", None),
     "turntable": ("slewing ring", "\u00b0/s", "turnSpeed", ("90\u00b0 turn", 90.0)),
+    "diverter": ("wheel", "m/s", "speed", None),
 }
 
 
@@ -285,13 +356,15 @@ def _machine_summary(component) -> tuple:
     if kind == "turntable":
         result = f"table {train.output_speed(rated) / train.transmission_ratio:.2f} rpm = {v:.1f} {unit}"
     else:
+        word = {"lift": "lift", "diverter": "divert"}.get(kind, "cross")
         result = (f"{train.output_speed(rated) / train.transmission_ratio:.1f} rpm at the {part} \u2192 "
-                  f"{'lift' if kind == 'lift' else 'cross'} {v:.3f} {unit}")
+                  f"{word} {v:.3f} {unit}")
     text = f"{rated:g} Hz \u2192 motor {train.motor_speed(rated):.0f} rpm \u2192 {result}"
     if kind == "lift":
         move = (f"level to level ({component.levelHeight:g} m)", component.levelHeight)
     if move is not None:
         text += f"\n{move[0]}: {travel_time(component, move[1]):.1f} s"
+    text += limits_text(component)
     warning = ""
     if train.max_frequency < train.motor_rated_frequency:
         warning = (f"The inverter's max {train.max_frequency:g} Hz is below the rated "

@@ -8,6 +8,8 @@ real surface speed, `Belt.actualSpeed`, integrates an encoder count,
 `Belt.encoderCount`, and sets the status bits the PLC gets as feedback:
 
     ref    += clamp(setpoint - ref, -decel*h, +accel*h)   VFD ramp
+              (no steeper than the motor's motorMaxAccel; a stop -
+              setpoint 0 - brakes at it: the quick stop, as a drive's OFF3)
     actual += (ref - actual) * (1 - exp(-h / tau))        drive/mechanical lag
     actual  = clamp(actual, -speedMax, speedMax)
     encoder = (encoder + counts moved) mod 2**32          UINT32, wraps like hardware
@@ -29,6 +31,7 @@ With a drive train (drivetrain.py: gearRatio and drumDiameter set, or any
 belt commanded in Hz) the mechanics apply on top:
 
     setpoint  clamped to the surface speed at the inverter's maxFrequency
+              and at the motor's motorMaxSpeed (rpm)
     ramp      rampUpTime / rampDownTime (s from 0 to the rated frequency)
               replace accel / decel when set
     outputFrequency  the inverter's ramped output, Hz (signed)
@@ -60,9 +63,10 @@ def _run_commanded(belt: Belt) -> bool:
     return abs(float(belt.speed or 0.0)) > 0.0
 
 
-def _ramp_rates(drive, train) -> tuple:
+def _ramp_rates(drive, train, amax: float = math.inf, stopping: bool = False) -> tuple:
     """(accel, decel) in m/s^2: the inverter's ramp times when the belt has a
-    train and they are set, else the drive's accel / decel."""
+    train and they are set, else the drive's accel / decel; none steeper than
+    the motor's `amax` (m/s^2), and a stop brakes at it (the quick stop)."""
     accel, decel = drive.accel, drive.decel
     if train is not None:
         rated = train.speed_for_frequency(train.motor_rated_frequency)
@@ -70,6 +74,10 @@ def _ramp_rates(drive, train) -> tuple:
             accel = rated / drive.rampUpTime
         if drive.rampDownTime:
             decel = rated / drive.rampDownTime
+    if amax != math.inf:
+        accel, decel = min(accel, amax), min(decel, amax)
+        if stopping:
+            decel = amax
     return accel, decel
 
 
@@ -99,8 +107,9 @@ def step_drive(belt: Belt, h: float) -> None:
     setpoint = devices.commanded_speed(belt)
     if belt._safety_stop or belt._zone_hold:
         setpoint = 0.0          # a safety circuit / accumulation zone holds it, whatever is commanded
+    vmax, amax = drivetrain.motor_limits(belt) if train is not None else (math.inf, math.inf)
     if train is not None:
-        limit = train.max_speed  # the inverter goes no higher than maxFrequency
+        limit = min(train.max_speed, vmax)  # no higher than the inverter's maxFrequency, the motor's max rpm
         setpoint = max(-limit, min(limit, setpoint))
 
     if drive is None:
@@ -111,7 +120,7 @@ def step_drive(belt: Belt, h: float) -> None:
         if belt.fault:
             ref = 0.0  # coast: the inverter output is off, only the lag slows the belt
         else:
-            accel, decel = _ramp_rates(drive, train)
+            accel, decel = _ramp_rates(drive, train, amax, stopping=setpoint == 0.0)
             rate = _ramp_limit(ref, setpoint, accel, decel)
             max_delta = rate * h if rate > 0.0 else math.inf
             ref += max(-max_delta, min(max_delta, setpoint - ref))

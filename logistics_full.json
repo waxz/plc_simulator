@@ -1627,8 +1627,6 @@
     "endianness": "LE",
     "topics": [],
     "nodeId": 0,
-    "beltFeedback": false,
-    "beltFeedbackIntervalMs": 10,
     "tcpLengthEndianness": null,
     "tcpRxTimeoutMs": 0,
     "tcpMaxPayload": 0,

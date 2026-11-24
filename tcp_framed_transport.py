@@ -30,7 +30,6 @@ class FrameType(IntEnum):
     METRIC_LAYOUT_2 = 3  # MetricsMessage-based metrics, layout 2 (see METRICS_MAPPING_2)
     metri_1 = 4  # added by generate_frame_type.py
     METRIC_LAYOUT_3 = 5  # added by generate_frame_type.py
-    BELT_FEEDBACK = 6   # simulator -> PLC: per-belt actualSpeed (FLOAT) + encoderCount (UINT32), see drive.py
     LAYOUT_CHECK = 7    # PLC <-> simulator: I/O layout fingerprints + sizes, see io_layout.py
     INPUT_IMAGE = 8     # PLC -> monitor (plc_foxglove_bridge.py): the input image the PLC works on,
                         # same layout as the simulator's IO_MAPPING input frame
@@ -94,7 +93,8 @@ class TCP_StreamParser:
     the latest Execute(); PendingPayloads (Python only) queues every frame."""
 
     BUFFER_LENGTH = 4095            # bytes kept between reads at most (beyond: resync)
-    PAYLOAD_LENGTH = 2048           # the largest payload accepted
+    PAYLOAD_LENGTH = 4096           # the largest payload accepted (as the AX MagicFrameCodec; the PLC's
+                                    # frame size: ax_dev/docs/frame-size.md)
     HEADER_SIZE = 10                # magic (4) + node id (1) + frame type (1) + length (4)
     TRAILER_SIZE = 4                # the trailing copy of the magic
     MAGIC = bytes((0x12, 0x34, 0x56, 0x78))

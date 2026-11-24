@@ -65,13 +65,26 @@ class DeviceKind:
     runtime: Tuple[str, ...] = ()      # further fields the simulator window mirrors (drawing)
     on_exchange: Optional[Callable[[object], bool]] = None    # which ones are on it (None: all)
     doc: str = ""
+    # A kind whose fields depend on the instance (a typed value): its fields
+    # (component, direction) -> Fields, and its STRUCT's name (component) -> str.
+    fields_of: Optional[Callable[[object, str], Fields]] = None
+    st_name_of: Optional[Callable[[object], str]] = None
 
     def exchanged(self, component) -> bool:
         return self.on_exchange is None or bool(self.on_exchange(component))
 
-    def fields(self, direction: str) -> Fields:
-        """("in": commands, "out": feedback) - the channel convention."""
+    def fields(self, direction: str, component=None) -> Fields:
+        """("in": commands, "out": feedback) - the channel convention; the
+        component's own when the kind's fields depend on it."""
+        if self.fields_of is not None and component is not None:
+            return self.fields_of(component, direction)
         return self.feedback if direction == "out" else self.commands
+
+    def struct_name(self, component=None) -> str:
+        """The ST STRUCTs' name stem (Name_Command / Name_Feedback)."""
+        if self.st_name_of is not None and component is not None:
+            return self.st_name_of(component)
+        return self.st_name
 
     @property
     def signal_names(self) -> Tuple[str, ...]:
@@ -146,11 +159,43 @@ register(DeviceKind(
                (ByteType.FLOAT, "measuredWidth"), (ByteType.FLOAT, "measuredHeight")]),
     doc="A barcode / RFID / DWS scanner: reads each parcel once."))
 
+DIVERTER_COMMANDS: Fields = (bits("enable"), [(ByteType.FLOAT, "commandSpeed"), (ByteType.FLOAT, "commandAngle")])
+DIVERTER_FEEDBACK: Fields = (bits("active", "present"), [(ByteType.UINT32, "presentCode"),
+                                                         (ByteType.UINT16, "diverted")])
+
+
+def wheel_rows(d) -> int:
+    """How many rows of wheels a diverter steers one by one (1: the whole deck as one): with row
+    control, a row per wheel along the travel (equipment_geometry.wheel_columns)."""
+    if getattr(d, "diverterType", "") != "wheels" or not getattr(d, "rowControl", False):
+        return 1
+    import equipment_geometry
+    return len(equipment_geometry.grid_of(d)[0])
+
+
+def _diverter_fields(d, direction: str) -> Fields:
+    """A deck of rows: enable, then each row's speed and angle (ARRAYs on the PLC side)."""
+    if direction == "out":
+        return DIVERTER_FEEDBACK
+    n = wheel_rows(d)
+    if n == 1:
+        return DIVERTER_COMMANDS
+    return (bits("enable"), [(ByteType.FLOAT, f"rowSpeeds[{i}]") for i in range(n)]
+            + [(ByteType.FLOAT, f"rowAngles[{i}]") for i in range(n)])
+
+
+def _diverter_struct(d) -> str:
+    n = wheel_rows(d)
+    return "Diverter" if n == 1 else f"WheelDeck{n}"
+
+
 register(DeviceKind(
     "diverters", cp.Diverter, "Diverter",
-    commands=(bits("divert"), [(ByteType.FLOAT, "commandSpeed"), (ByteType.FLOAT, "commandAngle")]),
-    feedback=(bits("active", "present"), [(ByteType.UINT32, "presentCode"), (ByteType.UINT16, "diverted")]),
-    doc="A pusher / pop-up wheel diverter: divert at a speed and direction."))
+    commands=DIVERTER_COMMANDS, feedback=DIVERTER_FEEDBACK,
+    runtime=("wheelAngle", "rowSpeeds", "rowAngles", "rowWheelAngles"),   # the window draws the wheels so
+    fields_of=_diverter_fields, st_name_of=_diverter_struct,
+    doc="A pusher / pop-up wheel diverter: enable, a speed and a direction (deg to the travel); "
+        "a deck of wheel rows: a speed and a direction per row."))
 
 register(DeviceKind(
     "turntables", cp.Turntable, "Turntable",
@@ -190,3 +235,45 @@ register(DeviceKind(
     feedback=(bits("full"), [(ByteType.UINT16, "count")]),
     on_exchange=lambda sink: bool(sink.capacity),
     doc="A chute (a sink with a capacity); plain sinks are not on the exchange."))
+
+
+# A PLC value's data type -> its wire type (ST: BOOL, BYTE, UINT, UDINT, ULINT, REAL).
+VALUE_TYPES = {"BOOL": ByteType.BIT, "BYTE": ByteType.BYTE, "UINT": ByteType.UINT16, "UDINT": ByteType.UINT32,
+               "ULINT": ByteType.UINT64, "REAL": ByteType.FLOAT}
+
+
+def _value_fields(value, direction: str) -> Fields:
+    if direction == "out":
+        return NONE
+    wire = VALUE_TYPES[value.dataType]
+    return (bits("value"), []) if wire is ByteType.BIT else ([], [(wire, "value")])
+
+
+def _value_struct(value) -> str:
+    """PlcValue (a REAL, as before types), PlcValueUdint, PlcValueBool, ..."""
+    return "PlcValue" if value.dataType == "REAL" else "PlcValue" + value.dataType.capitalize()
+
+
+register(DeviceKind(
+    "plcValues", cp.PlcValue, "PlcValue",
+    commands=([], [(ByteType.FLOAT, "value")]),
+    fields_of=_value_fields, st_name_of=_value_struct,
+    doc="A value the PLC shows and plots, of its data type: drives nothing."))
+
+
+register(DeviceKind(
+    "watchdogs", cp.LinkWatchdog, "LinkWatchdog",
+    commands=([], [(ByteType.UINT16, "plcHeartbeat"), (ByteType.UINT16, "simHeartbeatEcho")]),
+    feedback=(bits("plcAlive"), [(ByteType.UINT16, "simHeartbeat"), (ByteType.FLOAT, "latencyMs")]),
+    runtime=("tripped", "trips", "latencyMaxMs"),
+    doc="The PLC link's heartbeat both ways: the simulator stops the PLC's commands when the PLC's stops."))
+
+
+register(DeviceKind(
+    "trackedLoads", cp.TrackedLoadView, "TrackedLoad",
+    commands=(bits("active"), [(ByteType.UINT32, "loadId"), (ByteType.FLOAT, "loadX"), (ByteType.FLOAT, "loadY"),
+                               (ByteType.FLOAT, "loadYaw"), (ByteType.FLOAT, "loadLength"),
+                               (ByteType.FLOAT, "loadWidth"), (ByteType.UINT16, "frame")]),
+    feedback=(bits("matched"), [(ByteType.FLOAT, "alongError"), (ByteType.FLOAT, "lateralError")]),
+    runtime=("lengthError", "widthError"),
+    doc="A load the PLC tracks: checked against the parcels; its tags plotted in the 3D page."))

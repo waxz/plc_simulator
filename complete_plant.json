@@ -1830,8 +1830,6 @@
     "endianness": "LE",
     "topics": [],
     "nodeId": 0,
-    "beltFeedback": false,
-    "beltFeedbackIntervalMs": 10,
     "tcpLengthEndianness": null,
     "tcpRxTimeoutMs": 0,
     "tcpMaxPayload": 0,
@@ -2579,19 +2577,19 @@
       "comment": ""
     },
     {
-      "key": "div_1/divert",
+      "key": "div_1/enable",
       "name": "",
       "table": "Sorting",
       "comment": ""
     },
     {
-      "key": "div_2/divert",
+      "key": "div_2/enable",
       "name": "",
       "table": "Sorting",
       "comment": ""
     },
     {
-      "key": "div_3/divert",
+      "key": "div_3/enable",
       "name": "",
       "table": "Sorting",
       "comment": ""

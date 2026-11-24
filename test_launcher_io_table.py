@@ -115,17 +115,17 @@ class PlcTagsTest(unittest.TestCase):
         config = load_config("logistics_full.json")
         tags, summary = io_table.tags_of(config)
         self.assertIn("Sim_Input 165 B (083EBF55) at %I0", summary)
-        self.assertIn("Sim_Output 247 B (C5E971E0) at %Q0", summary)
+        self.assertIn("Sim_Output 247 B (A188665C) at %Q0", summary)
         pub, sub = io_topics(config)
         self.assertLessEqual(set(pub["input"]["custom_ids"]) | set(sub["output"]["custom_ids"]),
                              {t.component for t in tags})
         div = {t.signal: t for t in tags if t.component == "div_1"}
-        self.assertEqual((div["divert"].name, div["divert"].data_type, div["divert"].address),
-                         ("div_1_divert", "Bool", "%Q1.1"))
+        self.assertEqual((div["enable"].name, div["enable"].data_type, div["enable"].address),
+                         ("div_1_enable", "Bool", "%Q1.1"))
         self.assertEqual((div["presentCode"].data_type, div["presentCode"].address), ("UDInt", "%ID122"))
         self.assertEqual((div["diverted"].data_type, div["diverted"].address), ("UInt", "%IW126"))
         self.assertEqual(div["commandSpeed"].address, "%QD222")
-        self.assertEqual(div["divert"].comment, "Divert 1")                    # the component's label
+        self.assertEqual(div["enable"].comment, "Divert 1")                    # the component's label
         self.assertTrue(all(t.member.startswith(("Sim_Input.div_1.", "Sim_Output.div_1.")) for t in div.values()))
         self.assertEqual(len({t.name for t in tags}), len(tags))               # names are unique
 

@@ -6,9 +6,9 @@ Push buttons (ControlButton)
   press() / release() are the operator's hand. A "momentary" button is
   pressed while held; a "latching" one (selector, emergency stop) toggles on
   each press and ignores release. The signal the PLC gets, `sensor_states`,
-  is the contact: pressed for a normally-open (NO) contact, NOT pressed for
-  a normally-closed (NC) one - STOP / E-stop buttons are usually NC so a
-  broken wire stops the line.
+  is the final state: 1 while pressed. Whether the button is wired normally
+  open (NO) or normally closed (NC, usual for STOP / E-stop) is the
+  simulator's detail: the PLC program never needs to know it.
 
 LEDs (LedIndicator)
   packFormat "bit": the PLC writes isOn. packFormat "byte": the PLC writes
@@ -40,8 +40,12 @@ BLINK_HZ = {2: 1.0, 3: 4.0}
 # -- push buttons -------------------------------------------------------------
 
 def contact(button: ControlButton) -> bool:
-    """The signal the PLC sees for the operator's current action."""
-    return bool(button.pressed) != bool(button.normallyClosed)
+    """The signal the PLC sees: TRUE while the button is pressed (a latching
+    one: while latched in). Whether the button is wired normally open or
+    normally closed (`normallyClosed`, e.g. STOP and E-STOP) is the
+    simulator's detail - the panel shows it - and is applied here, so the
+    PLC program only ever reads the final pressed / not pressed state."""
+    return bool(button.pressed)
 
 
 def sync_button(button: ControlButton) -> None:
@@ -65,12 +69,11 @@ def release(button: ControlButton) -> None:
 
 
 def is_pressed_signal(button: ControlButton, signal) -> bool:
-    """PLC side: does this received signal mean "pressed"? (NC inverts it.)"""
+    """PLC side: does this received signal mean "pressed"? The signal is
+    the final state (see contact): TRUE is pressed, NO or NC alike."""
     if isinstance(signal, str):
-        on = signal.strip() not in ("", "0", "false", "False")
-    else:
-        on = bool(signal)
-    return on != bool(button.normallyClosed)
+        return signal.strip() not in ("", "0", "false", "False")
+    return bool(signal)
 
 
 # -- LEDs ---------------------------------------------------------------------

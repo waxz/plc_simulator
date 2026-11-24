@@ -6,6 +6,13 @@ frontend editor to simulate physical interactions between parcels, conveyor belt
 and sensors, and to exchange live I/O and metrics with a real or mock PLC over
 MQTT or TCP.
 
+
+## Quick start
+```
+python main.py .\merge_demo.json --exchange-config .\tcp_exchange_config.json
+python plc_mock.py .\merge_demo.json --autostart  --exchange-config tcp_exchange_config.json
+```
+
 ## Architecture
 
 The Python simulation runs as a standalone process that:
@@ -212,7 +219,32 @@ The Qt layout editor is where belt shapes and positions are designed:
   - **+ New Custom Shape...** opens the Shape Designer (freehand, triangle,
     quadrilateral or arc, with exact numeric parameters).
 - **Alignment guides** snap to other components' vertices, edge midpoints and
-  centers (also when rotated), plus a measure tool (D).
+  centers (also when rotated).
+- **Measure** (`D`) opens a measure window: choose **Point to point**
+  (distance, dx, dy, direction - points snap like the drawing tools: ends,
+  centres, midpoints, the grid), **Path length** (click belts - their centre
+  lines -, sketch lines and arcs, the background drawing's lines and arcs,
+  or edges, one after another; each length and the total; click one again
+  to take it off) or **Angle between two lines** (edges, straight belts,
+  sketch or drawing lines).
+  What you picked is highlighted while the window is open and gone when it
+  closes - nothing stays on the canvas; a right click undoes the last pick.
+- **A belt's AX start and end, a diverter's AX zone** (its properties' AX /
+  PLC geometry): shown on the canvas while it is selected (green start /
+  begin, red end). A straight belt's start / end and a diverter's zone
+  begin / end (by default the ends of its box along its travel; saved as
+  `axStart` / `axEnd`) can be set by hand - typed, dragged (its handles) or
+  picked (**Pick ... on canvas**: the next click) - snapped like the drawing
+  tools (ends, centres, midpoints), each one undo step; **Start / end from
+  the shape** / **Begin / end from its box** forgets them. A curve's and a
+  path's are shown only.
+- **Number fields** keep 6 decimals (1 um) and show those the value needs
+  (2.3094 reads 2.3094, 2.0 reads 2.000); type anywhere in them - delete the
+  point or the digits before it, a number out of range for a moment - the
+  value applies on Enter (fitted into its range), on leaving the field or
+  with the arrows. **Ctrl+Z / Ctrl+Y** in a field undo / redo the layout's
+  edits (not the field's text). **The mouse wheel** never changes a number
+  field or a drop-down: it scrolls the panel.
 - **Component Manager** dock - the layout as a tree: a folder per kind
   (Belts, Sensors, Sources, Sinks, Buttons, LEDs) with its count, each
   component with its label and details (belt type and size, banner beams,
@@ -291,7 +323,7 @@ The Qt layout editor is where belt shapes and positions are designed:
   component's PLC signals as they are on the wire (`io_signals.py`, from
   the same mapping as the frames), each with its PLC type: **Commands (PLC
   -> simulator)**, such as a belt's `speed`, a stopper's `release` or a
-  diverter's `divert`, and **Feedback (simulator -> PLC)**, such as a
+  diverter's `enable`, and **Feedback (simulator -> PLC)**, such as a
   sensor's output, a belt's `actualSpeed` or a stopper's `isUp`. Use them to
   check the API before writing the PLC side. **Command source** (the
   component's `control`: `plc` or `manual`; a sensor `sim` or `manual`) is set here as part of the layout. The live values, and setting
@@ -325,7 +357,7 @@ The Qt layout editor is where belt shapes and positions are designed:
 | Tools > Fillet Belts... | Ctrl+Shift+F | Two straight belts: adds a curved belt of the given radius, tangent to both, trimming/extending the straights to meet it | planegcs |
 | Tools > Disconnect Belts | Ctrl+Shift+J | Removes connections between the selected belts | |
 | Tools > Solve Connections | F6 | Re-attaches every connection, holding the selected belts fixed | planegcs |
-| Tools > Check Layout | F7 | Belt overlaps (transfer zones at belt ends are allowed), outlets leading nowhere, broken connections, sensors/sources not over a belt; double-click an issue to select it | Shapely |
+| Tools > Check Layout | F7 | Belt overlaps (transfer zones at belt ends are allowed), outlets leading nowhere, broken connections, sensors/sources not over a belt; **side speeds**: a belt or wheel diverter meeting a line at an angle must run the line's speed / cos(angle) - a side induction's whole chain, the belt after a wheel diverter and the wheels (30 degrees: 1.1547 x, so 2.309 m/s on a 2 m/s line; `side_speeds.py`), an error when its drive's `speedMax` cannot; double-click an issue to select it | Shapely |
 | File > Import DXF Background... | | Floor plan as a locked background, via a dialog: units (prefilled from `$INSUNITS`, cross-checked against the drawing's dimensions), import only a window or one sheet of a drawing set, place it at the origin, leave out dimensions / hatches / leaders / layers | ezdxf |
 | File > Background (DXF) > Place Background | Shift+B | Move the drawing: click its anchor point (snaps to the drawing), then where it goes (snaps to the layout and sketch, or type `x,y` / `@dx,dy`); the drawing follows the cursor. Or drag the **anchor** (the blue crosshair at the drawing's lower-left corner). One undo step; the file is not read again | |
 | File > Background Settings... | | Change the background's units, window, offset and layers later (undoable) | ezdxf |
@@ -346,7 +378,7 @@ One compact row (18 px icons, as a CAD tool's tool bars), left to right:
 - **File** - Open, Save, Undo, Redo, Import DXF, Export DXF;
   **Background** - Place (move the drawing by its anchor, `Shift+B`),
   Settings, Crop (export the cropped DXF), Remove; **View** - Pan,
-  Measure, Clear Measurements, Fit (zoom to the whole layout, `Z`), Ports
+  Measure (its window), Fit (zoom to the whole layout, `Z`), Ports
   (show belt inlets / outlets); **Run** in the simulator (`F5`) and the theme;
   **Sketch** - Line, Arc, Arc Center, Rectangle, Circle,
   Polygon, Clear; **Conveyors** - the **Belt / Roller** choice, then
@@ -636,7 +668,9 @@ designed in the layout editor, and **Layout > Edit in Designer** opens the
 current layout there (save, then **Run in Simulator** in the editor to see
 the change). Like the simulator, there is one designer: if one is open, it
 comes to the front with this layout (opening it in place of another layout,
-asking first about unsaved changes) instead of a second one starting. The tool bar under the status bar holds every command in
+asking first about unsaved changes) instead of a second one starting. A
+designer the simulator started closes when the simulator exits (asking
+first about unsaved changes): no designers left behind. The tool bar under the status bar holds every command in
 three groups: Simulation (Start / Pause, Clear Parcels, Reset), Layout
 (Components - the layout as a tree, a folder per kind - and Edit in
 Designer) and View (Hide / Show Drawing, theme). The layout's DXF background
@@ -657,9 +691,9 @@ scrolls with the mouse wheel when they don't fit.
 - In `manual` the commands become controls: an ON / OFF toggle for a BOOL,
   a text box for a number (type it, then Enter). PLC frames leave that
   component alone, so you can drive one machine by hand while the PLC runs
-  the rest. For example, run a wheel diverter (`divert`) at the speed you
-  type (`commandSpeed`) and an angle correction to its divert angle
-  (`commandAngle`, 0 = as designed), run a belt, or
+  the rest. For example, run a wheel diverter (`enable`) at the speed you
+  type (`commandSpeed`) and the angle you type (`commandAngle`, deg to the
+  travel, 0 = straight on), run a belt, or
   release a stopper. A sensor in `manual` is forced: its output is what you
   set, parcels or not.
 - Shortcuts (Space, R, C, ...) pause while a text box has the keyboard.
@@ -743,6 +777,18 @@ See [drive_traction_plan.md](drive_traction_plan.md) for the design.
   "overloadTime", "atSpeedTolerance", "runningThreshold"}` turns it into
   `actualSpeed` (ramp + first-order lag), a UINT32 `encoderCount` that wraps
   and status bits. A belt without `drive` changes speed instantly, as before.
+- **Motor limits.** Every drive (a belt's, an elevator's hoist, a transfer's
+  chains, a turntable's slewing drive) can set its motor's `motorMaxSpeed`
+  (rpm) and `motorMaxAccel` (rpm/s), on the motor shaft. The drive train
+  converts them to the surface (m/s, m/s²) or the table (deg/s, deg/s²):
+  nothing runs faster or ramps steeper. A belt's stop (setpoint 0: run off,
+  speed 0, a zone hold or a safety stop) brakes at `motorMaxAccel` instead of
+  on `decel` / `rampDownTime`: the quick stop (a drive's OFF3). They need a
+  train (`gearRatio` and `drumDiameter`, a Hz belt, or a machine's drive):
+  an rpm means nothing without the gearing. `merge_demo.json`: every belt a
+  1450 rpm motor, gear 3, a 100 mm drum (2.53 m/s at 50 Hz), 2300 rpm/s =
+  4 m/s² (under μg = 4.9 m/s² at the belts' friction 0.5, so a parcel would
+  not slide); the Hz belt (75 mm drum) 4100 rpm/s, also 4 m/s².
 - **Drive train** (`drivetrain.py`). A belt or roller conveyor can be driven
   like a real one: a frequency inverter, a motor, a gearbox, an optional chain,
   and the drive drum or the rollers. Its `drive` then also holds
@@ -769,15 +815,251 @@ See [drive_traction_plan.md](drive_traction_plan.md) for the design.
 - **Traction** (`traction.py`). With `"tractionModel": "friction"`, parcels are
   dragged by friction capped at `Belt.friction` × m × g (`floorFriction` off belts),
   so starts, stops, slip and pushing come from physics. The default `"kinematic"`
-  model is the original velocity-override behavior.
-- **Belt feedback to the PLC.** Set `mqttSettings.beltFeedback: true` to publish
-  every belt's status bits (`running`, `atSpeed`, `reversing`, `fault`), then per
-  belt `actualSpeed` (REAL) + `encoderCount` (DWORD), in config order, as a
-  `FrameType.BELT_FEEDBACK` (6) frame every `beltFeedbackIntervalMs`.
-  It is off by default: the PLC must check the frame type byte before
-  deserializing, or this frame overwrites its IO_MAPPING input struct.
+  model sets a parcel's velocity from the belt it is on; how it takes up a new
+  belt's velocity is `"handoff"`. `"scaled"` (the default) eases it as
+  `"blend"` does, split in two: the momentum across the new belt over the
+  belt's whole `transition_momentum_duration` (a side merge slides in as
+  before), the speed along it over that times |dv along| / |v belt| (a 15 %
+  speed step ~0.08 s instead of 0.6, about 6 mm of slip instead of ~90; an
+  equal belt none). `"friction"`: by at most
+  `Belt.friction` × g, as Coulomb friction - a speed step slips dv² / (2 µ g)
+  (2.4 mm for 0.155 m/s at µ 0.5), a joint between equal belts nothing; a
+  machine's push (a transfer, a diverter) still acts at once. A parcel lying
+  on two straight belts (a joint, a side merge) is driven by both, each by
+  the share of it on that belt - the side belt keeps pushing it in while part
+  of it is still there (a diverter's zone is the diverter's: the outlet beside
+  it takes a parcel only when it diverts). Side guides (`Belt.guides`, on by
+  default) push a parcel back that reaches past a belt's side edge over
+  nothing - not where another belt adjoins (a merge opening, an outlet).
+  The two-belt drive and the side guides belong to `"friction"` (it needs
+  them: without the blend's momentum a merging parcel stops at the edge),
+  which merges less smoothly. `"blend"` is the former model: over
+  `transition_momentum_duration`, restarted at every hand-off (on short
+  belts of another speed a parcel lags them: ~90 mm on the merge demo's
+  sync sections). Measured on the merge demo (`python_sim` +
+  `tools/test_plant_demo.py`): the largest velocity jump through a side
+  merge per 20 ms 0.036 m/s with "scaled" and "blend", 0.098 with
+  "friction"; 2 parcels knocked off in 120 s with "scaled" and "blend", 3
+  with "friction"; the tracking error along up to 12 mm with "scaled",
+  86 mm with "blend".
+- **Belt feedback to the PLC.** A belt's drive feedback is the belt's own: with
+  its `feedback` property on (the designer's "Drive feedback to the PLC"), the
+  belt reports `running`, `atSpeed`, `reversing`, `fault` (BOOL), `actualSpeed`
+  (REAL, m/s) and `encoderCount` (UDINT) - a "frequency" belt also
+  `outputFrequency` (Hz) and `motorSpeed` (rpm) - in the input frame, with every
+  other device's feedback, under its own tags. Off by default: the belt reports
+  nothing.
   In channel registry files, a belt in an `"out"` (simulator → client) channel
   maps to these feedback fields, and `clock/simNanoseconds` gives simulated time.
+
+### The PLC link's heartbeat and watchdog (`watchdogs`)
+
+A **Link Watchdog** (component library, Operator Panel) puts a heartbeat on
+the exchange both ways: the PLC counts `plcHeartbeat` up every scan, the
+simulator counts `simHeartbeat` up every physics step (it stands still while
+the simulation is paused or stalls) and reports `plcAlive`. Once the PLC's
+heartbeat has moved, it standing still for `timeoutMs` (1000) trips the
+watchdog: every PLC command is put at rest - belts stop, bits off - until it
+moves again, as a real drive's communication watchdog stops it when its PLC
+is gone. The window shows it on the canvas and as HEALTH "PLC WATCHDOG"; a
+`[WATCHDOG]` line is printed each way. plc_mock.py counts its heartbeat;
+`test_watchdog.py` checks it through the frames. A layout without one keeps
+running on the PLC's last commands, as before.
+
+**Latency.** The PLC echoes `simHeartbeatEcho`: the `simHeartbeat` of the
+input frame its outputs were computed from. When they arrive the simulator
+is some steps further on, and reports `latencyMs` = those steps x the
+physics step, in simulated ms (feedback: the PLC reads it too, and the tag
+monitor plots it; the F3 debug panel and `sim_query.py status` show it with
+its maximum `latencyMaxMs`). It is the whole loop: the input frame's way,
+the PLC's wait for its next scan and the scan, the output's way back. 0
+until a PLC echoes; plc_mock.py echoes.
+
+A **chute** (a sink with a capacity) has a **fill mode** (`fillMode`: the
+designer's "Chute fill", or the simulator window's inspector, "Chute fill"
+buttons, while it runs):
+
+| Mode | A load that reaches it | `full` |
+|---|---|---|
+| `count` (default) | counted, then deleted | at the capacity |
+| `keep` | counted and kept in the bin, set into its next slot (out of the physics: it blocks nothing); the bin's loads are removed when it is emptied | at the capacity |
+| `delete` | deleted (still counted; the count wraps) | never: a PLC's chute-full logic never runs |
+
+Full, it takes no more: loads wait in front of it until it is emptied -
+after `emptyTime`, or on the PLC's `empty` (`test_chute_full.py`). Its box
+must reach the end of the belt feeding it: a load stopping on the floor
+between them is never counted.
+
+### The query API (`sim_query.py`)
+
+Whenever the simulator runs (window or `--headless`), it answers read-only
+JSON queries on 127.0.0.1 (port 8765, or the next free one; the window
+prints `[API] Query API at ...`) - for debugging by hand, a script or an
+agent:
+
+```bash
+python sim_query.py state                       # time, health, the PLC link, faults, chutes, watchdogs, lamps
+python sim_query.py tags panel infeed_run       # PLC tags now (names or substrings; --area I / Q)
+python sim_query.py history chute_2_full --seconds 30   # values over time (recorded from the first query)
+python sim_query.py components chute_2 div_1    # PLC signals now and the control (plc / manual)
+python sim_query.py parcels                     # every parcel: where, speed, barcode, destination
+python sim_query.py state --json                # the raw JSON (GET /api/state, /api/tags?match=...)
+```
+
+The same at `http://127.0.0.1:8765/api` (`/api/state`, `/api/tags`,
+`/api/history`, `/api/components`, `/api/parcels`); `test_query_api.py`.
+
+**As an MCP server (`sim_mcp.py`).** The same API for an AI assistant: an
+MCP server over stdio (standard library only, read-only). Tools:
+`sim_simulators` (every simulator running here: port, layout, time,
+health), `sim_endpoints`, `sim_state`, `sim_tags`, `sim_history`,
+`sim_components`, `sim_items` (the moving items), `sim_tracking`, and the
+generic `sim_api` (any GET `/api` endpoint with its parameters - a new
+endpoint, for another kind of plant, needs no change here). Each takes an
+optional `port`.
+
+```bash
+claude mcp add simulator -- python /path/to/python_sim/sim_mcp.py     # Claude Code; other clients: the same command
+```
+
+`test_sim_mcp.py`.
+
+### Studies (`sim_study.py`)
+
+A layout with its mock-PLC program, run headless and faster than real time
+(about 3 x on merge_demo; `--jobs` runs in parallel), over seeds and
+parameter variants. Generic: any layout, any program, any parameter.
+
+```bash
+python sim_study.py merge_demo.json --seconds 300 --warmup 60 --seeds 1,2,3
+python sim_study.py merge_demo.json --sweep "belts.belt_[2345]_*.drive.accel=2,4" --jobs 4 --json out.json
+python sim_study.py station_1.json --set "sources.*.interval=1.5" --csv runs.csv
+```
+
+Measured after the warm-up, per run and over the seeds (mean, min, max):
+items delivered per sink and per minute; items on the plant (mean, max);
+lead time (first seen to delivered: mean, p50, p95); routes (where each
+destination went - a sorting error shows as a destination in two sinks);
+items each source made and the share of time it was held (the plant could
+not take more); the share of time each belt ran; the program's events by
+kind; the program's own counters (its `metrics()`, e.g. the merge train's
+landings, empty cars, misses; its `HEADLINE` are the default columns); and
+sim seconds per wall second. A parameter is `LIST.ID.ATTR[.ATTR]=VALUE` -
+a layout list, an id or glob, a field (nested with dots) - or
+`config.ATTR=VALUE`; `--set` fixes one, `--sweep` runs each value (several:
+every combination). `test_sim_study.py`.
+
+### PLC tag monitor (F4)
+
+F4 in the simulator window shows every PLC tag of the layout - the names
+the AX code's `Plant_Tags` has, the TIA address, the type - with its value
+now; a value that just changed is highlighted. F4 again: inputs only,
+outputs only, off. The mouse wheel over it scrolls it. Each generated tag
+comment gives its unit (`[m/s]`, `[Hz]`, `[deg]`, ...; `plc_tags.UNITS`).
+
+The 3D page has the same tags (button **Tags**, key P), with charts: tick
+tags to plot them over time, or pick two as an x/y trajectory. Its view
+**Tracked loads** lists only the `trackedLoads` slots - the loads the PLC
+tracks, each checked by the simulator against its parcel (`tracking.py`):
+plot `track_NN_alongError` / `lateralError` (m) over time, or
+`track_NN_loadX` / `loadY` as the path of what slot NN shows; `python
+sim_query.py tracking` sums the check up, and a slot's properties show its
+length and width errors.
+
+**Track boxes.** Each tracked-load row has a **role** (its type in the
+Exchange Table; the layout's, not on the exchange - the frame is the same):
+**Tracked load** (`load`, a load the PLC tracks: checked against the
+parcels), **Track slot** (`slot`, a slot on a merge line the PLC asked for
+or was granted: drawn, never checked) and **Sync load** (`sync`, the load a
+sync section drives into its slot: checked). Every active row with a size is
+drawn where the PLC has it: in the 3D page (button **Track boxes**, key B)
+a load an outlined box (pink), a slot a flat band on the belt (cyan), a
+synchronised load an outlined box (orange); in the simulator window the same
+outlines (key **B** hides them). A slot and its load share the load's id, so
+a side induction shows the slot coming along the main line and the load it
+drives towards it.
+
+**Chute statistics.** Every chute (sink) shows how many loads it took since
+the statistics were last reset, and how many a minute (the last minute) and
+an hour (the last hour, projected while less has been counted) - in
+simulated time, so the rates hold at any simulation speed (`chute_stats.py`).
+In the simulator window the line `total | n/min | n/h` sits under the
+chute's name, and **Reset Stats** (toolbar, Simulation group) starts
+counting again; in the 3D page the **Chutes** table in the corner panel, with
+its own **Reset** (`POST /reset_stats`; also in `/api/state` as
+`chuteStats`). A reset leaves the chutes themselves (their fill, their
+`delivered` counts) alone; a simulation reset restarts the statistics too.
+
+**A light stream.** The page asks for what changed (`events?delta=1`,
+`stream_delta.py` / `view3d_web/delta.js`): its first frame whole, then per
+key only the changed entries of a dict, the changed fields of a row (rows
+keyed by their first element: new rows whole, gone ones by id), other
+values when they change. A browser that accepts gzip gets the stream
+compressed as one (each frame flushed), so consecutive frames compress
+against each other. On merge_demo: 4254 bytes a frame whole, 1297 as
+deltas, 261 as compressed deltas (16 x less; about 1 Mbit/s down to 60
+kbit/s at 30 frames a second). Generic: nothing in it knows the plant; a
+page that does not ask (or `?raw=1`) gets whole frames as before.
+`test_stream_delta.py`.
+
+**Smooth playback (a slow link).** Over a tunnel (e.g. a Cloudflare tunnel)
+the ~30 frames a second come in bursts, and drawn as they come the parcels
+jump. With **Smooth** on (the default; key M) the 3D page keeps every frame,
+stamped with the server's clock (`w`), and plays them back evenly a little
+behind the live stream, placing the parcels and track boxes between two
+frames (`view3d_web/playout.js`). How far behind is measured, not set: one
+and a half times the spread of the frames' arrival delays over the last 10 s,
+plus 50 ms (80 ms at least, 3 s at most); the corner panel shows it as
+**Buffer**. Locally it stays near 0.1 s; frames arriving in bursts every
+250 ms give about 0.4 s. Playback never goes back: it holds on the last frame
+if the buffer runs dry, grows the delay at once and shrinks it slowly. Smooth
+off (or `?live` in the address) draws each frame as it comes, as before.
+
+### Exchange table: what the PLC sends to be shown
+
+In the designer, **Edit > Exchange Table** lists what the PLC sends only to
+be shown, plotted and checked, as one numbered table: its **values**
+(`plcValues`, each of a data type: BOOL, BYTE, UINT, UDINT, ULINT, REAL; its
+ST struct follows the type: `PlcValue` for a REAL, `PlcValueUdint`, ...) and
+its **tracked loads** (`trackedLoads`, checked against the parcels). Row N is
+the N-th in the PLC's output frame - the values first, then the tracked
+loads - so neither is placed on the canvas, where a cut and paste would
+reorder them. A row's type (a data type, or a tracked load's role: Tracked
+load, Track slot, Sync load), id, unit, decimals and label are edited there;
+Up / Down move a row within its group; changing a row's type between a value
+and a tracked load moves it to the other group. Any change changes the
+PLC's I/O: export to SIMATIC AX and rebuild the PLC.
+
+Use values for what the PLC computes: a controller's error, a counter, its
+own performance. `merge_demo.json` has the AX program's scan cycle and
+execution time (current, min, max; ms), its stages' times, the scans and the
+cycles over 15 ms, the time between input frames, the input frames and the
+simulator step its outputs are of (`link_sim_frame`): plot them in the 3D
+page's tag monitor.
+
+The property panel on the right appears while a component is selected and
+hides when you click empty canvas.
+
+### Health: freezes, stalls and the debug panel (F3)
+
+- **HEALTH** in the status bar: `OK`; `STALL 0.6 s` (amber, red from 1 s) for
+  10 s after the simulation loop stalled; `SIM NOT RESPONDING` when the
+  simulation process sent no snapshot for over 1 s; `PLC SILENT` when a
+  connected PLC sent no frame for over 1 s.
+- **F3** opens the debug panel: the window's frame time; the simulation
+  loop's sim / real ratio, ticks per second, tick and physics time (avg / max
+  over 5 s), sim time dropped, the stalls (count, longest, last); the PLC
+  link (frames in / out, the age of the PLC's last frame, errors); the plant:
+  the FAULT lamp, drive faults, components in manual control (the PLC's
+  commands to them are ignored), and every eye blocked for over 1.5 s (red
+  from 3 s: as long as a PLC's jam time, so a jam fault comes with its eye).
+- **A stall** (a tick over 0.25 s, or the loop not running for 0.25 s) prints
+  a `[STALL]` line with the time. **A freeze** (the simulation loop or the
+  window loop not advancing for 2 s) writes every thread's stack to
+  `sim_stall.log` (`stall_watch.py`), so the line it hung in is on record,
+  and prints a line when it runs again.
+- The exchange's `stats()` has `rx_age_ms`: how long since the PLC's last
+  frame was applied.
 
 ### Field devices
 
@@ -923,8 +1205,8 @@ ERROR LEDs per lane, with keys `1 2 3` (START), `q w e` (STOP), `a s d`
 (RESET); the PLC-commanded belts have drive models with overload protection
 and stand still until the PLC runs them. Its I/O frames are exactly the AX
 project's `Station_1_Input` / `Station_1_Output`, so its belts use the
-"speed" command format and `beltFeedback` stays off (the AX client
-deserializes every frame as I/O). `test_fixture_config.json` is the old,
+"speed" command format and no belt reports `feedback` (the frames match
+those STRUCTs exactly). `test_fixture_config.json` is the old,
 larger layout that unit tests use as a collection of every component variant.
 
 To also start the channel registry editor + live metrics dashboard alongside the
@@ -958,9 +1240,12 @@ Conveyor** / **Curved Roller Conveyor** in Conveyors > Rollers, or a belt's
 an actuator body on a stand beside the belt, on the side it pushes away
 from, with two guide rods and a push plate. The plate sits at the belt edge
 and sweeps across while the pusher is active, and a valve lamp lights. A
-wheel diverter is a pop-up wheel module in the belt: a steel deck with rows
-of rubber wheels that rise and steer to the divert angle while active (60
-degrees at most), with its drive box and gear motor under the belt. The
+wheel diverter is a conveyor of its own, not a module over a belt: a steel
+deck with rows of rubber wheels and two motors - one turns the wheels (the
+speed), one swivels them (the direction, 60 degrees at most each way) - with
+its drive box under the deck. Everything on it goes the way the wheels
+point: straight through at 0, onto the branch at the divert angle; stopped
+(`enable` off), it holds what is on it. The
 designer, the simulator window and the 3D view all draw them from the same
 dimensions (`equipment_geometry.py`).
 
@@ -969,10 +1254,19 @@ each a destination from `destinations` / `destinationWeights`, and a share
 (`noReadRate`) with an unreadable label. Each parcel also gets a weight in
 the source's mass range.
 
+**A source's detection area.** A source makes a parcel every `interval` s
+only while its detection area is clear: a rectangle centred on the source,
+turned with it, `clearLength` m along its heading and `clearWidth` m across
+(0 = automatic: the largest parcel it makes, plus 0.2 m before and after it).
+While a parcel or pallet of its level is in the area it waits, and makes the
+next as soon as the area clears - so a short interval (2 s on a belt that
+stops) no longer drops parcels on top of or against each other at the start
+of the belt. The designer draws the area dashed around the source.
+
 | Equipment | Set up | Does | PLC signals (in / out) |
 |---|---|---|---|
 | Scanner | zone over the belt, `scannerType` "barcode" / "rfid" / "dws" | Reads each parcel once as it enters. A barcode scanner gives a no-read on an unreadable label, RFID always reads, and a DWS (dimension-weight-scan) also measures the parcel | - / `code` UDINT, `destination` BYTE (as a warehouse system would answer), `readCount` UINT (+1 per parcel), `noRead`, `present`; DWS: `weight`, `measuredLength`, `measuredWidth`, `measuredHeight` REALs |
-| Diverter | zone on the belt, `diverterType` "pusher" / "wheels", `divertAngle` (+-90 pusher, ~30 wheels), `speed`, `destination` | Steers the parcels in its zone onto the branch while active. The PLC program: active while a readable parcel for its destination is there. Following commands: active while `divert` is on, at `commandSpeed` m/s, steering at `divertAngle` + `commandAngle` degrees - the command corrects the layout's angle, 0 = as designed (`commandSpeed` starts at the layout's `speed`, `commandAngle` at 0; `plc_mock.py` sends those). Pop-up wheels steer at most 60 degrees each way: they swivel to the angle while active (400 deg/s) and back to straight when not, and move the parcels the way they point | `divert` BOOL, `commandSpeed` REAL, `commandAngle` REAL / `active`, `present`, `presentCode` UDINT, `diverted` UINT |
+| Diverter | zone on the belt, `diverterType` "pusher" / "wheels", `divertAngle` (+-90 pusher, ~30 wheels), `speed`, `destination` | Three commands: `enable`, `commandSpeed` m/s, `commandAngle` (deg to the travel, + left). A **pusher** works over a belt: while enabled it pushes what is in its zone at that speed and angle; off, the belt carries it on. **Wheels** are a conveyor of their own with two motors: the parcels in the zone always go the way the wheels point, at the wheels' speed - straight through at angle 0, onto the branch at `divertAngle`; the wheels swivel to `commandAngle` (at most 60 deg each way, 400 deg/s) while enabled, and `enable` off stops them (what is on them stands). A parcel counts as `diverted` when the wheels point more than 10 deg off the travel. Start / reset: `commandSpeed` = `speed`, `commandAngle` = a pusher's `divertAngle`, the wheels' 0. The PLC program (`plc_mock.py`): a pusher enabled while a readable parcel for its destination is there; wheels enabled while running, straight on and turned to `divertAngle` for the destination, at `speed` x cos(divertAngle) / cos(angle) (the same pace along the travel). A layout saying `divert` loads as `enable` | `enable` BOOL, `commandSpeed` REAL, `commandAngle` REAL (wheels with `rowControl`: a swivel motor per wheel row along the travel - `equipment_geometry.wheel_columns`, 6 on a 1 m deck - and `enable`, `rowSpeeds` ARRAY OF REAL, `rowAngles` ARRAY OF REAL, row 0 first - STRUCT `WheelDeck<n>_Command`; in the designer's palette as **Sorting > Wheel Sorter (row control)**). The wheels: `wheelRows` rows along the travel of `wheelColumns` wheels, `wheelPitchAlong` / `wheelPitchAcross` m apart, centred on the deck (0: fitted to it, about 0.15 / 0.12 m apart); with row control, a row's strip runs midway to its neighbours. Check Layout warns when they reach past the deck / `active`, `present`, `presentCode` UDINT, `diverted` UINT |
 | 90° transfer | zone (`width` along the travel, `height` across), `crossAngle` (+90 left / -90 right), `speed`, `liftTime`, `stop` | The chain transfer of a pallet line, at a corner or junction of roller conveyors. A pallet stops centred on it (`stop`). Chain strands then lift it off the rollers and carry it sideways onto the crossing conveyor, without turning it, and drop. The PLC program: transfers whatever arrives (a corner) | `transfer` / `present`, `centered` (stopped on it, ready), `up`, `transferred` UINT |
 | Turntable | `radius`, `beltId` (its platform belt), `angles`, `turnSpeed` | Turns its belt, and what is on it, between positions. The PLC program: loads at `autoFrom`, turns to `autoTo`, unloads, turns back | `targetIndex` BYTE / `index` BYTE, `turning`, `inPosition`, `occupied` |
 | Accumulation conveyor | `beltIds` (its zones, in flow order), `mode` "singulation" / "train" | Zero-pressure accumulation, with a photo-eye at each zone's end. A full zone holds its belt while the next zone is occupied ("train": unless the next one is moving). The last zone discharges while released | `release` / `zones` UINT (bit mask), `full` |
@@ -1003,6 +1297,16 @@ python main.py logistics_demo.json --view3d
 The physics of layouts without this equipment is unchanged, bit for bit.
 
 ### 3D view
+
+**Style** (button, or S) in the 3D page: colours, sizes and heights of the
+models - background, floor, light, belt surface / frame / thickness,
+stands, chevrons, rollers, parcels (layout colour, by destination, or one
+colour; height), sensors, source / sink zones, chute bins - and, after a
+double-click (or Alt+click) on a component, that component alone (colour,
+thickness or height, hidden). Save keeps it next to the layout,
+`<layout>.view3d.json` (in the browser without a layout file). Only the
+drawing changes: the conveyor height and where loads ride stay the
+simulation's (`heights.py`).
 
 The running simulation in 3D, in a browser: the simulator window's
 **3D View** button (VIEW group), or start with it:
@@ -1074,7 +1378,157 @@ python plc_mock.py test_config.json
 ```
 
 The PLC program runs every `--scan` (default 50 ms). Which one depends on
-the layout (`plc_logic.make_controller`, printed as `[PLC] Program: ...`):
+the layout (`plc_mock.make_program`, printed as `[PLC] Program: ...`;
+`--program merge-train|lines` picks one):
+
+**A merge line by a slot train** (`plc_merge.MergeTrainController`) for a
+layout that shows slots (a `trackedLoads` row of role `slot` or `sync`:
+`merge_demo.json`). The program the AX library carries next, written here
+first to check it against the physics; like every mock program it sees only
+the I/O image (eyes, banners, the belts' speed feedback), not the parcels.
+- **The train**: the merge line's slots (cars, 1.2 m) a pitch apart, each
+  moved every scan by the line's measured speed times the scan; it reaches
+  back before the line's start as far as a straight induction's load needs.
+- **A client per induction** (each `<chain>_gate` sensor, an IR eye or a
+  banner over the joint of the metering belt `<chain>_a` and the sync
+  section `<chain>_b` ... `<chain>`):
+  1. a load is admitted across the gate only while the section is free: it
+     crosses with both belts at one speed (never held on the joint), and
+     its detection ends when the gate clears - its length is the travel
+     from its front to its tail;
+  2. it stops wholly on the section and asks for the nearest free car it
+     can reach; it waits there until granted, then the sync tracker
+     (belt_control's law: the trigger at `0.75 dv^2 / a`, a smoothstep ramp,
+     a PID with Kp 8) drives the section so the load reaches the port in its
+     car at the line's speed along it; at the commit point it is on its car
+     (within 0.1 m) or it is stopped, and asks again at rest; past the port
+     it has landed and its car is occupied;
+  3. meanwhile the metering belt holds the next load short of the gate (its
+     stopping distance before it), tracked from the induct eye. A load that
+     reaches the gate while another waits (a single belt, or close parcels)
+     waits on it - no error, and it does not block the waiting load's
+     request; its detection ends when it has crossed. A load at rest too
+     close to the port for the whole ramp ramps to the speed it can reach
+     and gets a car timed to meet it there.
+  A side port may need a commissioned landing offset; the demo's need none.
+- **The wheel diverter after the line** (`wheel_sort.py`): a plan of
+  directions, one per parcel in the order they come - each scanner read
+  appends the angle for its destination (`divertAngle` for the diverter's
+  destination, 0 straight on for any other or a no-read), e.g. 0, -30, 0, 0,
+  -30, -30. The IR eye just before the deck (`infeed_jam`) sees each parcel:
+  its front takes the next direction from the plan, its tail gives its
+  length. From there its position is estimated - by the line's encoder up to
+  the deck, then by the wheels under it (each row's commanded speed and
+  angle, with the swivel's rate) - to within about 10 mm along the line (the
+  eye's beam width taken into account).
+  The deck is a two-dimensional array of wheels steered row by row
+  (`rowControl`): each row across the travel swivels on its own motor,
+  mounted along the travel - as many rows as the deck has wheels along the
+  travel (`div_1`, 1 m: 6 rows, so 6 speeds and 6 angles). It carries the
+  parcels itself: `merge_demo.json` has no belt under it any more. Each row: a row points the way of the oldest parcel not yet clear of it
+  and never turns while that one is on it; the moment it is clear, the row
+  turns to the next parcel's direction. So a parcel carried off the side
+  keeps the rows it still covers while the rows it has left already turn for
+  the parcel behind. Clear means every corner of the parcel past the row's
+  end, or off the deck's side: the parcel as a rectangle (its measured
+  length; its width taken as the deck's), square or turned to its direction,
+  with margins of 0.05 m along and 0.2 m across (a parcel carried sideways
+  lags the wheels by up to 0.19 m). Each row runs at the line's pace (line
+  speed / cos(its angle)). The summary shows the plan and the rows
+  (`div_1: plan [-30, +0, +0], rows [+0, +0, +0, -30, -30, -30], ...`).
+  On `merge_demo.json` in 180 s, at a 10 ms and a 50 ms scan: every parcel
+  reaches the chute of its destination, and no row turns while an earlier
+  parcel is still on it. With the deck as one row the strict rule could not
+  hold at the 1.2 m pitch: the next parcel was already on the deck going the
+  diverted way (29 of 333 to the wrong chute), and turning earlier caught
+  diverted parcels on the deck's edge.
+- **Shown** in the track boxes: each client's car (slot rows), the load it
+  drives (sync rows) - a fixed row per feed, so a box stays the same box -,
+  the landed loads in their cars (load rows, each keeping its row while its
+  car is on the line). A landed load's box keeps its chain's heading (a load
+  keeps its turn on the line, like the parcel; it is only moved), its
+  measured size (a banner gate's width too) and where it came in across the
+  line - on its parcel within 30 mm (median), 63 mm (90 %) - checked
+  by the simulator against the parcels (`sim_query.py tracking`). Its
+  **tracking error** goes to the PLC values `sync_<belt>_pos_mm` and
+  `sync_<belt>_speed_mps` (`<belt>`: the section's last belt): the load
+  against its reference - the ramp that ends on its car - along the line,
+  while the tracker drives it (0 otherwise); plot them in the 3D page's tag
+  monitor (Tags, view "PLC values").
+- **The next load comes on while the last is driven** (2026-11-18): each
+  belt of a sync section follows the load on it - the belts from the
+  leading load's tail forward its command, the belts behind it the next
+  load's (the induction speed while it comes on and crosses the gate,
+  stopped short of the leading tail if it would close up). So as soon as
+  the leading load is driven into its car and its tail is past the
+  section's first belt, the metering belt sends the next one; each load's
+  place comes from the belt under its centre. 232 loads in 120 s (173
+  before: the next load waited until the last had landed); every car one
+  load, no miss, the lengths still right. A single-belt induction (the
+  straight one) cannot split its belt: it keeps one command.
+- **The induction speed** (`--induct-speed`, default 1 m/s: a human-assisted
+  induction): the metering belt runs at it, and the section with it while a
+  load crosses the gate - the next load is admitted only once the section,
+  slowing from the line's speed after the last one, is back at it. Past the
+  gate the section speeds up (the tracker). The gate then measures each
+  load's length along its travel right: within 14 mm on the IR gate (its
+  50 mm spot taken off) and 9 mm on the banners (half a scan's travel at
+  each edge accounted for). Before, the next load crossed while the section
+  still ran faster than the metering belt: 30 - 50 mm too long.
+- **Through the gate without stopping** (2026-11-18): a load runs through
+  its gate at the admit speed and never stops on it; it asks as the gate
+  sees its front, its car planned for where it will be once it is off the
+  gate (a nominal load past it, then braked) and for the car's approach
+  meanwhile. Once its tail is past (its length known) its car is checked
+  again - out of reach, it is given back and the load asks again - and the
+  tracker drives it from its speed (waiting, if it must, off the gate).
+  **A load longer than `--max-length`** (default 1.2 m, a car) - the gate
+  still blocked past it - gets no car: its request withdrawn, its feed held
+  with it on the gate until it is taken away (`too long` in the summary).
+- **Head to head, asking while it crosses** (2026-11-18): a load is aligned
+  by its front with its car's front target (0.2 m ahead of the car's centre),
+  so the gate's first sight of it is all the control needs - it asks for its
+  car at once, while it crosses; its length (from the gate) only says when
+  it has left the chain. A load that will be too close to its port for the
+  whole ramp comes to rest first and then ramps at constant acceleration,
+  reaching the port slower than the line and catching up after it - its car
+  timed to be that catch-up, (v - v_port)^2 / (2 a), short of the port when
+  its front arrives. Works with the sync drives at 2, 3 and 4 m/s^2 (60 s
+  each in `test_plc_merge.py`: no miss, one load to a car, within 0.2 m of
+  its target).
+- **Alignment** (`plc_mock.py --align head|center`): `head` (the default)
+  aligns a load's front with its car's front target and asks as the gate
+  sees the front; `center` aligns centre to centre and asks once the length
+  is measured (the tail past the gate) - a little tighter, a little slower.
+- **Landing offsets, commissioned**: a feed's loads may settle a steady
+  distance off their car (the left side 0.1 m behind, head aligned at
+  2 m/s^2). `python plc_merge.py merge_demo.json --commission 120 [--align
+  center]` runs the line in the physics, measures each feed's landings and
+  prints its offsets as `plc_mock.py` options (`--land-offset belt_2=-0.095
+  ...`); given them back it refines them. Measured on the demo (120 s):
+
+  | | mean error per feed | extremes |
+  |---|---|---|
+  | head | -124 .. -15 mm | -167 .. +47 mm |
+  | head + offsets | -19 .. +8 mm | -116 .. +123 mm |
+  | center | -79 .. +25 mm | -106 .. +53 mm |
+  | center + offsets | -3 .. +4 mm | -44 .. +67 mm |
+
+  The offsets depend on the drives (their acceleration): commission again
+  after changing them.
+- **The plant's measures, not the CPU's clock**: every distance (the cars,
+  the loads on the chains) from the belts' `encoderCount`, and the tracker's
+  time from the line's travel over its measured speed. With the CPU's clock
+  a simulator running slower than real time (sim/real 0.67) moved the cars
+  off their parcels - loads landed two or three to a car, "free" cars held
+  parcels; `test_plc_merge.py` runs the PLC's clock at 1.5 x the plant's.
+- **Found from the geometry**, not the names: each sensor with "gate" in its
+  id; the belt before its joint is the metering belt, the belts end to end
+  after it up to the one that joins the merge line the sync section, an
+  "induct" eye on the metering belt its induct eye.
+- Measured on `merge_demo.json` (`test_plc_merge.py`, and over TCP): every
+  induction served, no miss, each landed load within 31 mm of its car's
+  centre (180 s: 93 loads), the loads on the infeed at least 0.7 m apart.
 
 **Line control** (`LineController`) for a layout with several lines - lines
 are found from the names: labels like `L2 START` / `L2 BANNER`, or ids like
@@ -1112,6 +1566,28 @@ speed from the layout file (1 m/s where it is 0).
 
 How the frames are built, and how to read and write them in `plc_mock.py`
 and in a SIMATIC AX PLC (ST): [docs/plc-data-exchange-guide.md](docs/plc-data-exchange-guide.md).
+
+#### Checking the devices and soaking a layout with the mock PLC
+
+```bash
+# every device does what its command says: a PLC (plc_mock.PlcImage, the mock's
+# own I/O frames) commands belts (vfd / speed / Hz), a roller conveyor, a curve,
+# pushers, a wheel diverter and a turntable (90 and 180 deg), and checks the
+# load's motion and the feedback (39 checks; also test_device_check.py)
+python device_check.py
+python device_check.py --write device_check.json     # its layout, to open and try by hand
+
+# a layout under plc_mock.py (headless simulator + mock PLC over TCP): time ratio,
+# dropped time, stalls, and any error either prints
+python tools/mock_soak.py --all --seconds 60
+python tools/mock_soak.py complete_plant.json --seconds 30 --speed max   # throughput
+```
+
+A wheel diverter carries what is on it the way its wheels point:
+`commandAngle` is the angle to the travel (0 straight on, at most 60 degrees
+each way), at `commandSpeed`, while `enable` is on; off, the wheels stop.
+A curved belt runs counter-clockwise when its `directionAngle` is > 0,
+clockwise otherwise.
 
 ### The complete plant (`complete_plant.json`)
 
@@ -1200,7 +1676,8 @@ checks the mapping:
 - every field reads back at its offset, with an independent decoder;
 - the generated PLC serializers' bytes decode in the simulator;
 - each frame, with its 14 bytes of framing, fits the AX library's
-  256-byte buffers.
+  buffers (payloads up to 4096 bytes: frames of 4110; every size that
+  changes with it, and how to raise it: ax_dev's `docs/frame-size.md`).
 
 ```bash
 python tools/frame_map.py logistics_full.json        # -> logistics_full.frame_map.html
@@ -1294,7 +1771,7 @@ to a whole byte, then every other field in declaration order.
 | laser banner ("bit") | its beams, beam *i* = bit *i*, padded to whole bytes | ARRAY OF BYTE, beam *i* = bit *i* MOD 8 of byte *i* DIV 8, any number of beams |
 | `packFormat` "byte" / "uint16" / "uint32" / "float" | 1 / 2 / 4 / 4 bytes (a banner's beam *i* = bit *i* here too) | BYTE / WORD / DWORD / REAL |
 | belt command (output) | speed, directionAngle: 2 x 4-byte float | ARRAY[0..1] OF REAL |
-| belt feedback (BELT_FEEDBACK frame) | actualSpeed float, encoderCount uint32 | REAL, DWORD |
+| belt feedback (a belt with `feedback` on, in the input frame) | actualSpeed float, encoderCount uint32 | REAL, UDINT |
 | clock | uint64 nanoseconds (wall clock) | LINT |
 
 ```bash
@@ -1314,12 +1791,18 @@ STRUCTs and serializers are defined once. One `.st` file holds:
 - `DeserializeFromBytes` / `SerializeToBytes` per frame, at the exact byte
   and bit offsets, in the layout's byte order, each first checking that the
   buffer is long enough (else nothing is done, `startOffset` returned);
-- the PLC tags (`Sim_Tags`, `ReadTags` / `WriteTags`);
+- the PLC tags (`Sim_Tags`, `ReadTags` / `WriteTags`); with **Tag arrays**
+  (`axExport.tagArrays`, e.g. `belts, trackedLoads`) those kinds' tags are
+  arrays of their wire STRUCTs instead - `beltVfdCommands[i]`,
+  `beltDriveFeedbacks[i]`, `trackedLoadCommands[i]`, ... - the index the
+  device's place in its kind, named in `Sim_TagIndex` (`belt_5_a : INT :=
+  0`), so a program loops over them; the wire is the same either way, and
+  `plc_tags.tags_json` gives each tag its place (`stPath`);
 - `SimIoContract`: frame types, sizes and fingerprints;
 - optionally an AxUnit golden-vector test that must reproduce the
   simulator's bytes.
 
-A frame bigger than the AX `TcpClient` carries (242 bytes) is refused.
+A frame bigger than the AX `TcpClient` carries (a 4096-byte payload) is refused.
 
 **In the designer:** **File > Export to SIMATIC AX** (`Ctrl+Shift+E`). The
 first time it asks: the `.st` file (relative to the layout), namespace,
@@ -1353,7 +1836,7 @@ workflow.
 | Setting | Effect |
 |---|---|
 | `tcpRxTimeoutMs` | close a client that has sent nothing this long (0 = never) |
-| `tcpMaxPayload` | don't send frames with a longer payload, counted in the stats (0 = no limit; the AX TcpClient takes 242) |
+| `tcpMaxPayload` | don't send frames with a longer payload, counted in the stats (0 = no limit; the AX TcpClient takes 4096) |
 | `tcpOutputOwner` | take the PLC output frame only from this node id |
 | `tcpRequireLayoutCheck` | take it only from a connection whose LAYOUT_CHECK matched |
 | `tcpLengthEndianness` | byte order of the frame length field, when it differs from the payload's |

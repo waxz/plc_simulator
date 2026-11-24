@@ -66,12 +66,62 @@ def pusher_parts(width: float, height: float, divert_angle: float, stroke: float
                        (math.cos(a), math.sin(a)))
 
 
-def wheel_centres(width: float, height: float) -> List[Tuple[float, float]]:
-    """The wheels of a pop-up wheel module, row by row."""
-    nx = max(2, round(width * WHEEL_INSET / WHEEL_PITCH_X))
-    ny = max(2, round(height * WHEEL_INSET / WHEEL_PITCH_Y))
-    w, h = width * WHEEL_INSET, height * WHEEL_INSET
-    return [((i + 0.5) / nx * w - w / 2.0, (j + 0.5) / ny * h - h / 2.0) for i in range(nx) for j in range(ny)]
+def wheel_columns(width: float) -> int:
+    """How many wheel rows a pop-up wheel module has along the travel when
+    none is set (a row lies across the travel; a deck steered row by row has
+    a swivel motor per row)."""
+    return max(2, round(width * WHEEL_INSET / WHEEL_PITCH_X))
+
+
+def wheel_grid(width: float, height: float, rows: int = 0, columns: int = 0, pitch_along: float = 0.0,
+               pitch_across: float = 0.0) -> Tuple[List[float], List[float]]:
+    """The wheels' positions on the deck, centred on it: (u of each row along the travel, row 0
+    first; v of each wheel across, the same in every row). `rows` rows of `columns` wheels at
+    `pitch_along` / `pitch_across` (m); 0: fitted to the deck (WHEEL_INSET of it, about
+    WHEEL_PITCH_X / WHEEL_PITCH_Y apart)."""
+    nx = int(rows) if rows and rows > 0 else wheel_columns(width)
+    ny = int(columns) if columns and columns > 0 else max(2, round(height * WHEEL_INSET / WHEEL_PITCH_Y))
+    px = float(pitch_along) if pitch_along and pitch_along > 0 else width * WHEEL_INSET / nx
+    py = float(pitch_across) if pitch_across and pitch_across > 0 else height * WHEEL_INSET / ny
+    return ([(i - (nx - 1) / 2.0) * px for i in range(nx)], [(j - (ny - 1) / 2.0) * py for j in range(ny)])
+
+
+def grid_of(d) -> Tuple[List[float], List[float]]:
+    """A diverter's wheel grid (its wheelRows, wheelColumns, wheelPitchAlong, wheelPitchAcross)."""
+    return wheel_grid(float(d.width), float(d.height), getattr(d, "wheelRows", 0) or 0,
+                      getattr(d, "wheelColumns", 0) or 0, getattr(d, "wheelPitchAlong", 0.0) or 0.0,
+                      getattr(d, "wheelPitchAcross", 0.0) or 0.0)
+
+
+def row_bounds(width: float, us: List[float]) -> List[Tuple[float, float]]:
+    """Each wheel row's strip along the travel: from midway to the row before to midway to the
+    row after - the first from the deck's start, the last to its end."""
+    out = []
+    for i, u in enumerate(us):
+        lo = -width / 2.0 if i == 0 else (us[i - 1] + u) / 2.0
+        hi = width / 2.0 if i == len(us) - 1 else (u + us[i + 1]) / 2.0
+        out.append((lo, hi))
+    return out
+
+
+def row_at(bounds: List[Tuple[float, float]], u: float):
+    """The row whose strip holds u along the travel (None: off the deck)."""
+    for i, (lo, hi) in enumerate(bounds):
+        if lo <= u < hi or (i == len(bounds) - 1 and u == hi):
+            return i
+    return None
+
+
+def wheel_centres(width: float, height: float, rows: int = 0, columns: int = 0, pitch_along: float = 0.0,
+                  pitch_across: float = 0.0) -> List[Tuple[float, float]]:
+    """The wheels of a pop-up wheel module, row by row (wheel_grid)."""
+    us, vs = wheel_grid(width, height, rows, columns, pitch_along, pitch_across)
+    return [(u, v) for u in us for v in vs]
+
+
+def centres_of(d) -> List[Tuple[float, float]]:
+    us, vs = grid_of(d)
+    return [(u, v) for u in us for v in vs]
 
 
 def wheel_steer(divert_angle: float) -> float:
