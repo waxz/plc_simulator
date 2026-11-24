@@ -1,5 +1,13 @@
 __pycache__
-.venv*.bak
+.venv
+*.bak
 
 # stall_watch.py: stacks of the simulator's freezes
 sim_stall.log
+
+# your own working files (drawings, layout variants): not in git
+local/
+
+# generated exports (the designer's / st_export's default outputs)
+sim_io.st
+PLCTags.xlsx

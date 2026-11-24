@@ -19,7 +19,7 @@ from PySide6.QtWidgets import QApplication, QGraphicsScene  # noqa: E402
 import equipment_geometry as geo  # noqa: E402
 from config_parser import Diverter, load_config  # noqa: E402
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _app = QApplication.instance() or QApplication([])
 
 

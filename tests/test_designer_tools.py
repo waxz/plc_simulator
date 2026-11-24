@@ -20,7 +20,7 @@ import ax_geometry  # noqa: E402
 import layout_editor as le  # noqa: E402
 from config_parser import load_config  # noqa: E402
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 APP = QApplication.instance() or QApplication([])
 
 

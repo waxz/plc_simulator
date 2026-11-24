@@ -18,7 +18,7 @@ from config_parser import load_config
 from sim_process import PhysicsProxy, wait_for
 from test_sim_process import exchange_file
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LAYOUT = os.path.join(HERE, "merge_demo.json")
 ROLES = {"load", "slot", "sync"}
 

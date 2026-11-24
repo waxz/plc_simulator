@@ -15,7 +15,7 @@ from chute_stats import ChuteStats
 from config_parser import load_config
 from physics import PhysicsEngine
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class ChuteStatsTest(unittest.TestCase):

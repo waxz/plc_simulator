@@ -41,7 +41,7 @@ from physics import PhysicsEngine  # noqa: E402
 from sim_runner import SimulationRunner  # noqa: E402
 
 _app = QApplication.instance() or QApplication([])
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # The hall in the DXF (mm), far from the origin as real drawings are. Its
 # point HALL_ORIGIN becomes the layout's (0, 0).

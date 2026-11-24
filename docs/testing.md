@@ -22,16 +22,17 @@ own test plan, `docs/testing.md` in the AX project.
 ## 1. Running the tests
 
 The tests use the standard library's `unittest` (pytest is not installed).
-Run them with the project's virtual environment, from this folder:
+They live in `tests/`. Run them with the project's virtual environment, from the
+project folder (python_sim/, not tests/):
 
 ```powershell
-# everything: 748 tests, about 3 minutes
+# everything: about 980 tests, about 15 minutes
 .venv\Scripts\python.exe -m unittest discover -p "test_*.py"
 
-# one module, one class, one test
-.venv\Scripts\python.exe -m unittest test_foxglove_bridge
-.venv\Scripts\python.exe -m unittest test_foxglove_bridge.BridgeTest
-.venv\Scripts\python.exe -m unittest test_foxglove_bridge.BridgeTest.test_records_field_list_once_then_values
+# one module, one class, one test (modules are tests.<file>)
+.venv\Scripts\python.exe -m unittest tests.test_foxglove_bridge
+.venv\Scripts\python.exe -m unittest tests.test_foxglove_bridge.BridgeTest
+.venv\Scripts\python.exe -m unittest tests.test_foxglove_bridge.BridgeTest.test_records_field_list_once_then_values
 ```
 
 No window, PLC or network beyond localhost is needed: the GUI tests run Qt and
@@ -220,7 +221,7 @@ git archive -o $env:TEMP\sim_head.tar HEAD
 New-Item -ItemType Directory -Force $env:TEMP\sim_head
 tar -xf $env:TEMP\sim_head.tar -C $env:TEMP\sim_head
 cd $env:TEMP\sim_head
-<python_sim>\.venv\Scripts\python.exe -m unittest test_io_signals test_ui_trees test_machines test_logistics
+<python_sim>\.venv\Scripts\python.exe -m unittest tests.test_io_signals tests.test_ui_trees tests.test_machines tests.test_logistics
 ```
 
 ## 7. Cross-repository checks

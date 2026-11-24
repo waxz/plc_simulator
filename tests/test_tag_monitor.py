@@ -11,7 +11,7 @@ from config_parser import load_config  # noqa: E402
 from tag_monitor import TagMonitor, format_value  # noqa: E402
 from visualizer import Renderer  # noqa: E402
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def tag(data_type, count=1):

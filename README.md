@@ -113,9 +113,12 @@ The Python simulation runs as a standalone process that:
   library) that prints what a Foxglove server publishes.
 
 **Tests**
-- `test_*.py` - One file per module above (`unittest`-based). Run the whole suite
-  with `python -m unittest discover -s . -p "test_*.py"` (or `uv run` in front of
-  that, see below).
+- `tests/test_*.py` - One file per module above (`unittest`-based). Run the whole
+  suite from this folder with `python -m unittest discover -s . -p "test_*.py"`
+  (or `uv run` in front of that, see below); one file: `python -m unittest
+  tests.test_wheel_sort`.
+- `local/` - your own working files (drawings, layout variants): ignored by git;
+  the DXF import tests use `local/layoyt.dxf` and `local/layout2.dxf` when present.
 
 ## Coordinate Systems Unified
 
@@ -1975,9 +1978,10 @@ to reach it from another machine on the network.
 ## Running Tests
 
 ```bash
-python -m unittest discover -s . -p "test_*.py"
+python -m unittest discover -s . -p "test_*.py"     # from this folder: every tests/test_*.py
 # or, using the project's uv-managed environment:
 uv run python -m unittest discover -s . -p "test_*.py"
+python -m unittest tests.test_ui_clicks             # one file (module tests.<file>)
 ```
 
 `test_ui_clicks.py` drives both windows with simulated mouse clicks (Qt

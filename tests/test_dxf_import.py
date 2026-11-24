@@ -26,9 +26,9 @@ from config_parser import BackgroundDrawing, SimulatorConfig, load_config  # noq
 from layout_editor import MainWindow, to_scene_pos  # noqa: E402
 
 _app = QApplication.instance() or QApplication([])
-HERE = os.path.dirname(os.path.abspath(__file__))
-REAL_SET = os.path.join(HERE, "layoyt.dxf")      # the user's drawing set (not in git)
-REAL_PLAN = os.path.join(HERE, "layout2.dxf")     # the user's second layout (not in git)
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REAL_SET = os.path.join(HERE, "local", "layoyt.dxf")      # the user's drawing set (local/: not in git)
+REAL_PLAN = os.path.join(HERE, "local", "layout2.dxf")     # the user's second layout (local/: not in git)
 
 SHEET_W, SHEET_H = 42.0, 29.7  # an "A3 at 1:100" frame, drawn in metres
 

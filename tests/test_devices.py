@@ -32,7 +32,7 @@ from physics import PhysicsEngine
 from plc_logic import DeliveryController
 from sim_runner import SimulationRunner
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def ir(**kw):

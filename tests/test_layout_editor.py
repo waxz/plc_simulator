@@ -56,7 +56,7 @@ class ExchangeOrderTest(unittest.TestCase):
         import random
         import layout_editor as le
         import st_export
-        here = os.path.dirname(os.path.abspath(__file__))
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         window = MainWindow(config=load_config(os.path.join(here, "merge_demo.json")),
                             config_path=os.path.join(tempfile.mkdtemp(), "layout.json"))
         self.addCleanup(window.deleteLater)
@@ -85,7 +85,7 @@ class ExchangeTableTest(unittest.TestCase):
     and the table's order is the frame's."""
 
     def open(self):
-        here = os.path.dirname(os.path.abspath(__file__))
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         window = MainWindow(config=load_config(os.path.join(here, "merge_demo.json")),
                             config_path=os.path.join(tempfile.mkdtemp(), "layout.json"))
         self.addCleanup(window.deleteLater)
@@ -467,7 +467,7 @@ class ShutdownTest(unittest.TestCase):
     def test_closing_with_discarded_edits_exits_without_a_traceback(self):
         # Destroying a dirty QUndoStack emits cleanChanged; the title slot
         # must not touch the half-deleted stack.
-        result = subprocess.run([sys.executable, "-c", _SHUTDOWN_SCRIPT], cwd=os.path.dirname(os.path.abspath(__file__)),
+        result = subprocess.run([sys.executable, "-c", _SHUTDOWN_SCRIPT], cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                 capture_output=True, text=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertNotIn("Traceback", result.stderr)

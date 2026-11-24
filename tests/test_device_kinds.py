@@ -22,7 +22,7 @@ from mqtt_data_exchange import io_topics
 from mqtt_message_binding import (ComponentMessage, _read_bit, _write_bit, custom_component_mapping,
                                   find_component_by_id, known_component_ids, parse_path)
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FULL = os.path.join(HERE, "logistics_full.json")
 
 

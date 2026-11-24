@@ -32,7 +32,7 @@ from mqtt_data_exchange import MQTTSyncEngine, apply_exchange_config, io_topics
 from mqtt_message_binding import ByteType, ComponentMessage, custom_component_mapping, verify_component_list
 from tcp_framed_transport import FrameType, TcpFramedClient
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CLOCK = 0x0102030405060708
 
 

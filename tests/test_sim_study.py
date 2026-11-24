@@ -14,7 +14,7 @@ import unittest
 import sim_study
 from config_parser import load_config
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MERGE = os.path.join(HERE, "merge_demo.json")
 STATION = os.path.join(HERE, "station_1.json")
 

@@ -20,7 +20,7 @@ from config_parser import load_config
 from mqtt_message_binding import ByteType, ComponentMessage
 from physics import PhysicsEngine
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def export_text(config, namespace="Simulator.Io", **settings) -> str:

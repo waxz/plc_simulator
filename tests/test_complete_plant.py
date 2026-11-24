@@ -15,7 +15,7 @@ from device_kinds import DEVICE_KINDS
 from physics import PhysicsEngine
 from plc_logic import make_controller
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PLANT = os.path.join(HERE, "complete_plant.json")
 
 

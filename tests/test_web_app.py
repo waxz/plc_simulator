@@ -16,8 +16,8 @@ import generate_frame_type
 import mqtt_data_exchange_codegen
 from web_app import create_app
 
-REAL_FRAME_TYPE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tcp_framed_transport.py")
-REAL_MQTT_DATA_EXCHANGE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mqtt_data_exchange.py")
+REAL_FRAME_TYPE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tcp_framed_transport.py")
+REAL_MQTT_DATA_EXCHANGE_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "mqtt_data_exchange.py")
 
 
 def valid_channel_body():

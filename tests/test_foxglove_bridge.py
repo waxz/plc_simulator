@@ -26,7 +26,7 @@ from plc_foxglove_bridge import PlcFoxgloveBridge, decode_fields
 from plc_logic import LineController
 from tcp_framed_transport import FrameType, TcpFramedClient
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def free_port() -> int:

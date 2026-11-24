@@ -9,7 +9,7 @@ import urllib.request
 import view3d
 from config_parser import load_config
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class StyleTest(unittest.TestCase):

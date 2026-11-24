@@ -33,7 +33,7 @@ from physics import PhysicsEngine  # noqa: E402
 from visualizer import Renderer  # noqa: E402
 
 _app = QApplication.instance() or QApplication([])
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def tearDownModule():

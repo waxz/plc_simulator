@@ -18,7 +18,7 @@ import mqtt_data_exchange_codegen as codegen
 from mqtt_message_binding import ByteType, MetricsMessage
 from tcp_framed_transport import FrameType
 
-REAL_TARGET = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mqtt_data_exchange.py")
+REAL_TARGET = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "mqtt_data_exchange.py")
 
 
 def _exec_and_read(source: str):

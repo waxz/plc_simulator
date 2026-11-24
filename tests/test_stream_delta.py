@@ -20,7 +20,7 @@ import zlib
 import stream_delta
 import view3d
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def states(n=200, seed=3):

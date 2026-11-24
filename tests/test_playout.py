@@ -12,7 +12,7 @@ import unittest
 
 import view3d
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class PlayoutTest(unittest.TestCase):

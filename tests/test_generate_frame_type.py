@@ -16,7 +16,7 @@ from contextlib import redirect_stderr, redirect_stdout
 import generate_frame_type as gft
 from tcp_framed_transport import FrameType
 
-REAL_TARGET = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tcp_framed_transport.py")
+REAL_TARGET = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tcp_framed_transport.py")
 
 
 def write_registry(path: str, metric_frame_types, io_mapping_frame_type=None):

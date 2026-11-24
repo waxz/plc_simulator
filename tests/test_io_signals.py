@@ -28,7 +28,7 @@ from config_parser import (Belt, ControlButton, Diverter, LedIndicator, Sensor, 
 from mqtt_message_binding import MACHINE_FIELDS, ComponentMessage, paddng_component  # noqa: E402
 from physics import PhysicsEngine  # noqa: E402
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEMO = os.path.join(HERE, "logistics_demo.json")
 _app = QApplication.instance() or QApplication([])
 

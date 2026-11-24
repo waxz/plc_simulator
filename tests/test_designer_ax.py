@@ -85,7 +85,7 @@ class AxGeometryTest(unittest.TestCase):
     def test_the_merge_demo(self):
         """Its merge and branch points on the grid, every eye on a belt and clear of
         its joints, no check failing."""
-        here = os.path.dirname(os.path.abspath(__file__))
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         layout = os.path.join(here, "merge_demo.json")
         if not os.path.exists(layout):
             self.skipTest("merge_demo.json not here")

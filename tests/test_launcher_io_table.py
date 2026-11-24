@@ -28,7 +28,7 @@ from config_parser import ControlPanel, PlcTag, load_config  # noqa: E402
 from mqtt_data_exchange import io_topics  # noqa: E402
 
 _app = QApplication.instance() or QApplication([])
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def tearDownModule():

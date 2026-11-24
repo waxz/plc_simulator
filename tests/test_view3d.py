@@ -18,7 +18,7 @@ import view3d
 from config_parser import load_config
 from physics import ParcelView, PhysicsEngine
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEMO = os.path.join(HERE, "machines_demo.json")
 
 

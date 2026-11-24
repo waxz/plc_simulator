@@ -13,7 +13,7 @@ import unittest
 import wheel_sort
 from config_parser import Diverter, Scanner, Sensor, load_config
 
-HERE = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 V = 2.0                # the line, m/s
 DT = 0.01              # the scan
 
